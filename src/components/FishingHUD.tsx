@@ -14,6 +14,7 @@ import {
   Film,
   Eye,
   EyeOff,
+  Target,
 } from 'lucide-react';
 import {
   BAIT_CATALOG,
@@ -129,7 +130,7 @@ interface FishingHUDProps {
   onResolveCatch: (release: boolean) => void;
 }
 
-type DockTab = 'fishing' | 'atmosphere' | 'skills' | 'radio';
+type DockTab = 'fishing' | 'challenges' | 'atmosphere' | 'skills' | 'radio';
 
 export const FishingHUD: React.FC<FishingHUDProps> = ({
   hud,
@@ -331,6 +332,8 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
 
   const currentSeason = SEASON_CATALOG.find((s) => s.id === hud.season)!;
   const currentWeatherLabel = WEATHER_OPTIONS.find((w) => w.id === hud.weather)?.label ?? '';
+  const completedChallengesToday = hud.dailyChallenges.challenges.filter((c) => c.completed).length;
+  const totalChallengesToday = hud.dailyChallenges.challenges.length;
   const nextThreshold = getNextLevelThreshold(hud.progression.level);
   const prevThreshold = hud.progression.level > 1 ? getNextLevelThreshold(hud.progression.level - 1) : 0;
   const levelProgressPct = Math.min(
@@ -476,6 +479,25 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
 
           <button
             type="button"
+            onClick={() => {
+              setDockCollapsed(false);
+              setActiveTab('challenges');
+            }}
+            title="عرض التحديات اليومية"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+              completedChallengesToday === totalChallengesToday && totalChallengesToday > 0
+                ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200 hover:bg-emerald-500/30'
+                : 'text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border-white/15'
+            }`}
+          >
+            <Target className="w-3.5 h-3.5 text-amber-300" />
+            <span className="font-mono-nums">
+              التحديات ({completedChallengesToday}/{totalChallengesToday})
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setJournalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border border-white/15 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
@@ -498,6 +520,13 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
             >
               العودة للكرسي
             </button>
+          </div>
+        )}
+
+        {hud.challengeCompletedNotice && (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#1d220e]/95 border border-amber-400/50 text-amber-100 text-xs sm:text-sm font-medium shadow-lg">
+            <Target className="w-4 h-4 text-amber-300 shrink-0" />
+            <span>{hud.challengeCompletedNotice}</span>
           </div>
         )}
 
@@ -604,6 +633,11 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                   <div className="text-xs text-emerald-300 font-medium mb-0.5">
                     صيد موفق · {hud.activeCatch.species.rarity} · +{hud.activeCatch.xpEarned} خبرة
                   </div>
+                  {hud.activeCatch.dailyChallengeBonusXp ? (
+                    <div className="text-[11px] text-amber-300 font-semibold mb-0.5">
+                      مكافأة تحدٍّ يومي: +{hud.activeCatch.dailyChallengeBonusXp} XP إضافية!
+                    </div>
+                  ) : null}
                   <h2 className="font-display text-lg font-bold text-stone-50 truncate">
                     {hud.activeCatch.species.nameAr}
                   </h2>
@@ -708,6 +742,26 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                   }`}
                 >
                   العدة والعمق
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('challenges')}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap flex items-center gap-1 ${
+                    activeTab === 'challenges' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <span>التحديات اليومية</span>
+                  <span
+                    className={`font-mono-nums text-[10px] ${
+                      activeTab === 'challenges'
+                        ? 'text-emerald-700'
+                        : completedChallengesToday === totalChallengesToday
+                          ? 'text-emerald-300'
+                          : 'text-amber-300'
+                    }`}
+                  >
+                    ({completedChallengesToday}/{totalChallengesToday})
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -836,7 +890,134 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
               </div>
             )}
 
-            {/* Tab 2: Dynamic Weather, Seasons & Time of Day */}
+            {/* Tab 2: Daily Challenges */}
+            {activeTab === 'challenges' && (
+              <div className="pt-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-stone-100">تحديات اليوم ({hud.dailyChallenges.dateKey})</span>
+                    <span className="text-stone-400">· تتجدد يومياً بمهام ومكافآت خبرة إضافية</span>
+                  </div>
+                  <div className="flex items-center gap-3 font-mono-nums">
+                    <span className="text-emerald-300">
+                      المكتمل اليوم: {completedChallengesToday}/{totalChallengesToday}
+                    </span>
+                    <span className="text-amber-300">إجمالي المنجز: {hud.dailyChallenges.completedTotal}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                  {hud.dailyChallenges.challenges.map((ch) => {
+                    const targetSpecies = ch.speciesId
+                      ? FISH_SPECIES.find((s) => s.id === ch.speciesId)
+                      : undefined;
+                    const targetBait = ch.baitId ? BAIT_CATALOG.find((b) => b.id === ch.baitId) : undefined;
+                    const targetWeather = ch.weather
+                      ? WEATHER_OPTIONS.find((w) => w.id === ch.weather)
+                      : undefined;
+
+                    const baitMatched = !ch.baitId || hud.selectedBait === ch.baitId;
+                    const baitUnlocked = !ch.baitId || hud.progression.unlockedBaits.includes(ch.baitId);
+                    const weatherMatched = !ch.weather || hud.weather === ch.weather;
+                    const pct = Math.min(100, Math.round((ch.progress / Math.max(1, ch.targetCount)) * 100));
+
+                    return (
+                      <div
+                        key={ch.id}
+                        className={`p-2.5 rounded-lg border flex flex-col justify-between gap-2 ${
+                          ch.completed
+                            ? 'bg-emerald-950/35 border-emerald-400/40'
+                            : 'bg-white/5 border-white/10'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <span className="font-semibold text-stone-100">{ch.titleAr}</span>
+                            {ch.completed ? (
+                              <span className="flex items-center gap-1 text-emerald-300 font-semibold shrink-0">
+                                <Check className="w-3.5 h-3.5" />
+                                <span>مكتمل</span>
+                              </span>
+                            ) : (
+                              <span className="font-mono-nums text-amber-300 font-semibold shrink-0">
+                                +{ch.xpReward} XP
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-stone-200 leading-snug mb-2">{ch.descriptionAr}</p>
+
+                          <div className="flex flex-wrap gap-1.5 mb-2 text-[11px]">
+                            {targetSpecies && (
+                              <span className="px-2 py-0.5 rounded bg-black/30 border border-white/10 text-stone-200">
+                                السمكة: {targetSpecies.nameAr}
+                              </span>
+                            )}
+                            {targetBait && (
+                              <button
+                                type="button"
+                                disabled={!baitUnlocked || baitMatched || ch.completed}
+                                onClick={() => ch.baitId && onSelectBait(ch.baitId)}
+                                title={
+                                  baitMatched
+                                    ? 'الطعم مجهز حالياً'
+                                    : baitUnlocked
+                                      ? `اضغط لتجهيز ${targetBait.nameAr}`
+                                      : `يُفتح عند المستوى ${targetBait.unlockLevel}`
+                                }
+                                className={`px-2 py-0.5 rounded border transition-colors ${
+                                  baitMatched
+                                    ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
+                                    : baitUnlocked && !ch.completed
+                                      ? 'bg-amber-500/15 border-amber-400/40 text-amber-200 hover:bg-amber-500/25'
+                                      : 'bg-black/30 border-white/10 text-stone-400'
+                                }`}
+                              >
+                                الطُعم: {targetBait.nameAr} {baitMatched ? '✓' : baitUnlocked && !ch.completed ? '· تجهيز' : ''}
+                              </button>
+                            )}
+                            {targetWeather && (
+                              <button
+                                type="button"
+                                disabled={weatherMatched || ch.completed}
+                                onClick={() => ch.weather && onSelectWeather(ch.weather)}
+                                title={weatherMatched ? 'الطقس الحالي مطابق' : `اضغط لضبط الطقس إلى ${targetWeather.label}`}
+                                className={`px-2 py-0.5 rounded border transition-colors ${
+                                  weatherMatched
+                                    ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                                    : !ch.completed
+                                      ? 'bg-amber-500/15 border-amber-400/40 text-amber-200 hover:bg-amber-500/25'
+                                      : 'bg-black/30 border-white/10 text-stone-400'
+                                }`}
+                              >
+                                الطقس: {targetWeather.label} {weatherMatched ? '✓' : !ch.completed ? '· ضبط' : ''}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between text-[11px] text-stone-400 mb-1">
+                            <span className="truncate">{ch.hintAr}</span>
+                            <span className="font-mono-nums text-stone-200 shrink-0 mr-2">
+                              {ch.progress}/{ch.targetCount}
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden">
+                            <div
+                              className={`h-full transition-[width] ${ch.completed ? 'bg-emerald-400' : 'bg-amber-400'}`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 3: Dynamic Weather, Seasons & Time of Day */}
             {activeTab === 'atmosphere' && (
               <div className="pt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                 <div className="space-y-2.5">

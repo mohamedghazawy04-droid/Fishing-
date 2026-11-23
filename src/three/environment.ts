@@ -86,12 +86,13 @@ export function groundHeightAt(x: number, z: number): number {
   }
 
   // Towering Snow-Capped Alpine Mountain Range clearly visible across the horizon
-  const mountainStart = 72;
+  const mountainStart = 68;
   if (distFromCenter > mountainStart) {
     const mT = THREE.MathUtils.smoothstep(distFromCenter, mountainStart, 225);
     const valleyOpenMask = z > 18 ? 0.55 : 1.0;
-    const ridge = ridgedFbm(x * 0.011 + 7.2, z * 0.011 + 4.4, 5);
-    const peakBoost = Math.pow(mT, 1.35) * (24 + ridge * 68) * valleyOpenMask;
+    const primaryRidge = ridgedFbm(x * 0.0115 + 7.2, z * 0.0115 + 4.4, 5);
+    const secondaryCrags = ridgedFbm(x * 0.028 - 2.1, z * 0.028 + 1.8, 3);
+    const peakBoost = Math.pow(mT, 1.3) * (24 + primaryRidge * 66 + secondaryCrags * 14) * valleyOpenMask;
     height += peakBoost;
   }
 
@@ -233,7 +234,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
 
   // 2. Sculpted Valley, Mountains, Plains & Expanded Lakebed Terrain
   const terrainSize = 520;
-  const segs = isSoftwareGl ? 140 : 210;
+  const segs = isSoftwareGl ? 150 : 250;
   const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, segs, segs);
   terrainGeo.rotateX(-Math.PI / 2);
 
@@ -241,10 +242,10 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const colors = new Float32Array(posAttr.count * 3);
   const cSand = new THREE.Color(0xb6a98a);
   const cPebble = new THREE.Color(0x7c7b6d);
-  const cMeadow = new THREE.Color(0x4c7c41);
-  const cLush = new THREE.Color(0x366235);
-  const cRock = new THREE.Color(0x63676b);
-  const cSnow = new THREE.Color(0xf2f6fa);
+  const cMeadow = new THREE.Color(0x4b7b40);
+  const cLush = new THREE.Color(0x325e31);
+  const cRock = new THREE.Color(0x5d6268);
+  const cSnow = new THREE.Color(0xf3f7fb);
   const tmpColor = new THREE.Color();
 
   for (let i = 0; i < posAttr.count; i++) {
@@ -253,7 +254,6 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const y = groundHeightAt(x, z);
     posAttr.setY(i, y);
 
-    // Estimate slope for rock cliffs
     const hx = groundHeightAt(x + 1.2, z);
     const hz = groundHeightAt(x, z + 1.2);
     const slope = Math.hypot(hx - y, hz - y) / 1.2;
@@ -261,27 +261,22 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5)) * 0.1;
 
     if (y < -0.35) {
-      // Underwater lakebed sand & stones
       const deepT = THREE.MathUtils.clamp((-y - 0.35) / 4.0, 0, 1);
       tmpColor.copy(cSand).lerp(cPebble, deepT * 0.75 + n);
     } else if (y < 0.75) {
-      // Shoreline sand -> grassy bank
       const shoreT = THREE.MathUtils.clamp((y + 0.35) / 1.1, 0, 1);
       tmpColor.copy(cSand).lerp(cMeadow, shoreT);
-    } else if (y < 15) {
-      // Rolling green valley plains
+    } else if (y < 14.5) {
       const lushT = fbm(x * 0.04, z * 0.04, 2);
       tmpColor.copy(cMeadow).lerp(cLush, lushT);
-      if (slope > 0.65) {
-        tmpColor.lerp(cRock, THREE.MathUtils.clamp((slope - 0.65) * 1.4, 0, 0.85));
+      if (slope > 0.52) {
+        tmpColor.lerp(cRock, THREE.MathUtils.clamp((slope - 0.52) * 1.45, 0, 0.88));
       }
-    } else if (y < 32) {
-      // Foothills transitioning to alpine granite
-      const rockT = THREE.MathUtils.smoothstep(y, 15, 30);
-      tmpColor.copy(cLush).lerp(cRock, Math.max(rockT, slope * 0.85));
+    } else if (y < 29) {
+      const rockT = THREE.MathUtils.smoothstep(y, 14, 28);
+      tmpColor.copy(cLush).lerp(cRock, Math.max(rockT, slope * 0.92));
     } else {
-      // Majestic snow-capped peaks
-      const snowT = THREE.MathUtils.smoothstep(y, 31, 41) * (1 - THREE.MathUtils.clamp((slope - 0.9) * 0.9, 0, 0.75));
+      const snowT = THREE.MathUtils.smoothstep(y, 28, 39) * (1 - THREE.MathUtils.clamp((slope - 0.78) * 1.05, 0, 0.85));
       tmpColor.copy(cRock).lerp(cSnow, snowT);
     }
 
@@ -293,27 +288,33 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   terrainGeo.computeVertexNormals();
 
-  // Extend terrain MeshStandardMaterial with animated underwater sun caustics below y=0
+  // Unreal-inspired multi-layer landscape shader: strata rocks, crevice AO, snow sheen, aerial haze & caustics
   const terrainMaterial = new THREE.MeshStandardMaterial({
     vertexColors: true,
     map: textures.meadowDetailMap,
-    roughness: 0.9,
+    bumpMap: textures.terrainBumpMap,
+    bumpScale: 0.14,
+    roughness: 0.88,
     metalness: 0.02,
   });
 
   terrainMaterial.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = { value: 0 };
     shader.uniforms.uSunIntensity = { value: 1.0 };
-    shader.uniforms.uSeasonWarmth = { value: 0.0 }; // >0 autumn gold, <0 winter frost
+    shader.uniforms.uSeasonWarmth = { value: 0.0 };
     shader.uniforms.uWinterSnow = { value: 0.0 };
+    shader.uniforms.uSunDir = { value: new THREE.Vector3(0.3, 0.6, -0.7).normalize() };
+    shader.uniforms.uSkyHorizon = { value: new THREE.Color(0xbce0f4) };
+    shader.uniforms.uSunColor = { value: new THREE.Color(0xfff1d4) };
     terrainMaterial.userData.shader = shader;
 
     shader.vertexShader =
-      `varying vec3 vWorldPosTerrain;\n` +
+      `varying vec3 vWorldPosTerrain;\nvarying vec3 vWorldNormalTerrain;\n` +
       shader.vertexShader.replace(
         '#include <project_vertex>',
         `#include <project_vertex>
-         vWorldPosTerrain = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
+         vWorldPosTerrain = (modelMatrix * vec4(transformed, 1.0)).xyz;
+         vWorldNormalTerrain = normalize(mat3(modelMatrix) * objectNormal);`,
       );
 
     shader.fragmentShader =
@@ -321,138 +322,511 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
        uniform float uSunIntensity;
        uniform float uSeasonWarmth;
        uniform float uWinterSnow;
+       uniform vec3 uSunDir;
+       uniform vec3 uSkyHorizon;
+       uniform vec3 uSunColor;
        varying vec3 vWorldPosTerrain;
+       varying vec3 vWorldNormalTerrain;
+
+       float tHash(vec2 p) {
+         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+       }
+       float tNoise(vec2 p) {
+         vec2 i = floor(p);
+         vec2 f = fract(p);
+         vec2 u = f * f * (3.0 - 2.0 * f);
+         return mix(
+           mix(tHash(i), tHash(i + vec2(1.0, 0.0)), u.x),
+           mix(tHash(i + vec2(0.0, 1.0)), tHash(i + vec2(1.0, 1.0)), u.x),
+           u.y
+         );
+       }
+       float tFbm(vec2 p) {
+         float v = 0.0;
+         float a = 0.5;
+         for (int i = 0; i < 3; i++) {
+           v += a * tNoise(p);
+           p *= 2.04;
+           a *= 0.5;
+         }
+         return v;
+       }
        float causticPattern(vec2 uv, float t) {
          vec2 p = uv * 0.55;
          float c1 = sin(p.x * 3.1 + t * 1.3 + sin(p.y * 2.7 - t));
          float c2 = cos(p.y * 3.5 - t * 1.1 + cos(p.x * 2.9 + t * 0.9));
          return pow(clamp((c1 * c2) * 0.5 + 0.5, 0.0, 1.0), 3.0);
        }\n` +
-      shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `#include <color_fragment>
-         if (vWorldPosTerrain.y > 0.55 && vWorldPosTerrain.y < 28.0) {
-           if (uSeasonWarmth > 0.01) {
-             diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.56, 0.42, 0.18), uSeasonWarmth * 0.52);
+      shader.fragmentShader
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+           vec3 wNorm = normalize(vWorldNormalTerrain);
+           float tSlope = 1.0 - clamp(wNorm.y, 0.0, 1.0);
+           float microDetail = tFbm(vWorldPosTerrain.xz * 0.24);
+           float strata = sin(vWorldPosTerrain.y * 1.35 + tFbm(vWorldPosTerrain.xz * 0.06) * 5.2) * 0.5 + 0.5;
+
+           if (vWorldPosTerrain.y > 0.45) {
+             // Granitic cliff striations & crevice darkening on slopes
+             float cliffMask = smoothstep(0.22, 0.56, tSlope);
+             vec3 granite = mix(vec3(0.27, 0.29, 0.32), vec3(0.49, 0.51, 0.54), strata * 0.65 + microDetail * 0.35);
+             diffuseColor.rgb = mix(diffuseColor.rgb, granite, cliffMask * 0.85);
+
+             // Organic valley meadow hue variation
+             float meadowMask = (1.0 - cliffMask) * (1.0 - smoothstep(14.0, 27.0, vWorldPosTerrain.y));
+             vec3 richMoss = vec3(0.18, 0.36, 0.16);
+             vec3 sunGrass = vec3(0.38, 0.52, 0.22);
+             diffuseColor.rgb = mix(diffuseColor.rgb, mix(richMoss, sunGrass, microDetail), meadowMask * 0.42);
            }
-           if (uWinterSnow > 0.01) {
-             float frostMask = smoothstep(0.6, 16.0, vWorldPosTerrain.y) * uWinterSnow;
-             diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.89, 0.94), frostMask * 0.72);
+
+           if (vWorldPosTerrain.y > 0.55 && vWorldPosTerrain.y < 30.0) {
+             if (uSeasonWarmth > 0.01) {
+               diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.58, 0.41, 0.17), uSeasonWarmth * 0.55);
+             }
+             if (uWinterSnow > 0.01) {
+               float frostMask = smoothstep(0.6, 16.0, vWorldPosTerrain.y) * (1.0 - smoothstep(0.45, 0.78, tSlope)) * uWinterSnow;
+               diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.91, 0.96), frostMask * 0.78);
+             }
            }
-         }
-         if (vWorldPosTerrain.y < 0.02) {
-           float depthFade = smoothstep(-5.0, -0.1, vWorldPosTerrain.y);
-           float c = causticPattern(vWorldPosTerrain.xz, uTime);
-           diffuseColor.rgb += vec3(0.18, 0.27, 0.25) * c * depthFade * uSunIntensity;
-         }`,
-      );
+
+           // Crisp alpine snow ridges with cool azure shadow facets
+           if (vWorldPosTerrain.y > 24.0) {
+             float snowLedge = smoothstep(24.0, 36.0, vWorldPosTerrain.y) * (1.0 - smoothstep(0.32, 0.68, tSlope));
+             float sunFacing = clamp(dot(wNorm, normalize(uSunDir)), 0.0, 1.0);
+             vec3 snowCol = mix(vec3(0.75, 0.83, 0.93), vec3(0.97, 0.98, 1.0), smoothstep(0.05, 0.45, sunFacing));
+             diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, snowLedge * 0.92);
+           }
+
+           // Underwater sun caustics
+           if (vWorldPosTerrain.y < 0.02) {
+             float depthFade = smoothstep(-5.0, -0.1, vWorldPosTerrain.y);
+             float c = causticPattern(vWorldPosTerrain.xz, uTime);
+             diffuseColor.rgb += vec3(0.19, 0.28, 0.26) * c * depthFade * uSunIntensity;
+           }
+
+           // Height-aware atmospheric aerial perspective on distant mountains
+           vec3 viewVecT = vWorldPosTerrain - cameraPosition;
+           float distT = length(viewVecT);
+           float aerial = smoothstep(68.0, 245.0, distT) * 0.42;
+           float sunScatter = pow(max(dot(normalize(viewVecT), normalize(uSunDir)), 0.0), 4.0) * 0.35 * uSunIntensity;
+           vec3 hazeCol = mix(uSkyHorizon, uSunColor, sunScatter);
+           diffuseColor.rgb = mix(diffuseColor.rgb, hazeCol, aerial);`,
+        )
+        .replace(
+          '#include <roughnessmap_fragment>',
+          `#include <roughnessmap_fragment>
+           float wetShore = 1.0 - smoothstep(0.0, 0.42, abs(vWorldPosTerrain.y - 0.05));
+           roughnessFactor = mix(roughnessFactor, 0.34, wetShore);
+           float snowRough = smoothstep(26.0, 38.0, vWorldPosTerrain.y) * (1.0 - smoothstep(0.32, 0.68, 1.0 - clamp(vWorldNormalTerrain.y, 0.0, 1.0)));
+           roughnessFactor = mix(roughnessFactor, 0.56, snowRough);`,
+        );
   };
 
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMaterial);
   terrainMesh.receiveShadow = true;
   group.add(terrainMesh);
 
-  // 3. Multi-Tiered Instanced Alpine Pine / Fir Trees
-  const treeCount = 260;
-  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.28, 2.2, 7);
-  trunkGeo.translate(0, 1.1, 0);
+  // 3. Sculpted 4-Tier Organic Alpine Pine / Fir Trees with Wind Sway & Subsurface Glow
+  function createOrganicPineTierGeometry(
+    baseRadius: number,
+    height: number,
+    yOffset: number,
+    lobes: number,
+    phaseTwist: number,
+  ): THREE.ConeGeometry {
+    const geo = new THREE.ConeGeometry(baseRadius, height, 18, 5, false);
+    geo.translate(0, yOffset, 0);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const vx = pos.getX(i);
+      const vy = pos.getY(i);
+      const vz = pos.getZ(i);
+      const r = Math.hypot(vx, vz);
+      if (r > 0.02) {
+        const ang = Math.atan2(vz, vx) + phaseTwist;
+        const hNorm = THREE.MathUtils.clamp((vy - (yOffset - height * 0.5)) / height, 0, 1);
+        const branchLobe = 0.80 + 0.24 * Math.sin(ang * lobes) + 0.09 * Math.cos(ang * lobes * 2.0);
+        const radialScale = branchLobe * (1.0 + (1.0 - hNorm) * 0.08);
+        const droop = (1.0 - hNorm) * -0.14 * (0.5 + 0.5 * Math.sin(ang * lobes));
+        pos.setXYZ(i, vx * radialScale, vy + droop, vz * radialScale);
+      }
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  const treeCount = 620;
+  const trunkGeo = new THREE.CylinderGeometry(0.14, 0.30, 2.5, 8);
+  trunkGeo.translate(0, 1.25, 0);
   const trunkMat = new THREE.MeshStandardMaterial({
     map: textures.barkMap,
+    bumpMap: textures.barkBumpMap,
+    bumpScale: 0.055,
     color: 0x6b4b35,
-    roughness: 0.95,
+    roughness: 0.94,
   });
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
   trunks.castShadow = true;
   trunks.receiveShadow = true;
 
-  // 3 foliage tiers merged visually via 3 InstancedMeshes for authentic conifer silhouette
-  const tier1Geo = new THREE.ConeGeometry(1.75, 2.8, 8);
-  tier1Geo.translate(0, 3.0, 0);
-  const tier2Geo = new THREE.ConeGeometry(1.35, 2.4, 8);
-  tier2Geo.translate(0, 4.4, 0);
-  const tier3Geo = new THREE.ConeGeometry(0.9, 2.0, 8);
-  tier3Geo.translate(0, 5.7, 0);
+  const tier1Geo = createOrganicPineTierGeometry(2.05, 2.6, 2.75, 9, 0.0);
+  const tier2Geo = createOrganicPineTierGeometry(1.65, 2.35, 4.05, 8, 0.55);
+  const tier3Geo = createOrganicPineTierGeometry(1.22, 2.05, 5.25, 7, 1.15);
+  const tier4Geo = createOrganicPineTierGeometry(0.76, 1.65, 6.32, 6, 1.85);
 
   const foliageMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
-    roughness: 0.88,
+    map: textures.pineFoliageMap,
+    bumpMap: textures.terrainBumpMap,
+    bumpScale: 0.04,
+    roughness: 0.84,
     metalness: 0.0,
   });
+
+  foliageMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uWind = { value: 1.0 };
+    shader.uniforms.uSunDir = { value: new THREE.Vector3(0.3, 0.6, -0.7).normalize() };
+    shader.uniforms.uSunIntensity = { value: 1.0 };
+    foliageMat.userData.shader = shader;
+
+    shader.vertexShader =
+      `uniform float uTime;\nuniform float uWind;\nvarying vec3 vWorldPosTree;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         float treePhase = 0.0;
+         #ifdef USE_INSTANCING
+           treePhase = instanceMatrix[3][0] * 0.45 + instanceMatrix[3][2] * 0.35;
+         #endif
+         float canopyHeight = smoothstep(1.2, 7.2, position.y);
+         transformed.x += sin(uTime * 1.15 + treePhase + position.y * 0.35) * 0.14 * canopyHeight * uWind;
+         transformed.z += cos(uTime * 0.92 + treePhase * 1.3) * 0.09 * canopyHeight * uWind;`,
+      ).replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+         vec4 wpTree = vec4(transformed, 1.0);
+         #ifdef USE_INSTANCING
+           wpTree = instanceMatrix * wpTree;
+         #endif
+         vWorldPosTree = (modelMatrix * wpTree).xyz;`,
+      );
+
+    shader.fragmentShader =
+      `uniform vec3 uSunDir;\nuniform float uSunIntensity;\nvarying vec3 vWorldPosTree;\n` +
+      shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `vec3 viewDirTree = normalize(cameraPosition - vWorldPosTree);
+         float backLit = pow(max(dot(-viewDirTree, normalize(uSunDir)), 0.0), 3.0);
+         gl_FragColor.rgb += vec3(0.28, 0.45, 0.14) * backLit * 0.32 * uSunIntensity;
+         #include <dithering_fragment>`,
+      );
+  };
 
   const foliage1 = new THREE.InstancedMesh(tier1Geo, foliageMat, treeCount);
   const foliage2 = new THREE.InstancedMesh(tier2Geo, foliageMat, treeCount);
   const foliage3 = new THREE.InstancedMesh(tier3Geo, foliageMat, treeCount);
+  const foliage4 = new THREE.InstancedMesh(tier4Geo, foliageMat, treeCount);
   foliage1.castShadow = true;
   foliage2.castShadow = true;
   foliage3.castShadow = true;
+  foliage4.castShadow = true;
   foliage1.receiveShadow = true;
   foliage2.receiveShadow = true;
   foliage3.receiveShadow = true;
+  foliage4.receiveShadow = true;
 
   const dummy = new THREE.Object3D();
   const treeColor = new THREE.Color();
   let placedTrees = 0;
   let attempts = 0;
-  while (placedTrees < treeCount && attempts < 3600) {
+  while (placedTrees < treeCount && attempts < 8500) {
     attempts++;
     const angle = (attempts * 2.39996) % (Math.PI * 2);
-    const radius = 44 + ((attempts * 9.13) % 125);
+    const radius = 34 + ((attempts * 7.83) % 152);
     const tx = Math.cos(angle) * radius;
     const tz = Math.sin(angle) * radius - 26;
-    if (Math.abs(tx) < 7 && tz > -2 && tz < 16) continue;
+    if (Math.abs(tx) < 7.5 && tz > -2 && tz < 17) continue;
     const ty = groundHeightAt(tx, tz);
-    if (ty < 0.85 || ty > 28) continue;
+    if (ty < 0.72 || ty > 28.5) continue;
 
-    const scale = 0.78 + hash2(tx, tz) * 0.68;
-    dummy.position.set(tx, ty - 0.15, tz);
+    const scale = 0.82 + hash2(tx, tz) * 0.72;
+    dummy.position.set(tx, ty - 0.18, tz);
     dummy.rotation.set(0, hash2(tz, tx) * Math.PI * 2, 0);
-    dummy.scale.set(scale, scale * (0.9 + hash2(tx + 3, tz) * 0.25), scale);
+    dummy.scale.set(scale, scale * (0.92 + hash2(tx + 3, tz) * 0.28), scale);
     dummy.updateMatrix();
 
     trunks.setMatrixAt(placedTrees, dummy.matrix);
     foliage1.setMatrixAt(placedTrees, dummy.matrix);
     foliage2.setMatrixAt(placedTrees, dummy.matrix);
     foliage3.setMatrixAt(placedTrees, dummy.matrix);
+    foliage4.setMatrixAt(placedTrees, dummy.matrix);
 
-    const gShift = 0.88 + hash2(tx * 2, tz * 2) * 0.28;
-    treeColor.setRGB(0.14 * gShift, 0.34 * gShift, 0.18 * gShift);
+    const gShift = 0.86 + hash2(tx * 2, tz * 2) * 0.30;
+    treeColor.setRGB(0.16 * gShift, 0.36 * gShift, 0.19 * gShift);
     foliage1.setColorAt(placedTrees, treeColor);
-    foliage2.setColorAt(placedTrees, treeColor.clone().multiplyScalar(1.08));
-    foliage3.setColorAt(placedTrees, treeColor.clone().multiplyScalar(1.16));
+    foliage2.setColorAt(placedTrees, treeColor.clone().multiplyScalar(1.07));
+    foliage3.setColorAt(placedTrees, treeColor.clone().multiplyScalar(1.14));
+    foliage4.setColorAt(placedTrees, treeColor.clone().multiplyScalar(1.22));
     placedTrees++;
   }
   trunks.count = placedTrees;
   foliage1.count = placedTrees;
   foliage2.count = placedTrees;
   foliage3.count = placedTrees;
+  foliage4.count = placedTrees;
   trunks.instanceMatrix.needsUpdate = true;
   foliage1.instanceMatrix.needsUpdate = true;
   foliage2.instanceMatrix.needsUpdate = true;
   foliage3.instanceMatrix.needsUpdate = true;
+  foliage4.instanceMatrix.needsUpdate = true;
   if (foliage1.instanceColor) foliage1.instanceColor.needsUpdate = true;
   if (foliage2.instanceColor) foliage2.instanceColor.needsUpdate = true;
   if (foliage3.instanceColor) foliage3.instanceColor.needsUpdate = true;
+  if (foliage4.instanceColor) foliage4.instanceColor.needsUpdate = true;
   trunks.computeBoundingSphere();
   foliage1.computeBoundingSphere();
   foliage2.computeBoundingSphere();
   foliage3.computeBoundingSphere();
-  group.add(trunks, foliage1, foliage2, foliage3);
+  foliage4.computeBoundingSphere();
+  group.add(trunks, foliage1, foliage2, foliage3, foliage4);
+
+  // 3a. Broadleaf / Birch Valley Trees for lush multi-species woodland contrast
+  const leafTreeCount = 150;
+  const leafTrunkGeo = new THREE.CylinderGeometry(0.09, 0.21, 2.3, 7);
+  leafTrunkGeo.translate(0, 1.15, 0);
+  const leafTrunkMat = new THREE.MeshStandardMaterial({
+    map: textures.barkMap,
+    color: 0xbcae9c,
+    roughness: 0.9,
+  });
+  const leafTrunks = new THREE.InstancedMesh(leafTrunkGeo, leafTrunkMat, leafTreeCount);
+  leafTrunks.castShadow = true;
+  leafTrunks.receiveShadow = true;
+
+  const crownGeo = new THREE.IcosahedronGeometry(1.45, 1);
+  const crownPos = crownGeo.attributes.position;
+  for (let i = 0; i < crownPos.count; i++) {
+    const cx = crownPos.getX(i);
+    const cy = crownPos.getY(i);
+    const cz = crownPos.getZ(i);
+    const bump = 0.82 + hash2(cx * 4 + cy * 3, cz * 5) * 0.34;
+    crownPos.setXYZ(i, cx * bump, cy * bump * 0.84 + 3.1, cz * bump);
+  }
+  crownGeo.computeVertexNormals();
+  const leafCrownMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    bumpMap: textures.terrainBumpMap,
+    bumpScale: 0.04,
+    roughness: 0.82,
+  });
+  leafCrownMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uWind = { value: 1.0 };
+    leafCrownMat.userData.shader = shader;
+    shader.vertexShader =
+      `uniform float uTime;\nuniform float uWind;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         float lPhase = 0.0;
+         #ifdef USE_INSTANCING
+           lPhase = instanceMatrix[3][0] * 0.5 + instanceMatrix[3][2] * 0.4;
+         #endif
+         float lHeight = smoothstep(1.8, 4.4, position.y);
+         transformed.x += sin(uTime * 1.35 + lPhase) * 0.14 * lHeight * uWind;
+         transformed.z += cos(uTime * 1.05 + lPhase * 1.2) * 0.10 * lHeight * uWind;`,
+      );
+  };
+  const leafCrowns = new THREE.InstancedMesh(crownGeo, leafCrownMat, leafTreeCount);
+  leafCrowns.castShadow = true;
+  leafCrowns.receiveShadow = true;
+
+  let placedLeafTrees = 0;
+  for (let i = 0; i < 2400 && placedLeafTrees < leafTreeCount; i++) {
+    const ang = (i * 2.39996 + 0.7) % (Math.PI * 2);
+    const rad = 36 + ((i * 6.41) % 92);
+    const lx = Math.cos(ang) * rad;
+    const lz = Math.sin(ang) * rad - 26;
+    if (Math.abs(lx) < 8 && lz > -2 && lz < 18) continue;
+    const ly = groundHeightAt(lx, lz);
+    if (ly < 0.68 || ly > 12.0) continue;
+
+    const sc = 0.76 + hash2(lx + 4, lz - 2) * 0.62;
+    dummy.position.set(lx, ly - 0.14, lz);
+    dummy.rotation.set(0, hash2(lz, lx) * Math.PI * 2, 0);
+    dummy.scale.set(sc, sc * (0.9 + hash2(lx, lz) * 0.25), sc);
+    dummy.updateMatrix();
+    leafTrunks.setMatrixAt(placedLeafTrees, dummy.matrix);
+    leafCrowns.setMatrixAt(placedLeafTrees, dummy.matrix);
+
+    const tint = 0.8 + hash2(lx * 3, lz * 3) * 0.32;
+    treeColor.setRGB(0.28 * tint, 0.50 * tint, 0.20 * tint);
+    leafCrowns.setColorAt(placedLeafTrees, treeColor);
+    placedLeafTrees++;
+  }
+  leafTrunks.count = placedLeafTrees;
+  leafCrowns.count = placedLeafTrees;
+  leafTrunks.instanceMatrix.needsUpdate = true;
+  leafCrowns.instanceMatrix.needsUpdate = true;
+  if (leafCrowns.instanceColor) leafCrowns.instanceColor.needsUpdate = true;
+  leafTrunks.computeBoundingSphere();
+  leafCrowns.computeBoundingSphere();
+  group.add(leafTrunks, leafCrowns);
+
+  // 3b. Lush Shoreline Bushes & Meadow Shrubs
+  const bushCount = 360;
+  const bushGeo = new THREE.DodecahedronGeometry(0.62, 1);
+  const bPos = bushGeo.attributes.position;
+  for (let i = 0; i < bPos.count; i++) {
+    const bx = bPos.getX(i);
+    const by = bPos.getY(i);
+    const bz = bPos.getZ(i);
+    const n = 0.78 + hash2(bx * 6 + by * 2, bz * 6) * 0.38;
+    bPos.setXYZ(i, bx * n * 1.25, Math.max(0.02, (by + 0.45) * n * 0.72), bz * n * 1.25);
+  }
+  bushGeo.computeVertexNormals();
+  const bushMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    bumpMap: textures.terrainBumpMap,
+    bumpScale: 0.04,
+    roughness: 0.88,
+  });
+  const bushesMesh = new THREE.InstancedMesh(bushGeo, bushMat, bushCount);
+  bushesMesh.castShadow = true;
+  bushesMesh.receiveShadow = true;
+  let placedBushes = 0;
+  for (let i = 0; i < 3200 && placedBushes < bushCount; i++) {
+    const bx = (hash2(i * 1.9, 14.3) - 0.5) * 165;
+    const bz = (hash2(11.7, i * 2.9) - 0.5) * 140 - 25;
+    if (Math.abs(bx) < 5.2 && bz > -2 && bz < 14) continue;
+    const by = groundHeightAt(bx, bz);
+    if (by < 0.38 || by > 11.5) continue;
+
+    const bs = 0.65 + hash2(bx, bz) * 0.95;
+    dummy.position.set(bx, by - 0.06, bz);
+    dummy.rotation.set(0, hash2(i, 21) * Math.PI * 2, 0);
+    dummy.scale.set(bs, bs * (0.78 + hash2(bz, bx) * 0.4), bs);
+    dummy.updateMatrix();
+    bushesMesh.setMatrixAt(placedBushes, dummy.matrix);
+
+    const gVal = 0.34 + hash2(bx * 2, bz) * 0.24;
+    treeColor.setRGB(gVal * 0.58, gVal * 1.05, gVal * 0.42);
+    bushesMesh.setColorAt(placedBushes, treeColor);
+    placedBushes++;
+  }
+  bushesMesh.count = placedBushes;
+  bushesMesh.instanceMatrix.needsUpdate = true;
+  if (bushesMesh.instanceColor) bushesMesh.instanceColor.needsUpdate = true;
+  bushesMesh.computeBoundingSphere();
+  group.add(bushesMesh);
+
+  // 3c. Meadow Wildflower Blossoms for painterly lakeside banks
+  const flowerCount = 260;
+  const flowerGeo = new THREE.ConeGeometry(0.11, 0.28, 5);
+  flowerGeo.rotateX(Math.PI);
+  flowerGeo.translate(0, 0.26, 0);
+  const flowerMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.65,
+  });
+  const flowerMesh = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
+  let placedFlowers = 0;
+  const flowerPalette = [0xf7d65a, 0xf2f0e4, 0xd8a8f0, 0xf29f74];
+  for (let i = 0; i < 2600 && placedFlowers < flowerCount; i++) {
+    const fx = (hash2(i * 4.3, 6.1) - 0.5) * 140;
+    const fz = (hash2(8.3, i * 5.1) - 0.5) * 120 - 22;
+    if (Math.abs(fx) < 3.5 && fz > -1 && fz < 12) continue;
+    const fy = groundHeightAt(fx, fz);
+    if (fy < 0.5 || fy > 6.8) continue;
+
+    const fs = 0.75 + hash2(fx, fz) * 0.75;
+    dummy.position.set(fx, fy - 0.02, fz);
+    dummy.rotation.set((hash2(i, 3) - 0.5) * 0.2, hash2(i, 7) * Math.PI * 2, (hash2(i, 11) - 0.5) * 0.2);
+    dummy.scale.setScalar(fs);
+    dummy.updateMatrix();
+    flowerMesh.setMatrixAt(placedFlowers, dummy.matrix);
+
+    treeColor.setHex(flowerPalette[placedFlowers % flowerPalette.length]);
+    flowerMesh.setColorAt(placedFlowers, treeColor);
+    placedFlowers++;
+  }
+  flowerMesh.count = placedFlowers;
+  flowerMesh.instanceMatrix.needsUpdate = true;
+  if (flowerMesh.instanceColor) flowerMesh.instanceColor.needsUpdate = true;
+  flowerMesh.computeBoundingSphere();
+  group.add(flowerMesh);
+
+  // 3d. Lush Meadow Grass & Shoreline Tufts swaying in wind
+  const grassCount = 1350;
+  const grassGeo = new THREE.ConeGeometry(0.18, 0.64, 5);
+  grassGeo.translate(0, 0.32, 0);
+  const grassMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.85,
+  });
+  grassMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uWind = { value: 1.0 };
+    grassMat.userData.shader = shader;
+    shader.vertexShader =
+      `uniform float uTime;\nuniform float uWind;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         float gSway = smoothstep(0.0, 0.6, position.y);
+         float gPhase = 0.0;
+         #ifdef USE_INSTANCING
+           gPhase = instanceMatrix[3][0] * 0.9 + instanceMatrix[3][2] * 0.7;
+         #endif
+         transformed.x += sin(uTime * 2.1 + gPhase) * 0.08 * gSway * uWind;`,
+      );
+  };
+  const grassMesh = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
+  grassMesh.castShadow = true;
+  grassMesh.receiveShadow = true;
+  let placedGrass = 0;
+  for (let i = 0; i < 7200 && placedGrass < grassCount; i++) {
+    const gx = (hash2(i * 2.3, 9.1) - 0.5) * 165;
+    const gz = (hash2(4.1, i * 3.7) - 0.5) * 145 - 24;
+    if (Math.abs(gx) < 3.0 && gz > -1 && gz < 12) continue;
+    const gy = groundHeightAt(gx, gz);
+    if (gy < 0.36 || gy > 8.2) continue;
+
+    const gs = 0.75 + hash2(gx, gz) * 0.85;
+    dummy.position.set(gx, gy - 0.04, gz);
+    dummy.rotation.set((hash2(i, 5) - 0.5) * 0.25, hash2(i, 8) * Math.PI * 2, (hash2(i, 13) - 0.5) * 0.25);
+    dummy.scale.set(gs * 1.15, gs, gs * 1.15);
+    dummy.updateMatrix();
+    grassMesh.setMatrixAt(placedGrass, dummy.matrix);
+
+    const gg = 0.38 + hash2(gz, gx) * 0.22;
+    treeColor.setRGB(gg * 0.62, gg * 1.05, gg * 0.42);
+    grassMesh.setColorAt(placedGrass, treeColor);
+    placedGrass++;
+  }
+  grassMesh.count = placedGrass;
+  grassMesh.instanceMatrix.needsUpdate = true;
+  if (grassMesh.instanceColor) grassMesh.instanceColor.needsUpdate = true;
+  grassMesh.computeBoundingSphere();
+  group.add(grassMesh);
 
   // 4. Instanced Shoreline & Submerged Lake Boulders
-  const rockCount = 110;
+  const rockCount = 125;
   const rockGeo = new THREE.DodecahedronGeometry(1, 1);
-  // Slightly perturb vertices for organic stone look
   const rPos = rockGeo.attributes.position;
   for (let i = 0; i < rPos.count; i++) {
     const vx = rPos.getX(i);
     const vy = rPos.getY(i);
     const vz = rPos.getZ(i);
-    const n = 0.82 + hash2(vx * 5 + vy * 3, vz * 7) * 0.32;
+    const n = 0.80 + hash2(vx * 5 + vy * 3, vz * 7) * 0.35;
     rPos.setXYZ(i, vx * n, vy * n * 0.72, vz * n);
   }
   rockGeo.computeVertexNormals();
   const rockMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
+    bumpMap: textures.terrainBumpMap,
+    bumpScale: 0.06,
     roughness: 0.86,
     metalness: 0.04,
   });
@@ -460,10 +834,10 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   rocks.castShadow = true;
   rocks.receiveShadow = true;
   let placedRocks = 0;
-  for (let i = 0; i < 450 && placedRocks < rockCount; i++) {
+  for (let i = 0; i < 480 && placedRocks < rockCount; i++) {
     const rx = (hash2(i, 11) - 0.5) * 124;
     const rz = (hash2(19, i) - 0.5) * 108 - 28;
-    if (Math.hypot(rx, rz - 1) < 6.0) continue; // Keep dock clear
+    if (Math.hypot(rx, rz - 1) < 6.0) continue;
     const ry = groundHeightAt(rx, rz);
     if (ry < -3.8 || ry > 9.0) continue;
 
@@ -487,7 +861,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(rocks);
 
   // 5. Instanced Lakeside Reeds & Cattails in shallow banks
-  const reedCount = 340;
+  const reedCount = 560;
   const reedGeo = new THREE.CylinderGeometry(0.015, 0.032, 1.45, 5);
   reedGeo.translate(0, 0.72, 0);
   const reedMat = new THREE.MeshStandardMaterial({
@@ -515,9 +889,9 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const reedsMesh = new THREE.InstancedMesh(reedGeo, reedMat, reedCount);
   reedsMesh.receiveShadow = true;
   let placedReeds = 0;
-  for (let i = 0; i < 3200 && placedReeds < reedCount; i++) {
-    const rx = (hash2(i * 3.1, 7.2) - 0.5) * 106;
-    const rz = (hash2(2.7, i * 4.3) - 0.5) * 88 - 28;
+  for (let i = 0; i < 4800 && placedReeds < reedCount; i++) {
+    const rx = (hash2(i * 3.1, 7.2) - 0.5) * 116;
+    const rz = (hash2(2.7, i * 4.3) - 0.5) * 96 - 28;
     if (Math.abs(rx) < 5.0 && rz > -2) continue;
     const ry = groundHeightAt(rx, rz);
     if (ry < -0.55 || ry > 0.38) continue;
@@ -619,27 +993,65 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
       skyMaterial.uniforms.uStormFactor.value = stormFactor;
 
       const tShader = terrainMaterial.userData.shader;
+      const sunIntensity = Math.max(0.15, 1.0 - starAlpha * 0.75 - stormFactor * 0.5);
       if (tShader) {
         tShader.uniforms.uTime.value = elapsed;
-        tShader.uniforms.uSunIntensity.value = Math.max(0.15, 1.0 - starAlpha * 0.75 - stormFactor * 0.5);
+        tShader.uniforms.uSunIntensity.value = sunIntensity;
         tShader.uniforms.uSeasonWarmth.value = season === 'autumn' ? 1.0 : 0.0;
         tShader.uniforms.uWinterSnow.value = season === 'winter' ? 1.0 : 0.0;
+        tShader.uniforms.uSunDir.value.copy(sunDir);
+        tShader.uniforms.uSkyHorizon.value.copy(skyHorizon);
+        tShader.uniforms.uSunColor.value.copy(sunColor);
       }
 
+      const fShader = foliageMat.userData.shader;
+      const windSpeedFactor = (weather === 'storm' ? 2.4 : weather === 'rain' ? 1.5 : 1.0) * windMultiplier;
+      if (fShader) {
+        fShader.uniforms.uTime.value = elapsed;
+        fShader.uniforms.uWind.value = windSpeedFactor;
+        fShader.uniforms.uSunDir.value.copy(sunDir);
+        fShader.uniforms.uSunIntensity.value = sunIntensity;
+      }
+
+      const gShader = grassMat.userData.shader;
+      if (gShader) {
+        gShader.uniforms.uTime.value = elapsed;
+        gShader.uniforms.uWind.value = windSpeedFactor;
+      }
+
+      const lcShader = leafCrownMat.userData.shader;
+      if (lcShader) {
+        lcShader.uniforms.uTime.value = elapsed;
+        lcShader.uniforms.uWind.value = windSpeedFactor;
+      }
+
+      flowerMesh.visible = season !== 'winter';
       if (season === 'autumn') {
         foliageMat.color.setHex(0xd4a45a);
+        leafCrownMat.color.setHex(0xd8833b);
+        bushMat.color.setHex(0xc49548);
+        grassMat.color.setHex(0xc9a35d);
       } else if (season === 'winter') {
         foliageMat.color.setHex(0xc4d8de);
+        leafCrownMat.color.setHex(0x9fb5bd);
+        bushMat.color.setHex(0xa8bcc2);
+        grassMat.color.setHex(0x9fb5ba);
       } else if (season === 'spring') {
         foliageMat.color.setHex(0xffffff);
+        leafCrownMat.color.setHex(0xffffff);
+        bushMat.color.setHex(0xffffff);
+        grassMat.color.setHex(0xffffff);
       } else {
         foliageMat.color.setHex(0xebffe6);
+        leafCrownMat.color.setHex(0xe0ffcf);
+        bushMat.color.setHex(0xe5ffd9);
+        grassMat.color.setHex(0xe8ffd9);
       }
 
       const rShader = reedMat.userData.shader;
       if (rShader) {
         rShader.uniforms.uTime.value = elapsed;
-        rShader.uniforms.uWind.value = (weather === 'storm' ? 2.4 : weather === 'rain' ? 1.5 : 1.0) * windMultiplier;
+        rShader.uniforms.uWind.value = windSpeedFactor;
       }
 
       const birdsVisible = weather !== 'storm' && starAlpha < 0.72;
@@ -651,7 +1063,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
           const bz = Math.sin(ang) * bird.radius + bird.centerZ;
           bird.root.position.set(bx, bird.yBase + Math.sin(elapsed * 0.7 + bird.phase) * 1.1, bz);
           bird.root.rotation.y = -ang;
-          bird.root.rotation.z = 0.16; // Graceful banking tilt while circling
+          bird.root.rotation.z = 0.16;
           const flapWave = Math.sin(elapsed * bird.flapSpeed + bird.phase * 3);
           const glideMask = Math.max(0, Math.sin(elapsed * 0.45 + bird.phase) - bird.glideBias);
           const flap = flapWave * (0.14 + glideMask * 0.46);
@@ -670,13 +1082,25 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
       tier1Geo.dispose();
       tier2Geo.dispose();
       tier3Geo.dispose();
+      tier4Geo.dispose();
       foliageMat.dispose();
+      leafTrunkGeo.dispose();
+      leafTrunkMat.dispose();
+      crownGeo.dispose();
+      leafCrownMat.dispose();
+      bushGeo.dispose();
+      bushMat.dispose();
+      flowerGeo.dispose();
+      flowerMat.dispose();
+      grassGeo.dispose();
+      grassMat.dispose();
       rockGeo.dispose();
       rockMat.dispose();
       reedGeo.dispose();
       reedMat.dispose();
       wingGeo.dispose();
       birdWingMat.dispose();
+      gullMat.dispose();
     },
   };
 }

@@ -128,6 +128,30 @@ export interface CaughtFishRecord {
   baitUsed: BaitId;
   hookUsed: HookId;
   released: boolean;
+  dailyChallengeBonusXp?: number;
+}
+
+export type DailyChallengeCategory = 'species_weather' | 'bait_weather' | 'combo';
+
+export interface DailyChallenge {
+  id: string;
+  category: DailyChallengeCategory;
+  titleAr: string;
+  descriptionAr: string;
+  hintAr: string;
+  speciesId?: string;
+  baitId?: BaitId;
+  weather?: WeatherType;
+  targetCount: number;
+  progress: number;
+  xpReward: number;
+  completed: boolean;
+}
+
+export interface DailyChallengesState {
+  dateKey: string;
+  challenges: DailyChallenge[];
+  completedTotal: number;
 }
 
 export interface AmbienceMix {
@@ -168,6 +192,8 @@ export interface FishingHudState {
   lineSnappedNotice: string | null;
   progression: PlayerProgression;
   newlyUnlockedNotice: string | null;
+  dailyChallenges: DailyChallengesState;
+  challengeCompletedNotice: string | null;
 }
 
 export const SEASON_CATALOG: SeasonDefinition[] = [
@@ -663,3 +689,134 @@ export function classifyLakeZone(x: number, z: number, waterDepth: number): Lake
   if (waterDepth > 2.95 && z < -16) return 'deep_basin';
   return 'rocky_ledge';
 }
+
+export function getTodayDateKey(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function createSeededRng(seedStr: string): () => number {
+  let h = 2166136261;
+  for (let i = 0; i < seedStr.length; i++) {
+    h ^= seedStr.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return () => {
+    h += 0x6d2b79f5;
+    let t = Math.imul(h ^ (h >>> 15), 1 | h);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickSeeded<T>(arr: readonly T[], rng: () => number): T {
+  return arr[Math.floor(rng() * arr.length) % arr.length];
+}
+
+export function generateDailyChallenges(
+  dateKey: string,
+  unlockedBaits: BaitId[] = ['worm', 'fly'],
+): DailyChallenge[] {
+  const rng = createSeededRng(`valley_daily_${dateKey}`);
+  const safeUnlocked = unlockedBaits.length > 0 ? unlockedBaits : (['worm', 'fly'] as BaitId[]);
+  const weatherLabelMap = Object.fromEntries(WEATHER_OPTIONS.map((w) => [w.id, w.label])) as Record<
+    WeatherType,
+    string
+  >;
+
+  // Filter species that have at least one favorite bait unlocked by the player
+  const accessibleSpecies = FISH_SPECIES.filter((sp) =>
+    sp.favoriteBaits.some((b) => safeUnlocked.includes(b)),
+  );
+  const pool = accessibleSpecies.length > 0 ? accessibleSpecies : FISH_SPECIES.slice(0, 3);
+
+  // 1) Species + Weather Challenge
+  const sp1 = pickSeeded(pool, rng);
+  const w1 = pickSeeded(sp1.activeWeather, rng);
+  const count1 = sp1.rarity === 'شائع' && rng() > 0.45 ? 2 : 1;
+  const sp1Zones = sp1.preferredZones.map((z) => LAKE_ZONE_LABELS[z]).join(' أو ');
+  const sp1Baits = sp1.favoriteBaits
+    .map((bId) => BAIT_CATALOG.find((b) => b.id === bId)?.nameAr ?? bId)
+    .join('، ');
+  const reward1 = (sp1.rarity === 'أسطوري' ? 190 : sp1.rarity === 'نادر' ? 140 : 85) + (count1 - 1) * 45;
+
+  const ch1: DailyChallenge = {
+    id: `${dateKey}_species_weather`,
+    category: 'species_weather',
+    titleAr: `مطاردة ${sp1.nameAr}`,
+    descriptionAr:
+      count1 === 1
+        ? `اصطد ${sp1.nameAr} أثناء طقس «${weatherLabelMap[w1]}».`
+        : `اصطد ${count1} من ${sp1.nameAr} أثناء طقس «${weatherLabelMap[w1]}».`,
+    hintAr: `يفضل التواجد في ${sp1Zones}، وينجذب إلى: ${sp1Baits}.`,
+    speciesId: sp1.id,
+    weather: w1,
+    targetCount: count1,
+    progress: 0,
+    xpReward: reward1,
+    completed: false,
+  };
+
+  // 2) Specific Bait + Specific Weather Challenge
+  const bait2Id = pickSeeded(safeUnlocked, rng);
+  const bait2 = BAIT_CATALOG.find((b) => b.id === bait2Id) ?? BAIT_CATALOG[0];
+  const compatibleWeather2 = Array.from(
+    new Set(
+      FISH_SPECIES.filter((sp) => sp.favoriteBaits.includes(bait2.id)).flatMap((sp) => sp.activeWeather),
+    ),
+  );
+  const weatherCandidates2 =
+    compatibleWeather2.length > 1
+      ? compatibleWeather2.filter((w) => w !== w1)
+      : compatibleWeather2.length > 0
+        ? compatibleWeather2
+        : (['clear', 'cloudy', 'mist', 'rain'] as WeatherType[]);
+  const w2 = pickSeeded(weatherCandidates2.length > 0 ? weatherCandidates2 : (['clear', 'mist'] as WeatherType[]), rng);
+  const count2 = 2;
+  const bait2Zones = bait2.preferredZones.map((z) => LAKE_ZONE_LABELS[z]).join(' أو ');
+
+  const ch2: DailyChallenge = {
+    id: `${dateKey}_bait_weather`,
+    category: 'bait_weather',
+    titleAr: `مهارة ${bait2.nameAr}`,
+    descriptionAr: `اصطد ${count2} سمكة باستخدام طُعم «${bait2.nameAr}» في طقس «${weatherLabelMap[w2]}».`,
+    hintAr: `جهّز «${bait2.nameAr}» من تبويب العدة وارمِ في ${bait2Zones} مع ضبط الطقس على «${weatherLabelMap[w2]}».`,
+    baitId: bait2.id,
+    weather: w2,
+    targetCount: count2,
+    progress: 0,
+    xpReward: 135,
+    completed: false,
+  };
+
+  // 3) Combined Species + Bait + Weather Challenge
+  const remainingPool = pool.filter((sp) => sp.id !== sp1.id);
+  const sp3 = pickSeeded(remainingPool.length > 0 ? remainingPool : pool, rng);
+  const unlockedFavBaits3 = sp3.favoriteBaits.filter((b) => safeUnlocked.includes(b));
+  const bait3Id = pickSeeded(unlockedFavBaits3.length > 0 ? unlockedFavBaits3 : safeUnlocked, rng);
+  const bait3 = BAIT_CATALOG.find((b) => b.id === bait3Id) ?? BAIT_CATALOG[0];
+  const w3Pool = sp3.activeWeather.filter((w) => w !== w2);
+  const w3 = pickSeeded(w3Pool.length > 0 ? w3Pool : sp3.activeWeather, rng);
+  const sp3Zones = sp3.preferredZones.map((z) => LAKE_ZONE_LABELS[z]).join(' أو ');
+  const reward3 = sp3.rarity === 'أسطوري' ? 240 : sp3.rarity === 'نادر' ? 190 : 155;
+
+  const ch3: DailyChallenge = {
+    id: `${dateKey}_combo`,
+    category: 'combo',
+    titleAr: `تحدي الصياد المحترف`,
+    descriptionAr: `اصطد ${sp3.nameAr} باستخدام «${bait3.nameAr}» أثناء طقس «${weatherLabelMap[w3]}».`,
+    hintAr: `استهدف ${sp3Zones} على عمق ~${bait3.targetDepthOffset.toFixed(1)}م لتحقيق أفضل استجابة.`,
+    speciesId: sp3.id,
+    baitId: bait3.id,
+    weather: w3,
+    targetCount: 1,
+    progress: 0,
+    xpReward: reward3,
+    completed: false,
+  };
+
+  return [ch1, ch2, ch3];
+}
+

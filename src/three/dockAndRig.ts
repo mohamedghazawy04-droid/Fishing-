@@ -144,20 +144,37 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   const armPostGeo = new THREE.CylinderGeometry(0.024, 0.024, 0.28, 8);
   disposables.push(legGeo, armGeo, armCapGeo, seatFrameGeo, cushionGeo, backPostGeo, backCanvasGeo, armPostGeo);
 
-  // 4 Chair legs grounded on pier
+  // 4 Chair legs grounded on pier + soft contact shadow decals
+  const contactShadowMat = new THREE.MeshBasicMaterial({
+    map: textures.contactShadowMap,
+    transparent: true,
+    opacity: 0.72,
+    depthWrite: false,
+  });
+  const legShadowGeo = new THREE.PlaneGeometry(0.18, 0.18);
+  legShadowGeo.rotateX(-Math.PI / 2);
+  const boxShadowGeo = new THREE.PlaneGeometry(0.62, 0.42);
+  boxShadowGeo.rotateX(-Math.PI / 2);
+  disposables.push(contactShadowMat, legShadowGeo, boxShadowGeo);
+
   for (const [lx, lz] of [[-0.31, -0.26], [0.31, -0.26], [-0.31, 0.26], [0.31, 0.26]]) {
     const leg = new THREE.Mesh(legGeo, darkTimberMat);
     leg.position.set(lx, 0.22, lz);
     leg.castShadow = true;
-    chairGroup.add(leg);
+    leg.receiveShadow = true;
+    const legShadow = new THREE.Mesh(legShadowGeo, contactShadowMat);
+    legShadow.position.set(lx, 0.004, lz);
+    chairGroup.add(leg, legShadow);
   }
   const seatFrame = new THREE.Mesh(seatFrameGeo, pierWoodMat);
   seatFrame.position.set(0, 0.44, -0.04);
   seatFrame.castShadow = true;
+  seatFrame.receiveShadow = true;
   chairGroup.add(seatFrame);
 
   const cushion = new THREE.Mesh(cushionGeo, canvasFabricMat);
   cushion.position.set(0, 0.485, -0.04);
+  cushion.castShadow = true;
   cushion.receiveShadow = true;
   chairGroup.add(cushion);
 
@@ -168,10 +185,14 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   for (const bx of [-0.30, 0.30]) {
     const bp = new THREE.Mesh(backPostGeo, darkTimberMat);
     bp.position.set(bx, 0.32, 0);
+    bp.castShadow = true;
+    bp.receiveShadow = true;
     backGroup.add(bp);
   }
   const backCanvas = new THREE.Mesh(backCanvasGeo, canvasFabricMat);
   backCanvas.position.set(0, 0.38, 0);
+  backCanvas.castShadow = true;
+  backCanvas.receiveShadow = true;
   backGroup.add(backCanvas);
   chairGroup.add(backGroup);
 
@@ -180,13 +201,19 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     const arm = new THREE.Mesh(armGeo, pierWoodMat);
     arm.position.set(ax, 0.72, -0.10);
     arm.castShadow = true;
+    arm.receiveShadow = true;
     const armCap = new THREE.Mesh(armCapGeo, pierWoodMat);
     armCap.position.set(ax, 0.72, -0.44);
     armCap.castShadow = true;
+    armCap.receiveShadow = true;
     const frontPost = new THREE.Mesh(armPostGeo, darkTimberMat);
     frontPost.position.set(ax, 0.57, -0.34);
+    frontPost.castShadow = true;
+    frontPost.receiveShadow = true;
     const rearPost = new THREE.Mesh(armPostGeo, darkTimberMat);
     rearPost.position.set(ax, 0.57, 0.16);
+    rearPost.castShadow = true;
+    rearPost.receiveShadow = true;
     chairGroup.add(arm, armCap, frontPost, rearPost);
   }
   group.add(chairGroup);
@@ -206,11 +233,13 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     thigh.position.set(side * 0.155, 0.56, -0.22);
     thigh.rotation.y = side * -0.05;
     thigh.castShadow = true;
+    thigh.receiveShadow = true;
 
     const shin = new THREE.Mesh(shinGeo, denimMat);
     shin.position.set(side * 0.165, 0.28, -0.45);
     shin.rotation.x = 0.12;
     shin.castShadow = true;
+    shin.receiveShadow = true;
 
     const boot = new THREE.Mesh(bootGeo, bootMat);
     boot.position.set(side * 0.175, 0.05, -0.54);
@@ -245,16 +274,22 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
   const lBase = new THREE.Mesh(lBaseGeo, brassMat);
   lBase.position.y = 0.04;
+  lBase.castShadow = true;
+  lBase.receiveShadow = true;
   const lGlass = new THREE.Mesh(lGlassGeo, lGlassMat);
   lGlass.position.y = 0.18;
   const lCap = new THREE.Mesh(lCapGeo, brassMat);
   lCap.position.y = 0.33;
+  lCap.castShadow = true;
   const lFlame = new THREE.Mesh(lFlameGeo, lanternFlameMat);
   lFlame.position.y = 0.16;
   lanternGroup.add(lBase, lGlass, lCap, lFlame);
 
   const lanternLight = new THREE.PointLight(0xffa94d, 0.0, 14, 1.8);
   lanternLight.position.set(0, 0.22, 0);
+  lanternLight.castShadow = true;
+  lanternLight.shadow.mapSize.set(512, 512);
+  lanternLight.shadow.bias = -0.0015;
   lanternGroup.add(lanternLight);
   group.add(lanternGroup);
 
@@ -269,90 +304,298 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   const tbBody = new THREE.Mesh(tbBodyGeo, darkTimberMat);
   tbBody.position.y = 0.11;
   tbBody.castShadow = true;
+  tbBody.receiveShadow = true;
   const tbLid = new THREE.Mesh(tbLidGeo, pierWoodMat);
   tbLid.position.y = 0.24;
+  tbLid.castShadow = true;
+  tbLid.receiveShadow = true;
   const tbLatch = new THREE.Mesh(tbLatchGeo, brassMat);
   tbLatch.position.set(0, 0.21, -0.13);
-  tackleBox.add(tbBody, tbLid, tbLatch);
+  tbLatch.castShadow = true;
+  const boxShadow = new THREE.Mesh(boxShadowGeo, contactShadowMat);
+  boxShadow.position.y = 0.004;
+  tackleBox.add(tbBody, tbLid, tbLatch, boxShadow);
   group.add(tackleBox);
 
-  // 5. Articulated First-Person 3D Fishing Rod & Both Fisherman Hands in Foreground
+  // 5. Realistic Anatomical First-Person Fisherman Forearms & Both Hands + Rod
   const rodRoot = new THREE.Group();
   rodRoot.position.set(0.24, pierTopY + 0.90, 1.82);
   group.add(rodRoot);
 
-  // Right Forearm, Cuff, Hand, Thumb & Fingers gripping rod cork handle
-  const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x7e4a2b, roughness: 0.85 });
-  const cuffMat = new THREE.MeshStandardMaterial({ color: 0x5d351e, roughness: 0.88 });
-  const skinMat = new THREE.MeshStandardMaterial({ color: 0xc99674, roughness: 0.72 });
-  const forearmGeo = new THREE.CapsuleGeometry(0.048, 0.34, 6, 10);
+  const sleeveMat = new THREE.MeshStandardMaterial({
+    map: textures.sleeveMap,
+    color: 0xffffff,
+    roughness: 0.88,
+    metalness: 0.02,
+  });
+  const cuffMat = new THREE.MeshStandardMaterial({
+    map: textures.sleeveMap,
+    color: 0xb8967d,
+    roughness: 0.9,
+  });
+  const skinMat = new THREE.MeshStandardMaterial({
+    map: textures.skinMap,
+    bumpMap: textures.skinBumpMap,
+    bumpScale: 0.0045,
+    color: 0xffffff,
+    roughness: 0.56,
+    metalness: 0.02,
+  });
+  const knuckleSkinMat = new THREE.MeshStandardMaterial({
+    map: textures.skinMap,
+    bumpMap: textures.skinBumpMap,
+    bumpScale: 0.004,
+    color: 0xf2cfc0,
+    roughness: 0.54,
+  });
+  const nailMat = new THREE.MeshStandardMaterial({
+    color: 0xedd6c8,
+    roughness: 0.28,
+    metalness: 0.08,
+  });
+  const watchLeatherMat = new THREE.MeshStandardMaterial({ color: 0x352216, roughness: 0.78 });
+  const watchDialMat = new THREE.MeshStandardMaterial({ color: 0xf4efe4, roughness: 0.3 });
+
+  const forearmGeo = new THREE.CylinderGeometry(0.038, 0.055, 0.36, 12);
   forearmGeo.rotateX(Math.PI / 2);
-  const cuffGeo = new THREE.CylinderGeometry(0.050, 0.052, 0.05, 10);
+  const cuffGeo = new THREE.CylinderGeometry(0.043, 0.046, 0.055, 12);
   cuffGeo.rotateX(Math.PI / 2);
-  const wristGeo = new THREE.CylinderGeometry(0.036, 0.040, 0.07, 10);
+  const cuffRimGeo = new THREE.TorusGeometry(0.043, 0.007, 6, 14);
+  const wristGeo = new THREE.CylinderGeometry(0.031, 0.036, 0.075, 12);
   wristGeo.rotateX(Math.PI / 2);
-  const handGeo = new THREE.SphereGeometry(0.046, 10, 8);
-  handGeo.scale(0.88, 0.82, 1.25);
-  const fingerGeo = new THREE.CapsuleGeometry(0.011, 0.038, 4, 6);
-  const thumbGeo = new THREE.CapsuleGeometry(0.012, 0.034, 4, 6);
-  disposables.push(sleeveMat, cuffMat, skinMat, forearmGeo, cuffGeo, wristGeo, handGeo, fingerGeo, thumbGeo);
+  const wristBoneGeo = new THREE.SphereGeometry(0.011, 8, 8);
+  const palmCoreGeo = new THREE.BoxGeometry(0.076, 0.028, 0.088);
+  const palmDorsumGeo = new THREE.SphereGeometry(0.042, 12, 10);
+  palmDorsumGeo.scale(0.95, 0.42, 1.08);
+  const thenarGeo = new THREE.SphereGeometry(0.024, 10, 8);
+  thenarGeo.scale(0.85, 0.68, 1.25);
+  const knuckleGeo = new THREE.SphereGeometry(0.0105, 8, 8);
+  const phalanxProxGeo = new THREE.CapsuleGeometry(0.0092, 0.024, 5, 8);
+  phalanxProxGeo.rotateX(Math.PI / 2);
+  phalanxProxGeo.translate(0, 0, -0.016);
+  const phalanxMidGeo = new THREE.CapsuleGeometry(0.0080, 0.018, 5, 8);
+  phalanxMidGeo.rotateX(Math.PI / 2);
+  phalanxMidGeo.translate(0, 0, -0.012);
+  const phalanxDistGeo = new THREE.CapsuleGeometry(0.0070, 0.014, 5, 8);
+  phalanxDistGeo.rotateX(Math.PI / 2);
+  phalanxDistGeo.translate(0, 0, -0.010);
+  const nailGeo = new THREE.BoxGeometry(0.010, 0.003, 0.011);
+  const thumbProxGeo = new THREE.CapsuleGeometry(0.0108, 0.022, 5, 8);
+  thumbProxGeo.rotateX(Math.PI / 2);
+  thumbProxGeo.translate(0, 0, -0.015);
+  const thumbDistGeo = new THREE.CapsuleGeometry(0.0092, 0.016, 5, 8);
+  thumbDistGeo.rotateX(Math.PI / 2);
+  thumbDistGeo.translate(0, 0, -0.012);
+  const watchStrapGeo = new THREE.TorusGeometry(0.035, 0.006, 6, 14);
+  const watchCaseGeo = new THREE.CylinderGeometry(0.018, 0.018, 0.008, 14);
+  const watchDialGeo = new THREE.CircleGeometry(0.014, 14);
+  watchDialGeo.rotateX(-Math.PI / 2);
 
-  const rightArmHolder = new THREE.Group();
-  rightArmHolder.position.set(0.02, -0.02, 0.02);
-  const rightForearm = new THREE.Mesh(forearmGeo, sleeveMat);
-  rightForearm.position.set(0.03, -0.04, 0.25);
-  rightForearm.rotation.set(0.18, 0.14, 0);
-  rightForearm.castShadow = true;
-  const rightCuff = new THREE.Mesh(cuffGeo, cuffMat);
-  rightCuff.position.set(0.01, -0.01, 0.09);
-  const rightWrist = new THREE.Mesh(wristGeo, skinMat);
-  rightWrist.position.set(0.005, -0.005, 0.045);
-  const rightHand = new THREE.Mesh(handGeo, skinMat);
-  rightHand.position.set(0, 0.0, 0.0);
-  rightHand.castShadow = true;
-  rightArmHolder.add(rightForearm, rightCuff, rightWrist, rightHand);
+  disposables.push(
+    sleeveMat,
+    cuffMat,
+    skinMat,
+    knuckleSkinMat,
+    nailMat,
+    watchLeatherMat,
+    watchDialMat,
+    forearmGeo,
+    cuffGeo,
+    cuffRimGeo,
+    wristGeo,
+    wristBoneGeo,
+    palmCoreGeo,
+    palmDorsumGeo,
+    thenarGeo,
+    knuckleGeo,
+    phalanxProxGeo,
+    phalanxMidGeo,
+    phalanxDistGeo,
+    nailGeo,
+    thumbProxGeo,
+    thumbDistGeo,
+    watchStrapGeo,
+    watchCaseGeo,
+    watchDialGeo,
+  );
 
-  for (let f = 0; f < 4; f++) {
-    const finger = new THREE.Mesh(fingerGeo, skinMat);
-    finger.position.set(-0.022, -0.008, -0.03 + f * 0.018);
-    finger.rotation.z = Math.PI * 0.42;
-    rightArmHolder.add(finger);
+  type FingerRig = { prox: THREE.Group; mid: THREE.Group; dist: THREE.Group };
+
+  function createAnatomicalHand(
+    handSide: 'right' | 'left',
+    fingerCurl: [number, number, number],
+  ): { root: THREE.Group; wristGroup: THREE.Group; fingers: FingerRig[]; thumbProx: THREE.Group; thumbDist: THREE.Group } {
+    const mirror = handSide === 'right' ? 1 : -1;
+    const root = new THREE.Group();
+
+    const forearm = new THREE.Mesh(forearmGeo, sleeveMat);
+    forearm.position.set(0, 0, 0.24);
+    forearm.castShadow = true;
+    forearm.receiveShadow = true;
+
+    const cuff = new THREE.Mesh(cuffGeo, cuffMat);
+    cuff.position.set(0, 0, 0.075);
+    cuff.castShadow = true;
+    cuff.receiveShadow = true;
+
+    const cuffRim = new THREE.Mesh(cuffRimGeo, cuffMat);
+    cuffRim.position.set(0, 0, 0.048);
+    cuffRim.castShadow = true;
+
+    const wristGroup = new THREE.Group();
+    wristGroup.position.set(0, 0, 0.025);
+
+    const wrist = new THREE.Mesh(wristGeo, skinMat);
+    wrist.position.set(0, 0, 0.018);
+    wrist.scale.set(1.06, 0.78, 1.0);
+    wrist.castShadow = true;
+    wrist.receiveShadow = true;
+
+    // Ulnar bone bump on outer wrist
+    const wristBone = new THREE.Mesh(wristBoneGeo, knuckleSkinMat);
+    wristBone.position.set(mirror * 0.026, 0.010, 0.015);
+    wristBone.castShadow = true;
+
+    // Sculpted Palm + Back of Hand + Muscle Pads
+    const handAnchor = new THREE.Group();
+    handAnchor.position.set(0, 0, -0.045);
+
+    const palmCore = new THREE.Mesh(palmCoreGeo, skinMat);
+    palmCore.castShadow = true;
+    palmCore.receiveShadow = true;
+
+    const palmDorsum = new THREE.Mesh(palmDorsumGeo, skinMat);
+    palmDorsum.position.set(0, 0.008, 0.002);
+    palmDorsum.castShadow = true;
+    palmDorsum.receiveShadow = true;
+
+    // Thenar (thumb base) & hypothenar (outer palm) muscle cushions
+    const thenar = new THREE.Mesh(thenarGeo, skinMat);
+    thenar.position.set(mirror * -0.026, -0.005, 0.014);
+    thenar.rotation.y = mirror * 0.35;
+    thenar.castShadow = true;
+    thenar.receiveShadow = true;
+
+    const hypothenar = new THREE.Mesh(thenarGeo, skinMat);
+    hypothenar.scale.set(0.75, 0.65, 1.15);
+    hypothenar.position.set(mirror * 0.028, -0.004, 0.016);
+    hypothenar.castShadow = true;
+    hypothenar.receiveShadow = true;
+
+    handAnchor.add(palmCore, palmDorsum, thenar, hypothenar);
+
+    // 4 Articulated 3-segment fingers (Index -> Pinky across metacarpal ridge)
+    const fingerSpecs = [
+      { xOff: mirror * -0.027, lenScale: 0.94, splay: mirror * 0.05 },
+      { xOff: mirror * -0.009, lenScale: 1.04, splay: 0.0 },
+      { xOff: mirror * 0.009, lenScale: 0.96, splay: mirror * -0.04 },
+      { xOff: mirror * 0.026, lenScale: 0.78, splay: mirror * -0.09 },
+    ];
+    const fingers: FingerRig[] = [];
+
+    for (const spec of fingerSpecs) {
+      const knuckle = new THREE.Mesh(knuckleGeo, knuckleSkinMat);
+      knuckle.position.set(spec.xOff, 0.011, -0.042);
+      knuckle.castShadow = true;
+      knuckle.receiveShadow = true;
+      handAnchor.add(knuckle);
+
+      const prox = new THREE.Group();
+      prox.position.set(spec.xOff, 0.004, -0.043);
+      prox.rotation.y = spec.splay;
+      prox.rotation.x = -fingerCurl[0];
+      prox.scale.setScalar(spec.lenScale);
+
+      const proxMesh = new THREE.Mesh(phalanxProxGeo, skinMat);
+      proxMesh.castShadow = true;
+      proxMesh.receiveShadow = true;
+      prox.add(proxMesh);
+
+      const mid = new THREE.Group();
+      mid.position.set(0, 0, -0.032);
+      mid.rotation.x = -fingerCurl[1];
+      const midMesh = new THREE.Mesh(phalanxMidGeo, skinMat);
+      midMesh.castShadow = true;
+      midMesh.receiveShadow = true;
+      mid.add(midMesh);
+
+      const dist = new THREE.Group();
+      dist.position.set(0, 0, -0.024);
+      dist.rotation.x = -fingerCurl[2];
+      const distMesh = new THREE.Mesh(phalanxDistGeo, skinMat);
+      distMesh.castShadow = true;
+      distMesh.receiveShadow = true;
+
+      const nail = new THREE.Mesh(nailGeo, nailMat);
+      nail.position.set(0, 0.0065, -0.013);
+      dist.add(distMesh, nail);
+
+      mid.add(dist);
+      prox.add(mid);
+      handAnchor.add(prox);
+      fingers.push({ prox, mid, dist });
+    }
+
+    // 2-Segment Articulated Opposable Thumb
+    const thumbProx = new THREE.Group();
+    thumbProx.position.set(mirror * -0.038, 0.002, 0.004);
+    thumbProx.rotation.set(-0.22, mirror * 0.58, mirror * -0.35);
+    const thumbProxMesh = new THREE.Mesh(thumbProxGeo, skinMat);
+    thumbProxMesh.castShadow = true;
+    thumbProxMesh.receiveShadow = true;
+
+    const thumbDist = new THREE.Group();
+    thumbDist.position.set(0, 0, -0.028);
+    thumbDist.rotation.x = -0.38;
+    const thumbDistMesh = new THREE.Mesh(thumbDistGeo, skinMat);
+    thumbDistMesh.castShadow = true;
+    thumbDistMesh.receiveShadow = true;
+    const thumbNail = new THREE.Mesh(nailGeo, nailMat);
+    thumbNail.scale.set(1.15, 1.0, 1.1);
+    thumbNail.position.set(0, 0.0085, -0.014);
+    thumbDist.add(thumbDistMesh, thumbNail);
+
+    thumbProx.add(thumbProxMesh, thumbDist);
+    handAnchor.add(thumbProx);
+
+    wristGroup.add(wrist, wristBone, handAnchor);
+    root.add(forearm, cuff, cuffRim, wristGroup);
+
+    return { root, wristGroup, fingers, thumbProx, thumbDist };
   }
-  const rightThumb = new THREE.Mesh(thumbGeo, skinMat);
-  rightThumb.position.set(-0.024, 0.024, -0.01);
-  rightThumb.rotation.set(0.4, 0, -0.35);
-  rightArmHolder.add(rightThumb);
-  rodRoot.add(rightArmHolder);
 
-  // Left Forearm & Hand (visibly resting on left foreground near rod/armrest and moving to crank reel when reeling!)
+  // Right Forearm & Anatomical Hand gripping the cork rod handle
+  const rightHandRig = createAnatomicalHand('right', [1.02, 1.15, 0.85]);
+  // Orient right hand naturally inward (palm facing left/down around cork grip)
+  rightHandRig.root.position.set(0.022, -0.012, 0.055);
+  rightHandRig.root.rotation.set(0.08, 0.10, 1.25);
+  rightHandRig.thumbProx.rotation.set(-0.42, 0.45, -0.55);
+  rightHandRig.thumbDist.rotation.x = -0.52;
+  rodRoot.add(rightHandRig.root);
+
+  // Left Forearm & Anatomical Hand (resting clearly in view on left armrest + leather/brass watch, curling onto crank when reeling)
   const leftArmPivot = new THREE.Group();
-  leftArmPivot.position.set(-0.30, pierTopY + 0.78, 2.22);
-  const leftSleeve = new THREE.Mesh(forearmGeo, sleeveMat);
-  leftSleeve.position.set(0.04, 0.02, -0.18);
-  leftSleeve.rotation.set(-0.14, -0.20, 0);
-  leftSleeve.castShadow = true;
-  const leftCuff = new THREE.Mesh(cuffGeo, cuffMat);
-  leftCuff.position.set(0.08, 0.045, -0.34);
-  leftCuff.rotation.y = -0.20;
-  const leftHandGroup = new THREE.Group();
-  leftHandGroup.position.set(0.10, 0.055, -0.40);
-  const leftWrist = new THREE.Mesh(wristGeo, skinMat);
-  leftWrist.position.set(0, 0, 0.03);
-  const leftPalm = new THREE.Mesh(handGeo, skinMat);
-  leftPalm.scale.set(0.95, 0.78, 1.15);
-  leftPalm.castShadow = true;
-  leftHandGroup.add(leftWrist, leftPalm);
-  for (let f = 0; f < 4; f++) {
-    const lf = new THREE.Mesh(fingerGeo, skinMat);
-    lf.position.set(0.022, -0.006, -0.025 + f * 0.017);
-    lf.rotation.z = -Math.PI * 0.42;
-    leftHandGroup.add(lf);
-  }
-  const leftThumb = new THREE.Mesh(thumbGeo, skinMat);
-  leftThumb.position.set(0.024, 0.022, -0.01);
-  leftThumb.rotation.set(0.35, 0, 0.35);
-  leftHandGroup.add(leftThumb);
-  leftArmPivot.add(leftSleeve, leftCuff, leftHandGroup);
+  leftArmPivot.position.set(-0.34, pierTopY + 0.78, 2.22);
+
+  const leftHandRig = createAnatomicalHand('left', [0.38, 0.46, 0.34]);
+  leftHandRig.root.position.set(0.08, 0.04, -0.36);
+  leftHandRig.root.rotation.set(-0.08, -0.18, -0.18);
+
+  // Brass & Leather Field Wristwatch on Left Wrist
+  const watchGroup = new THREE.Group();
+  watchGroup.position.set(0, 0.004, 0.024);
+  const watchStrap = new THREE.Mesh(watchStrapGeo, watchLeatherMat);
+  watchStrap.scale.set(1.06, 0.80, 1.0);
+  watchStrap.castShadow = true;
+  const watchCase = new THREE.Mesh(watchCaseGeo, brassMat);
+  watchCase.position.set(0, 0.029, 0);
+  watchCase.castShadow = true;
+  const watchDial = new THREE.Mesh(watchDialGeo, watchDialMat);
+  watchDial.position.set(0, 0.034, 0);
+  watchGroup.add(watchStrap, watchCase, watchDial);
+  leftHandRig.wristGroup.add(watchGroup);
+
+  leftArmPivot.add(leftHandRig.root);
   group.add(leftArmPivot);
 
   // Cork Grip & Brass Reel Seat
@@ -545,17 +788,27 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
       if (reeling) {
         reelCrankPivot.rotation.x -= 0.26;
-        // Left hand reaches smoothly over toward the spinning reel crank & orbits with it
-        leftArmPivot.rotation.y = THREE.MathUtils.lerp(leftArmPivot.rotation.y, -0.58, 0.18);
+        // Left hand reaches smoothly over toward the spinning reel crank, rotates wrist & curls fingers onto knob
+        leftArmPivot.rotation.y = THREE.MathUtils.lerp(leftArmPivot.rotation.y, -0.54, 0.18);
         leftArmPivot.rotation.x = THREE.MathUtils.lerp(
           leftArmPivot.rotation.x,
           0.16 + Math.sin(reelCrankPivot.rotation.x) * 0.06,
           0.25,
         );
+        leftHandRig.root.rotation.z = THREE.MathUtils.lerp(leftHandRig.root.rotation.z, -1.05, 0.18);
+        for (const f of leftHandRig.fingers) {
+          f.prox.rotation.x = THREE.MathUtils.lerp(f.prox.rotation.x, -0.95, 0.2);
+          f.mid.rotation.x = THREE.MathUtils.lerp(f.mid.rotation.x, -1.05, 0.2);
+        }
       } else {
-        // Left hand rests naturally in view above the left chair armrest
-        leftArmPivot.rotation.y = THREE.MathUtils.lerp(leftArmPivot.rotation.y, -0.04 + rodYawOffset * 0.18, 0.12);
-        leftArmPivot.rotation.x = THREE.MathUtils.lerp(leftArmPivot.rotation.x, 0.02 + breath * 0.7, 0.12);
+        // Left hand rests naturally in relaxed open posture above the left chair armrest
+        leftArmPivot.rotation.y = THREE.MathUtils.lerp(leftArmPivot.rotation.y, -0.02 + rodYawOffset * 0.18, 0.12);
+        leftArmPivot.rotation.x = THREE.MathUtils.lerp(leftArmPivot.rotation.x, 0.01 + breath * 0.7, 0.12);
+        leftHandRig.root.rotation.z = THREE.MathUtils.lerp(leftHandRig.root.rotation.z, -0.18, 0.12);
+        for (const f of leftHandRig.fingers) {
+          f.prox.rotation.x = THREE.MathUtils.lerp(f.prox.rotation.x, -0.38, 0.12);
+          f.mid.rotation.x = THREE.MathUtils.lerp(f.mid.rotation.x, -0.46, 0.12);
+        }
       }
 
       // Lantern & bobber night illumination

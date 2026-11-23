@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { FishingHUD } from './components/FishingHUD';
 import { FishingSceneManager } from './three/FishingSceneManager';
-import type { FishingHudState } from './types/fishing';
+import {
+  generateDailyChallenges,
+  getTodayDateKey,
+  type FishingHudState,
+} from './types/fishing';
+
+const INITIAL_DATE_KEY = getTodayDateKey();
 
 const INITIAL_HUD: FishingHudState = {
   phase: 'idle',
@@ -47,6 +53,12 @@ const INITIAL_HUD: FishingHudState = {
     unlockedHooks: ['light_bronze', 'barbed_steel'],
   },
   newlyUnlockedNotice: null,
+  dailyChallenges: {
+    dateKey: INITIAL_DATE_KEY,
+    challenges: generateDailyChallenges(INITIAL_DATE_KEY, ['worm', 'fly']),
+    completedTotal: 0,
+  },
+  challengeCompletedNotice: null,
 };
 
 export default function App() {

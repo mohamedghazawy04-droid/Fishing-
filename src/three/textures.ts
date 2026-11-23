@@ -5,8 +5,14 @@ export interface ProceduralTextureSet {
   woodBumpMap: THREE.CanvasTexture;
   lakebedMap: THREE.CanvasTexture;
   meadowDetailMap: THREE.CanvasTexture;
+  terrainBumpMap: THREE.CanvasTexture;
   contactShadowMap: THREE.CanvasTexture;
   barkMap: THREE.CanvasTexture;
+  barkBumpMap: THREE.CanvasTexture;
+  pineFoliageMap: THREE.CanvasTexture;
+  skinMap: THREE.CanvasTexture;
+  skinBumpMap: THREE.CanvasTexture;
+  sleeveMap: THREE.CanvasTexture;
   dispose: () => void;
 }
 
@@ -30,7 +36,6 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     const shade = (Math.random() - 0.5) * 18;
     wCtx.fillStyle = `rgb(${124 + shade}, ${88 + shade * 0.8}, ${56 + shade * 0.5})`;
     wCtx.fillRect(0, y0 + 2, 512, plankH - 4);
-    // Grain streaks
     for (let g = 0; g < 65; g++) {
       const gy = y0 + 4 + Math.random() * (plankH - 8);
       wCtx.strokeStyle =
@@ -48,7 +53,6 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       );
       wCtx.stroke();
     }
-    // Plank gap shadow
     wCtx.fillStyle = '#2d1c10';
     wCtx.fillRect(0, y0, 512, 3);
   }
@@ -107,29 +111,66 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   const [meadowCanvas, mCtx] = createCanvas(512, 512);
   mCtx.fillStyle = '#dcdcdc';
   mCtx.fillRect(0, 0, 512, 512);
-  for (let i = 0; i < 4500; i++) {
+  for (let i = 0; i < 5500; i++) {
     const x = Math.random() * 512;
     const y = Math.random() * 512;
-    const v = 185 + Math.floor(Math.random() * 65);
+    const v = 175 + Math.floor(Math.random() * 75);
     mCtx.fillStyle = `rgb(${v}, ${v + 4}, ${v - 4})`;
-    mCtx.fillRect(x, y, 2 + Math.random() * 3, 2 + Math.random() * 4);
+    mCtx.fillRect(x, y, 2 + Math.random() * 3.5, 2 + Math.random() * 4.5);
   }
   const meadowDetailMap = new THREE.CanvasTexture(meadowCanvas);
   meadowDetailMap.colorSpace = THREE.SRGBColorSpace;
   meadowDetailMap.wrapS = THREE.RepeatWrapping;
   meadowDetailMap.wrapT = THREE.RepeatWrapping;
-  meadowDetailMap.repeat.set(32, 32);
+  meadowDetailMap.repeat.set(42, 42);
   meadowDetailMap.anisotropy = maxAnisotropy;
 
-  // 5. Pine bark texture (SRGB)
+  // 4b. High-frequency terrain & rock micro-relief bump map (linear)
+  const [tBumpCanvas, tbCtx] = createCanvas(512, 512);
+  tbCtx.fillStyle = '#808080';
+  tbCtx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 5000; i++) {
+    const x = Math.random() * 512;
+    const y = Math.random() * 512;
+    const r = 1 + Math.random() * 5.5;
+    const shade = 75 + Math.floor(Math.random() * 115);
+    tbCtx.fillStyle = `rgba(${shade}, ${shade}, ${shade}, 0.35)`;
+    tbCtx.beginPath();
+    tbCtx.ellipse(x, y, r * 1.4, r * 0.7, Math.random() * Math.PI, 0, Math.PI * 2);
+    tbCtx.fill();
+  }
+  for (let s = 0; s < 140; s++) {
+    const sy = Math.random() * 512;
+    tbCtx.strokeStyle = s % 2 === 0 ? 'rgba(40,40,40,0.28)' : 'rgba(220,220,220,0.22)';
+    tbCtx.lineWidth = 1 + Math.random() * 2.2;
+    tbCtx.beginPath();
+    tbCtx.moveTo(0, sy);
+    tbCtx.bezierCurveTo(170, sy + (Math.random() - 0.5) * 18, 340, sy + (Math.random() - 0.5) * 18, 512, sy);
+    tbCtx.stroke();
+  }
+  const terrainBumpMap = new THREE.CanvasTexture(tBumpCanvas);
+  terrainBumpMap.wrapS = THREE.RepeatWrapping;
+  terrainBumpMap.wrapT = THREE.RepeatWrapping;
+  terrainBumpMap.repeat.set(48, 48);
+  terrainBumpMap.anisotropy = maxAnisotropy;
+
+  // 5. Furrowed alpine pine bark texture + bump (SRGB + linear)
   const [barkCanvas, bkCtx] = createCanvas(256, 256);
-  bkCtx.fillStyle = '#4a3525';
+  const [barkBumpCanvas, bkbCtx] = createCanvas(256, 256);
+  bkCtx.fillStyle = '#483324';
   bkCtx.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 180; i++) {
+  bkbCtx.fillStyle = '#787878';
+  bkbCtx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 280; i++) {
     const x = Math.random() * 256;
     const y = Math.random() * 256;
-    bkCtx.fillStyle = i % 2 === 0 ? '#312116' : '#634834';
-    bkCtx.fillRect(x, y, 3 + Math.random() * 5, 16 + Math.random() * 34);
+    const w = 2.5 + Math.random() * 5.5;
+    const h = 14 + Math.random() * 36;
+    const dark = i % 2 === 0;
+    bkCtx.fillStyle = dark ? '#2a1c13' : '#654935';
+    bkCtx.fillRect(x, y, w, h);
+    bkbCtx.fillStyle = dark ? '#343434' : '#cccccc';
+    bkbCtx.fillRect(x, y, w, h);
   }
   const barkMap = new THREE.CanvasTexture(barkCanvas);
   barkMap.colorSpace = THREE.SRGBColorSpace;
@@ -137,7 +178,100 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   barkMap.wrapT = THREE.RepeatWrapping;
   barkMap.anisotropy = maxAnisotropy;
 
-  // 6. Soft radial contact shadow (SRGB)
+  const barkBumpMap = new THREE.CanvasTexture(barkBumpCanvas);
+  barkBumpMap.wrapS = THREE.RepeatWrapping;
+  barkBumpMap.wrapT = THREE.RepeatWrapping;
+  barkBumpMap.anisotropy = maxAnisotropy;
+
+  // 6. Layered Pine Needle Cluster Foliage Texture (SRGB)
+  const [pineCanvas, pCtx] = createCanvas(512, 512);
+  pCtx.fillStyle = '#8b9d88';
+  pCtx.fillRect(0, 0, 512, 512);
+  for (let layer = 0; layer < 2600; layer++) {
+    const cx = Math.random() * 512;
+    const cy = Math.random() * 512;
+    const angle = Math.random() * Math.PI * 2;
+    const len = 8 + Math.random() * 14;
+    const tone = layer < 900 ? 145 : layer < 1800 ? 195 : 235;
+    pCtx.strokeStyle = `rgba(${Math.round(tone * 0.86)}, ${tone}, ${Math.round(tone * 0.82)}, 0.72)`;
+    pCtx.lineWidth = 1.4 + Math.random() * 1.3;
+    pCtx.beginPath();
+    pCtx.moveTo(cx, cy);
+    pCtx.lineTo(cx + Math.cos(angle) * len, cy + Math.sin(angle) * len);
+    pCtx.stroke();
+  }
+  const pineFoliageMap = new THREE.CanvasTexture(pineCanvas);
+  pineFoliageMap.colorSpace = THREE.SRGBColorSpace;
+  pineFoliageMap.wrapS = THREE.RepeatWrapping;
+  pineFoliageMap.wrapT = THREE.RepeatWrapping;
+  pineFoliageMap.repeat.set(3, 2);
+  pineFoliageMap.anisotropy = maxAnisotropy;
+
+  // 7. Anatomical Skin Texture + Pore Bump Map (SRGB + linear)
+  const [skinCanvas, skCtx] = createCanvas(256, 256);
+  const [skinBumpCanvas, skbCtx] = createCanvas(256, 256);
+  skCtx.fillStyle = '#cf9775';
+  skCtx.fillRect(0, 0, 256, 256);
+  skbCtx.fillStyle = '#808080';
+  skbCtx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2400; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const warm = i % 3 === 0;
+    skCtx.fillStyle = warm ? 'rgba(196, 126, 98, 0.16)' : 'rgba(225, 178, 146, 0.14)';
+    skCtx.fillRect(x, y, 2 + Math.random() * 3, 2 + Math.random() * 3);
+    const bShade = i % 2 === 0 ? 112 : 144;
+    skbCtx.fillStyle = `rgba(${bShade}, ${bShade}, ${bShade}, 0.25)`;
+    skbCtx.fillRect(x, y, 1.5, 1.5);
+  }
+  // Subtle skin creases across joints
+  for (let k = 0; k < 26; k++) {
+    const ky = 20 + k * 8.5 + (Math.random() - 0.5) * 3;
+    skCtx.strokeStyle = 'rgba(150, 92, 68, 0.18)';
+    skCtx.lineWidth = 1;
+    skCtx.beginPath();
+    skCtx.moveTo(0, ky);
+    skCtx.bezierCurveTo(85, ky + 2, 170, ky - 2, 256, ky);
+    skCtx.stroke();
+
+    skbCtx.strokeStyle = 'rgba(70, 70, 70, 0.28)';
+    skbCtx.lineWidth = 1;
+    skbCtx.beginPath();
+    skbCtx.moveTo(0, ky);
+    skbCtx.lineTo(256, ky);
+    skbCtx.stroke();
+  }
+  const skinMap = new THREE.CanvasTexture(skinCanvas);
+  skinMap.colorSpace = THREE.SRGBColorSpace;
+  skinMap.wrapS = THREE.RepeatWrapping;
+  skinMap.wrapT = THREE.RepeatWrapping;
+  skinMap.anisotropy = maxAnisotropy;
+
+  const skinBumpMap = new THREE.CanvasTexture(skinBumpCanvas);
+  skinBumpMap.wrapS = THREE.RepeatWrapping;
+  skinBumpMap.wrapT = THREE.RepeatWrapping;
+  skinBumpMap.anisotropy = maxAnisotropy;
+
+  // 8. Woven Rugged Outdoor Jacket Sleeve Texture (SRGB)
+  const [sleeveCanvas, slCtx] = createCanvas(256, 256);
+  slCtx.fillStyle = '#6c462d';
+  slCtx.fillRect(0, 0, 256, 256);
+  for (let y = 0; y < 256; y += 4) {
+    slCtx.fillStyle = y % 8 === 0 ? 'rgba(42, 24, 14, 0.24)' : 'rgba(145, 98, 66, 0.14)';
+    slCtx.fillRect(0, y, 256, 2);
+  }
+  for (let x = 0; x < 256; x += 4) {
+    slCtx.fillStyle = x % 8 === 0 ? 'rgba(38, 22, 12, 0.18)' : 'rgba(155, 108, 72, 0.12)';
+    slCtx.fillRect(x, 0, 2, 256);
+  }
+  const sleeveMap = new THREE.CanvasTexture(sleeveCanvas);
+  sleeveMap.colorSpace = THREE.SRGBColorSpace;
+  sleeveMap.wrapS = THREE.RepeatWrapping;
+  sleeveMap.wrapT = THREE.RepeatWrapping;
+  sleeveMap.repeat.set(3, 3);
+  sleeveMap.anisotropy = maxAnisotropy;
+
+  // 9. Soft radial contact shadow (SRGB)
   const [shadowCanvas, sCtx] = createCanvas(128, 128);
   const grad = sCtx.createRadialGradient(64, 64, 6, 64, 64, 60);
   grad.addColorStop(0, 'rgba(8, 14, 16, 0.72)');
@@ -153,15 +287,27 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     woodBumpMap,
     lakebedMap,
     meadowDetailMap,
+    terrainBumpMap,
     contactShadowMap,
     barkMap,
+    barkBumpMap,
+    pineFoliageMap,
+    skinMap,
+    skinBumpMap,
+    sleeveMap,
     dispose: () => {
       woodPlankMap.dispose();
       woodBumpMap.dispose();
       lakebedMap.dispose();
       meadowDetailMap.dispose();
+      terrainBumpMap.dispose();
       contactShadowMap.dispose();
       barkMap.dispose();
+      barkBumpMap.dispose();
+      pineFoliageMap.dispose();
+      skinMap.dispose();
+      skinBumpMap.dispose();
+      sleeveMap.dispose();
     },
   };
 }

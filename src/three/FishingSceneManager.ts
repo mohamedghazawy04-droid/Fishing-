@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { NatureSoundEngine } from '../audio/soundEngine';
 import {
   BAIT_CATALOG,
@@ -10,11 +14,14 @@ import {
   classifyLakeZone,
   computeLevelFromXp,
   formatHourToClock,
+  generateDailyChallenges,
   getPresetFromHour,
   getSkillUpgradeCost,
+  getTodayDateKey,
   type AmbienceMix,
   type BaitId,
   type CaughtFishRecord,
+  type DailyChallengesState,
   type FishingHudState,
   type FishingPhase,
   type HookId,
@@ -29,8 +36,10 @@ import { createEnvironment, groundHeightAt } from './environment';
 import { createFishSystem, type ActiveFish } from './fishSystem';
 import { createProceduralTextures } from './textures';
 import { createCrystalWater } from './water';
+import { createWildlifeSystem } from './wildlife';
 
 const STORAGE_KEY = 'serene_valley_angler_save_v1';
+const DAILY_STORAGE_KEY = 'serene_valley_daily_challenges_v1';
 
 function createInitialProgression(): PlayerProgression {
   return {
@@ -53,7 +62,6 @@ function loadSavedProgression(): PlayerProgression {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return createInitialProgression();
     const parsed = JSON.parse(raw) as Partial<PlayerProgression>;
-    const base = createInitialProgression();
     const totalXp = typeof parsed.totalXp === 'number' ? Math.max(0, parsed.totalXp) : 0;
     const level = computeLevelFromXp(totalXp);
     const unlockedBaits = BAIT_CATALOG.filter((b) => b.unlockLevel <= level).map((b) => b.id);
@@ -84,6 +92,48 @@ function saveProgression(prog: PlayerProgression): void {
   }
 }
 
+function loadDailyChallenges(unlockedBaits: BaitId[]): DailyChallengesState {
+  const todayKey = getTodayDateKey();
+  try {
+    const raw = localStorage.getItem(DAILY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<DailyChallengesState>;
+      const prevCompletedTotal = typeof parsed.completedTotal === 'number' ? Math.max(0, parsed.completedTotal) : 0;
+      if (parsed.dateKey === todayKey && Array.isArray(parsed.challenges) && parsed.challenges.length === 3) {
+        return {
+          dateKey: todayKey,
+          challenges: parsed.challenges,
+          completedTotal: prevCompletedTotal,
+        };
+      }
+      const fresh: DailyChallengesState = {
+        dateKey: todayKey,
+        challenges: generateDailyChallenges(todayKey, unlockedBaits),
+        completedTotal: prevCompletedTotal,
+      };
+      saveDailyChallenges(fresh);
+      return fresh;
+    }
+  } catch {
+    // Fall back to fresh challenges
+  }
+  const initial: DailyChallengesState = {
+    dateKey: todayKey,
+    challenges: generateDailyChallenges(todayKey, unlockedBaits),
+    completedTotal: 0,
+  };
+  saveDailyChallenges(initial);
+  return initial;
+}
+
+function saveDailyChallenges(state: DailyChallengesState): void {
+  try {
+    localStorage.setItem(DAILY_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 export class FishingSceneManager {
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
@@ -91,12 +141,15 @@ export class FishingSceneManager {
   private camera: THREE.PerspectiveCamera;
   private isSoftwareGl: boolean;
   private pmremEnv: THREE.WebGLRenderTarget;
+  private composer: EffectComposer | null = null;
+  private bloomPass: UnrealBloomPass | null = null;
 
   private textures: ReturnType<typeof createProceduralTextures>;
   private environment: ReturnType<typeof createEnvironment>;
   private water: ReturnType<typeof createCrystalWater>;
   private fishSystem: ReturnType<typeof createFishSystem>;
   private dockRig: ReturnType<typeof createDockAndRig>;
+  private wildlife: ReturnType<typeof createWildlifeSystem>;
   private sound = new NatureSoundEngine();
 
   private sunLight: THREE.DirectionalLight;
@@ -104,7 +157,7 @@ export class FishingSceneManager {
   private catchShowcaseLight: THREE.PointLight;
   private fog: THREE.FogExp2;
 
-  // Weather particle systems (Rain / Snow & Fireflies)
+  // Weather particle systems (Rain / Snow, Fireflies & Morning/Sunset Pollen/Dust Motes)
   private rainPoints: THREE.Points;
   private rainGeo: THREE.BufferGeometry;
   private rainMat: THREE.PointsMaterial;
@@ -113,6 +166,11 @@ export class FishingSceneManager {
   private fireflyGeo: THREE.BufferGeometry;
   private fireflyMat: THREE.PointsMaterial;
   private fireflyBase: Float32Array;
+  private pollenPoints: THREE.Points;
+  private pollenGeo: THREE.BufferGeometry;
+  private pollenMat: THREE.ShaderMaterial;
+  private pollenPositions: Float32Array;
+  private pollenSeeds: Float32Array;
 
   // Seated Camera Look Controls + Screen Press-and-Hold Disambiguation
   private targetYaw = 0; // 0 looks straight across lake (-Z)
@@ -186,7 +244,10 @@ export class FishingSceneManager {
   private lineSnapTimer = 0;
   private newlyUnlockedNotice: string | null = null;
   private unlockNoticeTimer = 0;
+  private challengeCompletedNotice: string | null = null;
+  private challengeNoticeTimer = 0;
   private progression: PlayerProgression;
+  private dailyChallenges: DailyChallengesState;
 
   private onHudUpdate: (state: FishingHudState) => void;
   private lastHudEmit = 0;
@@ -216,6 +277,7 @@ export class FishingSceneManager {
     this.container = container;
     this.onHudUpdate = onHudUpdate;
     this.progression = loadSavedProgression();
+    this.dailyChallenges = loadDailyChallenges(this.progression.unlockedBaits);
 
     // Probe software WebGL (SwiftShader / llvmpipe / WARP)
     this.isSoftwareGl = (() => {
@@ -264,21 +326,23 @@ export class FishingSceneManager {
     this.scene.add(this.hemiLight);
 
     this.sunLight = new THREE.DirectionalLight(0xfff1d4, 2.1);
-    this.sunLight.position.set(28, 36, -24);
+    this.sunLight.position.set(36, 48, -32);
     this.sunLight.castShadow = !this.isSoftwareGl;
-    this.sunLight.shadow.mapSize.set(2048, 2048);
+    const shadowRes = this.isSoftwareGl ? 1024 : 4096;
+    this.sunLight.shadow.mapSize.set(shadowRes, shadowRes);
     this.sunLight.shadow.camera.near = 2;
-    this.sunLight.shadow.camera.far = 140;
-    const d = 38;
+    this.sunLight.shadow.camera.far = 210;
+    const d = 64;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.0005;
-    this.sunLight.shadow.normalBias = 0.025;
+    this.sunLight.shadow.bias = -0.00025;
+    this.sunLight.shadow.normalBias = 0.014;
+    this.sunLight.shadow.radius = 2.2;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
-    this.sunLight.target.position.set(0, 0, -12);
+    this.sunLight.target.position.set(0, 0, -18);
 
     this.catchShowcaseLight = new THREE.PointLight(0xfff5e2, 0, 7, 1.4);
     this.catchShowcaseLight.position.set(0.3, 2.2, 1.8);
@@ -292,11 +356,13 @@ export class FishingSceneManager {
     this.fishSystem = createFishSystem();
     this.dockRig = createDockAndRig(this.textures);
     this.dockRig.setActiveBaitVisual(this.selectedBait);
+    this.wildlife = createWildlifeSystem();
 
     this.scene.add(this.environment.group);
     this.scene.add(this.dockRig.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
+    this.scene.add(this.wildlife.group);
 
     // Rain / Snow Particles
     const rainCount = 950;
@@ -347,7 +413,74 @@ export class FishingSceneManager {
     this.fireflyPoints = new THREE.Points(this.fireflyGeo, this.fireflyMat);
     this.scene.add(this.fireflyPoints);
 
+    // Sunlit Morning & Sunset Wind-Drifting Pollen / Dust Motes
+    const pollenCount = 300;
+    this.pollenGeo = new THREE.BufferGeometry();
+    this.pollenPositions = new Float32Array(pollenCount * 3);
+    this.pollenSeeds = new Float32Array(pollenCount);
+    const pollenSizes = new Float32Array(pollenCount);
+    const pollenPhases = new Float32Array(pollenCount);
+    for (let i = 0; i < pollenCount; i++) {
+      this.pollenPositions[i * 3] = (Math.random() - 0.5) * 58;
+      this.pollenPositions[i * 3 + 1] = 0.45 + Math.random() * 9.5;
+      this.pollenPositions[i * 3 + 2] = -36 + Math.random() * 42;
+      this.pollenSeeds[i] = Math.random();
+      pollenSizes[i] = 16 + Math.random() * 26;
+      pollenPhases[i] = Math.random() * Math.PI * 2;
+    }
+    this.pollenGeo.setAttribute('position', new THREE.BufferAttribute(this.pollenPositions, 3));
+    this.pollenGeo.setAttribute('aSize', new THREE.BufferAttribute(pollenSizes, 1));
+    this.pollenGeo.setAttribute('aPhase', new THREE.BufferAttribute(pollenPhases, 1));
+
+    this.pollenMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uTime: { value: 0 },
+        uOpacity: { value: 0.5 },
+        uColor: { value: new THREE.Color(0xffe7a3) },
+        uPixelRatio: { value: this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2) },
+      },
+      vertexShader: `
+        attribute float aSize;
+        attribute float aPhase;
+        uniform float uTime;
+        uniform float uPixelRatio;
+        varying float vAlpha;
+        void main() {
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          float dist = max(1.0, -mvPosition.z);
+          gl_PointSize = clamp(aSize * uPixelRatio / dist, 1.5, 18.0);
+          vAlpha = (0.45 + 0.55 * sin(uTime * 1.9 + aPhase)) * smoothstep(42.0, 6.0, dist);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform vec3 uColor;
+        varying float vAlpha;
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5);
+          float r = length(c) * 2.0;
+          if (r > 1.0) discard;
+          float softGlow = pow(1.0 - r, 2.1);
+          gl_FragColor = vec4(uColor, softGlow * vAlpha * uOpacity);
+        }
+      `,
+    });
+    this.pollenPoints = new THREE.Points(this.pollenGeo, this.pollenMat);
+    this.pollenPoints.frustumCulled = false;
+    this.scene.add(this.pollenPoints);
+
     if (!this.isSoftwareGl) {
+      this.composer = new EffectComposer(this.renderer);
+      this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      this.composer.setSize(width, height);
+      this.composer.addPass(new RenderPass(this.scene, this.camera));
+      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.24, 0.55, 0.88);
+      this.composer.addPass(this.bloomPass);
+      this.composer.addPass(new OutputPass());
       this.renderer.compile(this.scene, this.camera);
     }
 
@@ -498,8 +631,14 @@ export class FishingSceneManager {
     const h = this.container.clientHeight || window.innerHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    const dpr = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2);
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(dpr);
+    this.pollenMat.uniforms.uPixelRatio.value = dpr;
+    if (this.composer) {
+      this.composer.setPixelRatio(dpr);
+      this.composer.setSize(w, h);
+    }
   };
 
   // --- Public Controls called by React HUD ---
@@ -813,7 +952,8 @@ export class FishingSceneManager {
     const rarityBase = sp.rarity === 'أسطوري' ? 190 : sp.rarity === 'نادر' ? 95 : 42;
     const xpEarned = Math.round(rarityBase + weightKg * 14);
 
-    this.applyXpGain(xpEarned);
+    const challengeBonusXp = this.evaluateDailyChallenges(sp.id, this.selectedBait, this.weather);
+    this.applyXpGain(xpEarned + challengeBonusXp);
 
     const bedDepth = Math.max(0.3, -groundHeightAt(this.castTargetPos.x, this.castTargetPos.z));
     const zone = classifyLakeZone(this.castTargetPos.x, this.castTargetPos.z, bedDepth);
@@ -831,6 +971,7 @@ export class FishingSceneManager {
       baitUsed: this.selectedBait,
       hookUsed: this.selectedHook,
       released: false,
+      dailyChallengeBonusXp: challengeBonusXp > 0 ? challengeBonusXp : undefined,
     };
 
     // Reveal caught fish by lifting it gracefully into close-up 3D showcase in front of the angler
@@ -842,8 +983,66 @@ export class FishingSceneManager {
     this.catchInspectAngle = Math.PI * 0.45;
     this.catchInspectTilt = 0.06;
 
-    this.statusMessage = `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} نقطة خبرة)`;
+    this.statusMessage =
+      challengeBonusXp > 0
+        ? `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} XP + ${challengeBonusXp} مكافأة تحدٍّ!)`
+        : `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} نقطة خبرة)`;
     this.emitHudState(true);
+  }
+
+  private ensureTodayChallenges(): void {
+    const todayKey = getTodayDateKey();
+    if (this.dailyChallenges.dateKey !== todayKey) {
+      this.dailyChallenges = {
+        dateKey: todayKey,
+        challenges: generateDailyChallenges(todayKey, this.progression.unlockedBaits),
+        completedTotal: this.dailyChallenges.completedTotal,
+      };
+      saveDailyChallenges(this.dailyChallenges);
+    }
+  }
+
+  private evaluateDailyChallenges(speciesId: string, baitId: BaitId, weather: WeatherType): number {
+    this.ensureTodayChallenges();
+    let changed = false;
+    let bonusXp = 0;
+    const completedTitles: string[] = [];
+
+    const updatedChallenges = this.dailyChallenges.challenges.map((ch) => {
+      if (ch.completed) return ch;
+      if (ch.speciesId && ch.speciesId !== speciesId) return ch;
+      if (ch.baitId && ch.baitId !== baitId) return ch;
+      if (ch.weather && ch.weather !== weather) return ch;
+
+      changed = true;
+      const nextProgress = Math.min(ch.targetCount, ch.progress + 1);
+      const justCompleted = nextProgress >= ch.targetCount;
+      if (justCompleted) {
+        bonusXp += ch.xpReward;
+        completedTitles.push(ch.titleAr);
+      }
+      return {
+        ...ch,
+        progress: nextProgress,
+        completed: justCompleted,
+      };
+    });
+
+    if (changed) {
+      this.dailyChallenges = {
+        ...this.dailyChallenges,
+        challenges: updatedChallenges,
+        completedTotal: this.dailyChallenges.completedTotal + completedTitles.length,
+      };
+      saveDailyChallenges(this.dailyChallenges);
+
+      if (completedTitles.length > 0) {
+        this.challengeCompletedNotice = `أكملت التحدي اليومي: ${completedTitles.join(' و ')} (+${bonusXp} XP إضافية!)`;
+        this.challengeNoticeTimer = 7.5;
+      }
+    }
+
+    return bonusXp;
   }
 
   private updateAtmosphere(dt: number): {
@@ -951,15 +1150,18 @@ export class FishingSceneManager {
       this.weather === 'storm' ? 0.34 : this.weather === 'rain' ? 0.52 : this.weather === 'mist' ? 0.68 : this.weather === 'cloudy' ? 0.74 : 1.0;
 
     if (sunElev > -0.05) {
-      this.sunLight.position.copy(this._sunDir).multiplyScalar(68);
-      this.sunLight.position.z -= 12;
+      this.sunLight.position.copy(this.sunLight.target.position).addScaledVector(this._sunDir, 88);
       this.sunLight.color.copy(this._sunColor);
       this.sunLight.intensity = (0.35 + daylight * 2.15) * weatherDim + this.lightningAlpha * 2.6;
     } else {
       // Moonlight from above-front
-      this.sunLight.position.set(-18, 42, -45);
+      this.sunLight.position.set(-18, 42, -38);
       this.sunLight.color.setHex(0x8cb2e6);
       this.sunLight.intensity = 0.45 * weatherDim + this.lightningAlpha * 2.6;
+    }
+
+    if (this.bloomPass) {
+      this.bloomPass.strength = 0.22 + nightFactor * 0.14 + golden * 0.06;
     }
 
     this._hemiSky.copy(this._skyTop).lerp(new THREE.Color(0xffffff), 0.25);
@@ -1023,6 +1225,61 @@ export class FishingSceneManager {
       }
       ffAttr.needsUpdate = true;
     }
+
+    // Morning & Sunset Wind-Drifting Golden Dust & Pollen Motes
+    const morningGlow = Math.exp(-Math.pow((this.timeOfDay - 8.2) / 2.6, 2));
+    const sunsetGlow = Math.exp(-Math.pow((this.timeOfDay - 17.6) / 2.2, 2));
+    const goldenAirStrength = Math.max(morningGlow, sunsetGlow);
+    const weatherPollenDim =
+      this.weather === 'storm' ? 0.06 : this.weather === 'rain' ? 0.18 : this.weather === 'cloudy' ? 0.52 : 1.0;
+    const pollenAlpha = goldenAirStrength * weatherPollenDim * (this.season === 'winter' ? 0.42 : 0.88);
+
+    this.pollenPoints.visible = pollenAlpha > 0.03;
+    if (this.pollenPoints.visible) {
+      this.pollenMat.uniforms.uTime.value = this.elapsed;
+      this.pollenMat.uniforms.uOpacity.value = pollenAlpha;
+      const sunsetMix = sunsetGlow > morningGlow ? 0.65 : 0.15;
+      this.pollenMat.uniforms.uColor.value
+        .setHex(this.season === 'winter' ? 0xf2f7ff : 0xffe8a6)
+        .lerp(new THREE.Color(0xffb866), sunsetMix * (this.season === 'winter' ? 0.25 : 1.0));
+
+      const windDriftX = (0.35 + windSpeedKmh * 0.11) * seasonDef.windMultiplier;
+      const windDriftZ = (0.12 + windSpeedKmh * 0.035) * seasonDef.windMultiplier;
+      for (let i = 0; i < this.pollenSeeds.length; i++) {
+        const s = this.pollenSeeds[i];
+        const idx = i * 3;
+        let px = this.pollenPositions[idx] + (windDriftX * (0.65 + s * 0.7) + Math.sin(this.elapsed * 0.75 + s * 14.0) * 0.28) * dt;
+        let py = this.pollenPositions[idx + 1] + (Math.sin(this.elapsed * 1.15 + s * 22.0) * 0.24 + (s - 0.45) * 0.12) * dt;
+        let pz = this.pollenPositions[idx + 2] + (windDriftZ + Math.cos(this.elapsed * 0.65 + s * 18.0) * 0.2) * dt;
+
+        if (px > 29) px = -29;
+        if (px < -29) px = 29;
+        if (py > 10.0) py = 0.5;
+        if (py < 0.45) py = 9.5;
+        if (pz > 6) pz = -36;
+        if (pz < -36) pz = 6;
+
+        this.pollenPositions[idx] = px;
+        this.pollenPositions[idx + 1] = py;
+        this.pollenPositions[idx + 2] = pz;
+      }
+      this.pollenGeo.attributes.position.needsUpdate = true;
+    }
+
+    // Distant Forest Wildlife & Aquatic Surface Animals (Deer, Fox, Turtles & Sparkling Jumping Fish)
+    this.wildlife.update(
+      dt,
+      this.elapsed,
+      this.weather,
+      nightFactor,
+      (rx, rz, strength) => {
+        this.water.addRipple(rx, rz, strength);
+      },
+      (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
+      (sx, sz, intensity) => {
+        this.water.spawnSplash(sx, sz, intensity);
+      },
+    );
 
     const effectiveWindMult = Math.max(0.25, windSpeedKmh / 10);
 
@@ -1162,6 +1419,10 @@ export class FishingSceneManager {
     if (this.unlockNoticeTimer > 0) {
       this.unlockNoticeTimer -= dt;
       if (this.unlockNoticeTimer <= 0) this.newlyUnlockedNotice = null;
+    }
+    if (this.challengeNoticeTimer > 0) {
+      this.challengeNoticeTimer -= dt;
+      if (this.challengeNoticeTimer <= 0) this.challengeCompletedNotice = null;
     }
 
     // --- Fishing Gameplay Loop ---
@@ -1413,7 +1674,11 @@ export class FishingSceneManager {
       this.emitHudState(false, windSpeedKmh, conditionLabel);
     }
 
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
 
     if (this.isSoftwareGl) {
       this.afterDraw(this.tick);
@@ -1488,6 +1753,8 @@ export class FishingSceneManager {
       lineSnappedNotice: this.lineSnappedNotice,
       progression: this.progression,
       newlyUnlockedNotice: this.newlyUnlockedNotice,
+      dailyChallenges: this.dailyChallenges,
+      challengeCompletedNotice: this.challengeCompletedNotice,
     });
   }
 
@@ -1512,12 +1779,17 @@ export class FishingSceneManager {
     this.water.dispose();
     this.fishSystem.dispose();
     this.dockRig.dispose();
+    this.wildlife.dispose();
     this.textures.dispose();
     this.rainGeo.dispose();
     this.rainMat.dispose();
     this.fireflyGeo.dispose();
     this.fireflyMat.dispose();
+    this.pollenGeo.dispose();
+    this.pollenMat.dispose();
     this.pmremEnv.dispose();
+    this.bloomPass?.dispose();
+    this.composer?.dispose();
     this.renderer.dispose();
 
     if (dom.parentElement === this.container) {
