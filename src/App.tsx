@@ -28,10 +28,10 @@ const INITIAL_HUD: FishingHudState = {
   autoWind: true,
   fishingConditionLabel: 'صافٍ · رؤية واضحة لقاع البحيرة',
   soundMuted: false,
-  ambienceMix: { water: 0.78, trees: 0.72, birds: 0.75 },
+  ambienceMix: { water: 0.78, trees: 0.72, birds: 0.75, frogs: 0.76 },
   cinematicActive: false,
   cinematicAutoEnabled: true,
-  fishVisibleCount: 21,
+  fishVisibleCount: 26,
   selectedBait: 'worm',
   selectedHook: 'barbed_steel',
   lineDepthMeters: 1.4,
@@ -43,6 +43,7 @@ const INITIAL_HUD: FishingHudState = {
     level: 1,
     totalXp: 0,
     availableXp: 0,
+    boatLevel: 1,
     skills: {
       castMastery: 1,
       reelSpeed: 1,
@@ -59,6 +60,24 @@ const INITIAL_HUD: FishingHudState = {
     completedTotal: 0,
   },
   challengeCompletedNotice: null,
+  coldIntensity: 0,
+  crocThreatActive: false,
+  crocDistanceMeters: 999,
+  rivalContestActive: false,
+  rivalName: null,
+  rivalContestBalance: 0.56,
+  rivalNotice: null,
+  speciesRecords: {},
+  recordBrokenNotice: null,
+  isHeavyHookedFish: false,
+  heavyFishStress: 0,
+  currentLocationId: 'pier',
+  isOnBoat: false,
+  isSailing: false,
+  waterDepthUnderPlayer: 1.1,
+  pois: [],
+  poiDiscoveredNotice: null,
+  nearbyPoiName: null,
 };
 
 export default function App() {
@@ -124,6 +143,12 @@ export default function App() {
           onToggleCinematicAuto={(en) => managerRef.current?.setCinematicAutoEnabled(en)}
           onResetLook={() => managerRef.current?.lookReset()}
           onUpgradeSkill={(k) => managerRef.current?.upgradeSkill(k)}
+          onUpgradeBoat={() => managerRef.current?.upgradeBoat()}
+          onSelectLocation={(spotId) => managerRef.current?.selectLakeLocation(spotId)}
+          onBoardBoatFreeRoam={() => managerRef.current?.boardBoatFreeRoam()}
+          onBoatSteer={(fwd, turn) => managerRef.current?.setBoatSteer(fwd, turn)}
+          onSailToPoi={(poiId) => managerRef.current?.sailToPoi(poiId)}
+          onLookAtPoi={(poiId) => managerRef.current?.lookAtPoi(poiId)}
           onResolveCatch={(rel) => managerRef.current?.resolveActiveCatch(rel)}
         />
       )}

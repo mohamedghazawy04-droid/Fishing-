@@ -51,6 +51,7 @@ export interface FishSystemUpdateInput {
   season: SeasonId;
   timePreset: TimePresetId;
   anglerSenseLevel: number;
+  rareAttractionBonus?: number;
   isReelingPhase: boolean;
   onNibble: (x: number, z: number) => void;
   onBiteStart: (fish: ActiveFish) => void;
@@ -64,6 +65,7 @@ export interface FishSystem {
   getBitingFish: () => ActiveFish | null;
   hookBitingFish: () => ActiveFish | null;
   releaseHookedFish: () => void;
+  consumeHookedFish: () => void;
   spookNear: (x: number, z: number, radius: number) => void;
   update: (input: FishSystemUpdateInput) => void;
   dispose: () => void;
@@ -72,13 +74,15 @@ export interface FishSystem {
 function getZoneTargetCenter(zone: LakeZoneId): { x: number; z: number; spreadX: number; spreadZ: number } {
   switch (zone) {
     case 'dock_shade':
-      return { x: 0, z: -6.5, spreadX: 7.5, spreadZ: 4.5 };
+      return { x: 0, z: -7.5, spreadX: 9.5, spreadZ: 5.5 };
     case 'shore_reeds':
-      return { x: Math.random() < 0.5 ? -28 : 28, z: -22, spreadX: 9.5, spreadZ: 14 };
+      return { x: Math.random() < 0.5 ? -46 : 46, z: -36, spreadX: 14, spreadZ: 22 };
     case 'rocky_ledge':
-      return { x: (Math.random() - 0.5) * 32, z: -20, spreadX: 11, spreadZ: 9 };
+      return { x: (Math.random() - 0.5) * 52, z: -24, spreadX: 16, spreadZ: 12 };
     case 'deep_basin':
-      return { x: (Math.random() - 0.5) * 34, z: -36, spreadX: 14, spreadZ: 11 };
+      return { x: (Math.random() - 0.5) * 56, z: -42, spreadX: 20, spreadZ: 15 };
+    case 'alpine_abyss':
+      return { x: (Math.random() - 0.5) * 44, z: -58, spreadX: 18, spreadZ: 14 };
   }
 }
 
@@ -183,6 +187,45 @@ function createSpeciesScaleTexture(species: FishSpecies): THREE.CanvasTexture {
       ctx.arc(sx, sy, 1.8, 0, Math.PI * 2);
       ctx.fill();
     }
+  } else if (species.id === 'alpine_sturgeon') {
+    // Armored bony scutes ridge rows along back and flanks
+    ctx.fillStyle = 'rgba(218, 198, 130, 0.65)';
+    for (let row = 0; row < 12; row++) {
+      const y = 30 + row * 17;
+      ctx.beginPath();
+      ctx.moveTo(96, y);
+      ctx.lineTo(114, y + 6);
+      ctx.lineTo(96, y + 12);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(416, y);
+      ctx.lineTo(398, y + 6);
+      ctx.lineTo(416, y + 12);
+      ctx.fill();
+    }
+  } else if (species.id === 'abyssal_catfish') {
+    // Mottled slate deep-water camouflage
+    ctx.fillStyle = 'rgba(18, 26, 34, 0.52)';
+    for (let i = 0; i < 48; i++) {
+      const sx = Math.random() < 0.5 ? 20 + Math.random() * 145 : 345 + Math.random() * 145;
+      const sy = 25 + Math.random() * 205;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, 8, 5, Math.random(), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (species.id === 'glacial_taimen') {
+    // Crimson tail-flank sheen & dark crescent speckles
+    ctx.fillStyle = 'rgba(196, 74, 62, 0.45)';
+    ctx.fillRect(85, 18, 52, 95);
+    ctx.fillRect(375, 18, 52, 95);
+    ctx.fillStyle = 'rgba(20, 26, 34, 0.6)';
+    for (let i = 0; i < 75; i++) {
+      const sx = Math.random() < 0.5 ? 20 + Math.random() * 140 : 350 + Math.random() * 140;
+      const sy = 30 + Math.random() * 190;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   // Gill plate (operculum) curved seam near head (v ~ 0.72)
@@ -200,11 +243,53 @@ function createSpeciesScaleTexture(species: FishSpecies): THREE.CanvasTexture {
   return tex;
 }
 
+function applySubmergedFishShader(mat: THREE.MeshStandardMaterial, withSwim: boolean): void {
+  mat.transparent = true;
+  mat.customProgramCacheKey = () => (withSwim ? 'fish_body_submerged_swim_v1' : 'fish_part_submerged_v1');
+  mat.onBeforeCompile = (shader) => {
+    if (withSwim) {
+      shader.uniforms.uSwimPhase = { value: 0 };
+      shader.uniforms.uSwimAmp = { value: 0.045 };
+      mat.userData.shader = shader;
+    }
+
+    let vs = shader.vertexShader;
+    if (withSwim) {
+      vs = `uniform float uSwimPhase;\nuniform float uSwimAmp;\n` + vs;
+      vs = vs.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         float tailFactor = smoothstep(0.24, -0.48, position.z);
+         transformed.x += sin(uSwimPhase - position.z * 6.5) * uSwimAmp * tailFactor;`,
+      );
+    }
+    vs = `varying float vFishWorldY;\n` + vs.replace(
+      '#include <worldpos_vertex>',
+      `#include <worldpos_vertex>
+       vFishWorldY = (modelMatrix * vec4(transformed, 1.0)).y;`,
+    );
+    shader.vertexShader = vs;
+
+    shader.fragmentShader =
+      `varying float vFishWorldY;\n` +
+      shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+         float submergedMask = smoothstep(-0.04, -0.18, vFishWorldY);
+         float depthHaze = smoothstep(-0.12, -2.55, vFishWorldY);
+         vec3 waterTint = vec3(0.08, 0.29, 0.36);
+         diffuseColor.rgb = mix(diffuseColor.rgb, waterTint, submergedMask * (0.36 + depthHaze * 0.42));
+         diffuseColor.a *= mix(1.0, mix(0.74, 0.28, depthHaze), submergedMask);`,
+      );
+  };
+}
+
 function buildProceduralFishMesh(
   species: FishSpecies,
   lengthScale: number,
   scaleTex: THREE.CanvasTexture,
   sharedGeos: THREE.BufferGeometry[],
+  sharedMats: THREE.Material[],
 ): { root: THREE.Group; tailPivot: THREE.Group; bodyMat: THREE.MeshStandardMaterial } {
   const root = new THREE.Group();
 
@@ -231,23 +316,12 @@ function buildProceduralFishMesh(
     roughness: 0.22,
     metalness: 0.32,
   });
-
-  bodyMat.onBeforeCompile = (shader) => {
-    shader.uniforms.uSwimPhase = { value: 0 };
-    shader.uniforms.uSwimAmp = { value: 0.045 };
-    bodyMat.userData.shader = shader;
-    shader.vertexShader =
-      `uniform float uSwimPhase;\nuniform float uSwimAmp;\n` +
-      shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-         float tailFactor = smoothstep(0.24, -0.48, position.z);
-         transformed.x += sin(uSwimPhase - position.z * 6.5) * uSwimAmp * tailFactor;`,
-      );
-  };
+  applySubmergedFishShader(bodyMat, true);
+  sharedMats.push(bodyMat);
 
   const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
   bodyMesh.castShadow = true;
+  bodyMesh.renderOrder = 1;
   root.add(bodyMesh);
 
   const finMat = new THREE.MeshStandardMaterial({
@@ -257,6 +331,8 @@ function buildProceduralFishMesh(
     opacity: 0.86,
     side: THREE.DoubleSide,
   });
+  applySubmergedFishShader(finMat, false);
+  sharedMats.push(finMat);
 
   // Dorsal Fin
   const dorsalShape = new THREE.Shape();
@@ -321,6 +397,9 @@ function buildProceduralFishMesh(
   sharedGeos.push(irisGeo, pupilGeo);
   const irisMat = new THREE.MeshStandardMaterial({ color: 0xd9b86c, roughness: 0.2, metalness: 0.35 });
   const pupilMat = new THREE.MeshStandardMaterial({ color: 0x0b0e11, roughness: 0.05, metalness: 0.4 });
+  applySubmergedFishShader(irisMat, false);
+  applySubmergedFishShader(pupilMat, false);
+  sharedMats.push(irisMat, pupilMat);
   for (const side of [-1, 1]) {
     const iris = new THREE.Mesh(irisGeo, irisMat);
     iris.position.set(side * 0.044, 0.036, 0.34);
@@ -331,6 +410,11 @@ function buildProceduralFishMesh(
     root.add(iris, pupil);
   }
 
+  root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) {
+      obj.renderOrder = 1;
+    }
+  });
   root.scale.setScalar(lengthScale);
   return { root, tailPivot, bodyMat };
 }
@@ -339,6 +423,7 @@ export function createFishSystem(): FishSystem {
   const group = new THREE.Group();
   const fishes: ActiveFish[] = [];
   const sharedGeos: THREE.BufferGeometry[] = [];
+  const sharedMats: THREE.Material[] = [];
   const speciesTextures = new Map<string, THREE.CanvasTexture>();
 
   for (const sp of FISH_SPECIES) {
@@ -346,12 +431,15 @@ export function createFishSystem(): FishSystem {
   }
 
   const spawnPlan: FishSpecies[] = [
-    FISH_SPECIES[0], FISH_SPECIES[0], FISH_SPECIES[0], FISH_SPECIES[0],
-    FISH_SPECIES[1], FISH_SPECIES[1], FISH_SPECIES[1], FISH_SPECIES[1],
-    FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2],
-    FISH_SPECIES[3], FISH_SPECIES[3], FISH_SPECIES[3],
-    FISH_SPECIES[4], FISH_SPECIES[4], FISH_SPECIES[4],
-    FISH_SPECIES[5], FISH_SPECIES[5],
+    FISH_SPECIES[0], FISH_SPECIES[0], FISH_SPECIES[0], FISH_SPECIES[0], FISH_SPECIES[0],
+    FISH_SPECIES[1], FISH_SPECIES[1], FISH_SPECIES[1], FISH_SPECIES[1], FISH_SPECIES[1],
+    FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2], FISH_SPECIES[2],
+    FISH_SPECIES[3], FISH_SPECIES[3], FISH_SPECIES[3], FISH_SPECIES[3],
+    FISH_SPECIES[4], FISH_SPECIES[4], FISH_SPECIES[4], FISH_SPECIES[4],
+    FISH_SPECIES[5], FISH_SPECIES[5], FISH_SPECIES[5],
+    FISH_SPECIES[6], FISH_SPECIES[6], FISH_SPECIES[6],
+    FISH_SPECIES[7], FISH_SPECIES[7], FISH_SPECIES[7],
+    FISH_SPECIES[8], FISH_SPECIES[8],
   ];
 
   const schoolAnchor = new THREE.Vector2(-8, -14);
@@ -370,21 +458,21 @@ export function createFishSystem(): FishSystem {
     let bedY = groundHeightAt(sx, sz);
     for (let t = 0; t < 10 && bedY > -0.65; t++) {
       sx *= 0.82;
-      sz = THREE.MathUtils.lerp(sz, -24, 0.25);
+      sz = THREE.MathUtils.lerp(sz, -40, 0.25);
       bedY = groundHeightAt(sx, sz);
     }
 
     const avgLen = (species.minLengthCm + species.maxLengthCm) * 0.5;
-    const lengthScale = (avgLen / 40) * (0.88 + Math.random() * 0.35);
+    const lengthScale = (avgLen / 40) * (0.78 + Math.random() * 0.62);
     const scaleTex = speciesTextures.get(species.id)!;
-    const { root, tailPivot, bodyMat } = buildProceduralFishMesh(species, lengthScale, scaleTex, sharedGeos);
+    const { root, tailPivot, bodyMat } = buildProceduralFishMesh(species, lengthScale, scaleTex, sharedGeos, sharedMats);
 
     const prefDepth = THREE.MathUtils.lerp(species.preferredDepth[0], species.preferredDepth[1], Math.random());
     const sy = Math.max(bedY + 0.28, Math.min(-0.35, -prefDepth));
 
     root.position.set(sx, sy, sz);
-    // Keep underwater fish hidden beneath the sea/lake surface so catches are a surprise!
-    root.visible = false;
+    // Real 3D fish remain permanently in the lake, semi-obscured by water depth haze
+    root.visible = true;
     group.add(root);
 
     const heading = Math.random() * Math.PI * 2;
@@ -430,7 +518,7 @@ export function createFishSystem(): FishSystem {
     let bedY = groundHeightAt(tx, tz);
     if (bedY > -0.55) {
       tx = THREE.MathUtils.lerp(tx, 0, 0.5);
-      tz = THREE.MathUtils.lerp(tz, -24, 0.5);
+      tz = THREE.MathUtils.lerp(tz, -40, 0.5);
       bedY = groundHeightAt(tx, tz);
     }
 
@@ -455,6 +543,7 @@ export function createFishSystem(): FishSystem {
     timePreset: TimePresetId,
     lureZone: LakeZoneId,
     anglerSenseLevel: number,
+    rareAttractionBonus = 1.0,
   ): number {
     const bait = BAIT_CATALOG.find((b) => b.id === baitId)!;
     const hook = HOOK_CATALOG.find((h) => h.id === hookId)!;
@@ -475,6 +564,10 @@ export function createFishSystem(): FishSystem {
       score *= hook.cautiousAcceptRate;
     }
 
+    if (fish.species.rarity !== 'شائع') {
+      score *= rareAttractionBonus;
+    }
+
     if (baitId === 'glow_minnow' && (timePreset === 'night' || timePreset === 'dusk' || weather === 'mist')) {
       score *= 1.38;
     }
@@ -487,7 +580,7 @@ export function createFishSystem(): FishSystem {
       else if (fish.species.behavior === 'surface_cruiser') score *= 0.82;
     }
 
-    return THREE.MathUtils.clamp(score, 0.08, 2.0);
+    return THREE.MathUtils.clamp(score, 0.08, 2.2);
   }
 
   return {
@@ -509,7 +602,22 @@ export function createFishSystem(): FishSystem {
         if (f.aiState === 'hooked' || f.aiState === 'biting' || f.aiState === 'nibbling') {
           f.aiState = 'spooked';
           f.stateTimer = 3.2;
-          f.mesh.visible = false;
+          f.mesh.visible = true;
+          f.mesh.scale.setScalar(f.lengthScale);
+          pickPatrolPoint(f);
+        }
+      }
+    },
+    consumeHookedFish: () => {
+      for (const f of fishes) {
+        if (f.aiState === 'hooked') {
+          f.aiState = 'spooked';
+          f.stateTimer = 6.0;
+          f.mesh.scale.setScalar(f.lengthScale);
+          f.mesh.rotation.set(0, f.heading, 0);
+          f.position.set((Math.random() - 0.5) * 48, -2.5, -48 - Math.random() * 14);
+          f.mesh.position.copy(f.position);
+          f.mesh.visible = true;
           pickPatrolPoint(f);
         }
       }
@@ -541,6 +649,7 @@ export function createFishSystem(): FishSystem {
       season,
       timePreset,
       anglerSenseLevel,
+      rareAttractionBonus = 1.0,
       isReelingPhase,
       onNibble,
       onBiteStart,
@@ -550,8 +659,8 @@ export function createFishSystem(): FishSystem {
       const hook = HOOK_CATALOG.find((h) => h.id === hookId)!;
       const seasonDef = SEASON_CATALOG.find((s) => s.id === season)!;
 
-      schoolAnchor.x = -7.5 + Math.sin(elapsed * 0.08) * 10.5;
-      schoolAnchor.y = -15.5 + Math.cos(elapsed * 0.06) * 6.5;
+      schoolAnchor.x = -12.0 + Math.sin(elapsed * 0.06) * 18.0;
+      schoolAnchor.y = -22.0 + Math.cos(elapsed * 0.05) * 10.0;
 
       const lureZone = lurePos
         ? classifyLakeZone(lurePos.x, lurePos.z, Math.max(0.2, -groundHeightAt(lurePos.x, lurePos.z)))
@@ -573,8 +682,8 @@ export function createFishSystem(): FishSystem {
           continue;
         }
 
-        // Hidden beneath water surface until hooked & surfaced as a surprise!
-        fish.mesh.visible = false;
+        // Real fish stay permanently in lake, partially obscured by depth tint & opacity
+        fish.mesh.visible = true;
 
         if (!lureInWater && (fish.aiState === 'curious' || fish.aiState === 'nibbling' || fish.aiState === 'biting')) {
           fish.aiState = 'patrol';
@@ -613,6 +722,7 @@ export function createFishSystem(): FishSystem {
               timePreset,
               lureZone,
               anglerSenseLevel,
+              rareAttractionBonus,
             );
             const detectRange = (bait.attractionRadius + 3.2) * (0.75 + interest * 0.45);
             if (distToLure < detectRange && Math.random() < dt * 0.95 * interest * bait.biteSpeedBonus) {
@@ -650,6 +760,7 @@ export function createFishSystem(): FishSystem {
               timePreset,
               lureZone,
               anglerSenseLevel,
+              rareAttractionBonus,
             );
             if (fish.nibbleCount >= fish.maxNibbles) {
               if (Math.random() < Math.min(0.95, 0.58 * interest)) {
@@ -683,13 +794,29 @@ export function createFishSystem(): FishSystem {
         if (dist > 0.01) {
           tmpDesired.divideScalar(dist).multiplyScalar(maxSpeed);
         }
+        // Gentle pairwise separation so patrolling fish never stack on top of one another
+        if (fish.aiState === 'patrol') {
+          for (let j = 0; j < fishes.length; j++) {
+            const other = fishes[j];
+            if (other === fish || other.aiState === 'hooked') continue;
+            const dx = fish.position.x - other.position.x;
+            const dz = fish.position.z - other.position.z;
+            const dSq = dx * dx + dz * dz;
+            if (dSq > 0.0001 && dSq < 3.24) {
+              const d = Math.sqrt(dSq);
+              const push = (1.8 - d) * 0.85;
+              tmpDesired.x += (dx / d) * push;
+              tmpDesired.z += (dz / d) * push;
+            }
+          }
+        }
         fish.velocity.lerp(tmpDesired, Math.min(1, dt * 2.4));
         fish.position.addScaledVector(fish.velocity, dt);
 
         const bedY = groundHeightAt(fish.position.x, fish.position.z);
         if (bedY > -0.35) {
           fish.position.x = THREE.MathUtils.lerp(fish.position.x, 0, dt * 1.4);
-          fish.position.z = THREE.MathUtils.lerp(fish.position.z, -24, dt * 1.4);
+          fish.position.z = THREE.MathUtils.lerp(fish.position.z, -40, dt * 1.4);
           pickPatrolPoint(fish);
         }
         const safeFloor = groundHeightAt(fish.position.x, fish.position.z) + 0.22;
@@ -719,6 +846,7 @@ export function createFishSystem(): FishSystem {
     },
     dispose: () => {
       for (const g of sharedGeos) g.dispose();
+      for (const m of sharedMats) m.dispose();
       for (const tex of speciesTextures.values()) tex.dispose();
     },
   };

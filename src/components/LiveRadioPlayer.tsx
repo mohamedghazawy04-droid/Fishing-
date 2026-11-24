@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Play, Pause, Radio, Volume2, VolumeX, Link2, Waves, Trees, Bird } from 'lucide-react';
+import { Play, Pause, Radio, Volume2, VolumeX, Link2, Waves, Trees, Bird, Music2 } from 'lucide-react';
 import { LIVE_RADIO_STATIONS, type AmbienceMix, type LiveRadioStation } from '../types/fishing';
 
 export type RadioStatus = 'idle' | 'loading' | 'playing' | 'error';
@@ -91,6 +91,13 @@ export const LiveRadioPlayer: React.FC<LiveRadioPlayerProps> = ({
       icon: <Bird className="w-3.5 h-3.5 text-amber-300 shrink-0" />,
       accentClass: 'accent-amber-400',
     },
+    {
+      key: 'frogs',
+      label: 'نقيق الضفادع',
+      subtitle: 'أصوات الضفادع على أوراق الزنبق والضفاف',
+      icon: <Music2 className="w-3.5 h-3.5 text-lime-300 shrink-0" />,
+      accentClass: 'accent-lime-400',
+    },
   ];
 
   return (
@@ -116,7 +123,7 @@ export const LiveRadioPlayer: React.FC<LiveRadioPlayerProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
           {ambienceChannels.map((ch) => {
             const pct = Math.round(ambienceMix[ch.key] * 100);
             return (

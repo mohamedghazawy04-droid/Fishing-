@@ -1,10 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ChevronDown,
-  ChevronUp,
+  Settings,
   Compass,
-  Volume2,
-  VolumeX,
   BookOpen,
   X,
   Lock,
@@ -15,11 +12,27 @@ import {
   Eye,
   EyeOff,
   Target,
+  AlertTriangle,
+  Snowflake,
+  Swords,
+  Trophy,
+  Activity,
+  Anchor,
+  Navigation,
+  Waves,
+  MapPin,
+  Sparkles,
+  ChevronUp,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import {
   BAIT_CATALOG,
+  BOAT_CATALOG,
   FISH_SPECIES,
   HOOK_CATALOG,
+  LAKE_ANCHOR_SPOTS,
   LAKE_ZONE_LABELS,
   LIVE_RADIO_STATIONS,
   SEASON_CATALOG,
@@ -34,7 +47,9 @@ import {
   type FishSpecies,
   type FishingHudState,
   type HookId,
+  type LakeSpotId,
   type LiveRadioStation,
+  type PoiId,
   type SeasonId,
   type SkillKey,
   type TimePresetId,
@@ -127,10 +142,23 @@ interface FishingHUDProps {
   onToggleCinematicAuto: (enabled: boolean) => void;
   onResetLook: () => void;
   onUpgradeSkill: (key: SkillKey) => void;
+  onUpgradeBoat: () => void;
+  onSelectLocation: (spotId: LakeSpotId) => void;
+  onBoardBoatFreeRoam: () => void;
+  onBoatSteer: (forward: number, turn: number) => void;
+  onSailToPoi: (poiId: PoiId) => void;
+  onLookAtPoi: (poiId: PoiId) => void;
   onResolveCatch: (release: boolean) => void;
 }
 
-type DockTab = 'fishing' | 'challenges' | 'atmosphere' | 'skills' | 'radio';
+type SettingsTab =
+  | 'fishing'
+  | 'boat'
+  | 'challenges'
+  | 'atmosphere'
+  | 'skills'
+  | 'radio'
+  | 'journal';
 
 export const FishingHUD: React.FC<FishingHUDProps> = ({
   hud,
@@ -153,11 +181,16 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   onToggleCinematicAuto,
   onResetLook,
   onUpgradeSkill,
+  onUpgradeBoat,
+  onSelectLocation,
+  onBoardBoatFreeRoam,
+  onBoatSteer,
+  onSailToPoi,
+  onLookAtPoi,
   onResolveCatch,
 }) => {
-  const [dockCollapsed, setDockCollapsed] = useState(false);
-  const [activeTab, setActiveTab] = useState<DockTab>('fishing');
-  const [journalOpen, setJournalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>('fishing');
   const [catchCardHidden, setCatchCardHidden] = useState(false);
 
   useEffect(() => {
@@ -166,7 +199,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
     }
   }, [hud.phase]);
 
-  // Persistent Live Internet Radio state (survives tab switches and dock collapse)
+  // Persistent Live Internet Radio state (stays mounted outside settingsOpen)
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playSessionRef = useRef(0);
   const fallbackQueueRef = useRef<string[]>([]);
@@ -194,10 +227,12 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'h' || e.key === 'H' || e.key === 'ا') {
-        const tag = (e.target as HTMLElement | null)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        setDockCollapsed((prev) => !prev);
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'Escape') {
+        setSettingsOpen(false);
+      } else if (e.key === 'h' || e.key === 'H' || e.key === 'ا') {
+        setSettingsOpen((prev) => !prev);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -230,7 +265,6 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
     setRadioError(null);
     updateRadioStatus('loading');
 
-    // Direct src assignment + play() preserves user gesture activation and avoids load() AbortError
     el.src = url;
     el.volume = radioVolume;
 
@@ -318,9 +352,6 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
       stopRadio();
       return;
     }
-    if (!dockCollapsed) {
-      setActiveTab('radio');
-    }
     if (isCustomActive && customUrl) {
       startStreamQueue([customUrl]);
     } else {
@@ -332,8 +363,15 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
 
   const currentSeason = SEASON_CATALOG.find((s) => s.id === hud.season)!;
   const currentWeatherLabel = WEATHER_OPTIONS.find((w) => w.id === hud.weather)?.label ?? '';
+  const currentBoat = BOAT_CATALOG.find((b) => b.level === hud.progression.boatLevel) ?? BOAT_CATALOG[0];
+  const nextBoat = BOAT_CATALOG.find((b) => b.level === hud.progression.boatLevel + 1) ?? null;
+  const currentSpot =
+    hud.currentLocationId === 'free_roam'
+      ? null
+      : (LAKE_ANCHOR_SPOTS.find((s) => s.id === hud.currentLocationId) ?? LAKE_ANCHOR_SPOTS[0]);
   const completedChallengesToday = hud.dailyChallenges.challenges.filter((c) => c.completed).length;
   const totalChallengesToday = hud.dailyChallenges.challenges.length;
+  const discoveredPoisCount = hud.pois.filter((p) => p.discovered).length;
   const nextThreshold = getNextLevelThreshold(hud.progression.level);
   const prevThreshold = hud.progression.level > 1 ? getNextLevelThreshold(hud.progression.level - 1) : 0;
   const levelProgressPct = Math.min(
@@ -341,8 +379,9 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
     Math.max(0, ((hud.progression.totalXp - prevThreshold) / Math.max(1, nextThreshold - prevThreshold)) * 100),
   );
 
-  const primaryLabel =
-    hud.phase === 'idle'
+  const primaryLabel = hud.isSailing
+    ? 'جاري الإبحار...'
+    : hud.phase === 'idle'
       ? 'اضغط مطولاً لرمي الصنارة'
       : hud.phase === 'charging'
         ? 'أفلت للرمي الآن'
@@ -356,9 +395,16 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 ? 'اضغط مطولاً للسحب'
                 : 'تم الصيد';
 
+  const currentLocationLabel =
+    hud.currentLocationId === 'pier'
+      ? 'الرصيف'
+      : hud.currentLocationId === 'free_roam'
+        ? `تجول حر بالقارب (${hud.waterDepthUnderPlayer}م)`
+        : `${currentSpot?.nameAr ?? 'البحيرة'} (${hud.waterDepthUnderPlayer}م)`;
+
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between">
-      {/* Persistent HTML5 audio stream player (never unmounts on tab switch or dock collapse) */}
+      {/* Persistent HTML5 audio stream player (stays mounted regardless of Settings state) */}
       <audio
         ref={audioRef}
         preload="none"
@@ -390,135 +436,63 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         }}
       />
 
-      {/* Top Minimal Atmospheric Bar (No pill boxes, no backdrop-blur, clean unboxed metadata) */}
-      <header className="pointer-events-auto flex items-center justify-between gap-4 px-5 py-3.5 bg-gradient-to-b from-[#081014]/75 via-[#081014]/35 to-transparent">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
-          <h1 className="font-display text-base sm:text-lg font-bold text-stone-50 tracking-tight whitespace-nowrap shrink-0">
-            وادي الصيد الهادئ
-          </h1>
-          <span className="text-stone-400/70 hidden sm:inline" aria-hidden="true">·</span>
-          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-stone-200/90 font-mono-nums">
-            <span>المستوى {hud.progression.level}</span>
-            <span className="text-stone-400/70" aria-hidden="true">·</span>
-            <span className="text-amber-300">{hud.progression.availableXp} خبرة متاحة</span>
-            <span className="text-stone-400/70" aria-hidden="true">·</span>
-            <span>{formatHourToClock(hud.timeOfDay)}</span>
-            <span className="text-stone-400/70" aria-hidden="true">·</span>
-            <span>{currentSeason.nameAr}</span>
-            <span className="text-stone-400/70" aria-hidden="true">·</span>
-            <span>{currentWeatherLabel}</span>
-            <span className="text-stone-400/70 hidden md:inline" aria-hidden="true">·</span>
-            <span className="hidden md:inline text-stone-300">رياح {hud.windSpeedKmh} كم/س</span>
-          </div>
-        </div>
+      {/* Minimal Top Corner: Single Settings Entry Point ONLY (Pure Nature View) */}
+      <div className="flex items-start justify-start p-3.5 sm:p-4">
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          title="الإعدادات والتحكم الكامل (H)"
+          className="pointer-events-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#0a1317]/82 hover:bg-[#122026]/95 border border-white/15 text-stone-100 text-xs sm:text-sm font-medium shadow-lg transition-colors"
+        >
+          <Settings className="w-4 h-4 text-emerald-300 shrink-0" />
+          <span>الإعدادات</span>
+        </button>
+      </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={handleToggleRadioPlay}
-            title="تشغيل أو إيقاف الراديو المباشر"
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-              radioPlaying
-                ? 'bg-amber-500/20 border-amber-400/60 text-amber-200 hover:bg-amber-500/30'
-                : radioStatus === 'loading'
-                  ? 'bg-sky-500/20 border-sky-400/60 text-sky-200 hover:bg-sky-500/30'
-                  : 'text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border-white/15'
-            }`}
-          >
-            <Radio
-              className={`w-3.5 h-3.5 ${
-                radioPlaying ? 'text-amber-300' : radioStatus === 'loading' ? 'text-sky-300' : 'text-stone-300'
-              }`}
-            />
-            <span className="hidden sm:inline">
-              {radioStatus === 'loading'
-                ? 'جاري الاتصال...'
-                : radioPlaying
-                  ? 'إيقاف البث'
-                  : 'راديو حي'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onToggleCinematic}
-            title="تشغيل أو إيقاف اللقطة السينمائية حول البحيرة"
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-              hud.cinematicActive
-                ? 'bg-emerald-500/25 border-emerald-400/60 text-emerald-100 hover:bg-emerald-500/35'
-                : 'text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border-white/15'
-            }`}
-          >
-            <Film className={`w-3.5 h-3.5 ${hud.cinematicActive ? 'text-emerald-300' : 'text-stone-300'}`} />
-            <span className="hidden sm:inline">{hud.cinematicActive ? 'إنهاء السينمائي' : 'لقطة سينمائية'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onResetLook}
-            title="توسيط النظر نحو البحيرة"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border border-white/15 rounded-lg transition-colors whitespace-nowrap shrink-0"
-          >
-            <Compass className="w-3.5 h-3.5 text-emerald-300" />
-            <span className="hidden sm:inline">توسيط النظر</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onToggleMute(!hud.soundMuted)}
-            title={hud.soundMuted ? 'تشغيل صوت الطبيعة' : 'كتم صوت الطبيعة'}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border border-white/15 rounded-lg transition-colors whitespace-nowrap shrink-0"
-          >
-            {hud.soundMuted ? (
-              <VolumeX className="w-3.5 h-3.5 text-stone-400" />
-            ) : (
-              <Volume2 className="w-3.5 h-3.5 text-emerald-300" />
-            )}
-            <span className="hidden sm:inline">{hud.soundMuted ? 'صامت' : 'الطبيعة'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setDockCollapsed(false);
-              setActiveTab('challenges');
-            }}
-            title="عرض التحديات اليومية"
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-              completedChallengesToday === totalChallengesToday && totalChallengesToday > 0
-                ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200 hover:bg-emerald-500/30'
-                : 'text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border-white/15'
-            }`}
-          >
-            <Target className="w-3.5 h-3.5 text-amber-300" />
-            <span className="font-mono-nums">
-              التحديات ({completedChallengesToday}/{totalChallengesToday})
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setJournalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-100 bg-[#0d171c]/85 hover:bg-[#16252c] border border-white/15 rounded-lg transition-colors whitespace-nowrap shrink-0"
-          >
-            <BookOpen className="w-3.5 h-3.5 text-amber-300" />
-            <span>السجل ({hud.catchHistory.length})</span>
-          </button>
-        </div>
-      </header>
-
-      {/* Subtle Contextual Feedback (only visible during active cast/bite/fight/notices, never blocks horizon) */}
+      {/* Active Fishing & Exploration Feedback ONLY (No clutter when idle) */}
       <div className="pointer-events-none flex flex-col items-center justify-center gap-2.5 px-4">
+        {hud.poiDiscoveredNotice && (
+          <div className="max-w-md w-full bg-[#12221a]/95 border border-amber-400/60 rounded-xl px-4 py-3 shadow-2xl text-right">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="flex items-center gap-2 text-amber-200 font-bold text-sm">
+                <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
+                <span>اكتشاف معلم جديد!</span>
+              </div>
+              <span className="font-mono-nums text-xs font-semibold text-emerald-300">
+                +{hud.poiDiscoveredNotice.xpReward} XP
+              </span>
+            </div>
+            <div className="font-display font-bold text-stone-50 text-sm mb-0.5">
+              {hud.poiDiscoveredNotice.titleAr}
+            </div>
+            <p className="text-xs text-stone-200 leading-relaxed">{hud.poiDiscoveredNotice.storyAr}</p>
+          </div>
+        )}
+
+        {hud.isOnBoat && hud.nearbyPoiName && !hud.poiDiscoveredNotice && (
+          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-[#0d1d24]/90 border border-amber-400/40 text-amber-100 text-xs shadow-lg">
+            <Compass className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+            <span>معلم قريب: {hud.nearbyPoiName} — اقترب بالقارب لاكتشافه</span>
+          </div>
+        )}
+
+        {hud.isSailing && (
+          <div className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-[#0d1d26]/92 border border-sky-400/45 text-sky-100 text-xs font-medium shadow-lg">
+            <Waves className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+            <span>جاري الإبحار بالقارب نحو الموقع المختار... العمق الحالي {hud.waterDepthUnderPlayer}م</span>
+          </div>
+        )}
+
         {hud.cinematicActive && (
           <div className="pointer-events-auto flex items-center gap-3 px-4 py-1.5 rounded-lg bg-[#0d171c]/88 border border-emerald-400/35 text-stone-100 text-xs shadow-lg">
             <Film className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
-            <span>وضع اللقطة السينمائية — حرّك الشاشة أو اضغط للعودة إلى الكرسي</span>
+            <span>وضع اللقطة السينمائية — حرّك الشاشة أو اضغط للعودة</span>
             <button
               type="button"
               onClick={onToggleCinematic}
               className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium transition-colors shrink-0"
             >
-              العودة للكرسي
+              إنهاء اللقطة
             </button>
           </div>
         )}
@@ -536,7 +510,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
           </div>
         )}
 
-        {radioError && (dockCollapsed || activeTab !== 'radio') && (
+        {radioError && (!settingsOpen || activeTab !== 'radio') && (
           <div className="px-4 py-2 rounded-lg bg-[#2b1414]/95 border border-rose-400/40 text-rose-100 text-xs sm:text-sm font-medium shadow-lg">
             {radioError}
           </div>
@@ -545,6 +519,20 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         {hud.lineSnappedNotice && (
           <div className="px-4 py-2 rounded-lg bg-[#2b1414]/95 border border-rose-400/40 text-rose-100 text-xs sm:text-sm font-medium shadow-lg">
             {hud.lineSnappedNotice}
+          </div>
+        )}
+
+        {hud.recordBrokenNotice && (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#241d0a]/95 border border-amber-400/60 text-amber-100 text-xs sm:text-sm font-semibold shadow-lg">
+            <Trophy className="w-4 h-4 text-amber-300 shrink-0" />
+            <span>{hud.recordBrokenNotice}</span>
+          </div>
+        )}
+
+        {hud.rivalNotice && (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#22190f]/95 border border-amber-400/45 text-amber-100 text-xs sm:text-sm font-medium shadow-lg">
+            <Swords className="w-4 h-4 text-amber-300 shrink-0" />
+            <span>{hud.rivalNotice}</span>
           </div>
         )}
 
@@ -565,52 +553,104 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
 
         {hud.phase === 'biting' && (
           <div className="bg-[#23190c]/95 border border-amber-400/60 rounded-lg px-5 py-2.5 text-center shadow-lg">
-            <div className="text-sm font-bold text-amber-200 mb-1">غمزت السمكة! اضغط على الشاشة أو Space لتثبيت الخطاف</div>
+            <div className="text-sm font-bold text-amber-200 mb-1">
+              غمزت السمكة! اضغط على الشاشة أو Space لتثبيت الخطاف
+            </div>
             <div className="h-1.5 w-48 mx-auto bg-stone-800 rounded overflow-hidden">
-              <div
-                className="h-full bg-amber-400"
-                style={{ width: `${Math.round(hud.biteUrgency * 100)}%` }}
-              />
+              <div className="h-full bg-amber-400" style={{ width: `${Math.round(hud.biteUrgency * 100)}%` }} />
             </div>
           </div>
         )}
 
         {hud.phase === 'reeling' && (
-          <div className="w-72 bg-[#0d171c]/92 border border-white/15 rounded-lg p-3 shadow-lg">
-            <div className="flex items-center justify-between text-xs text-stone-200 mb-1.5">
-              <span className="font-semibold text-emerald-200">{hud.hookedSpeciesName}</span>
-              <span className="font-mono-nums text-stone-300">المسافة {hud.fishDistance} م</span>
-            </div>
-            <div className="text-[11px] text-stone-400 flex justify-between mb-1">
-              <span>شدّ الخيط</span>
-              <span className="font-mono-nums">{Math.round(hud.lineTension * 100)}%</span>
-            </div>
-            <div className="h-2.5 w-full bg-stone-800 rounded overflow-hidden mb-2">
-              <div
-                className={`h-full transition-colors ${
-                  hud.lineTension > 0.78
-                    ? 'bg-rose-500'
-                    : hud.lineTension > 0.52
-                      ? 'bg-amber-400'
-                      : 'bg-emerald-400'
-                }`}
-                style={{ width: `${Math.min(100, Math.round(hud.lineTension * 100))}%` }}
-              />
-            </div>
-            <div className="text-[11px] text-stone-400 flex justify-between mb-1">
-              <span>طاقة السمكة</span>
-              <span className="font-mono-nums">{Math.round(hud.fishStamina * 100)}%</span>
-            </div>
-            <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden">
-              <div
-                className="h-full bg-sky-400"
-                style={{ width: `${Math.round(hud.fishStamina * 100)}%` }}
-              />
+          <div className="flex flex-col items-center gap-2">
+            {hud.crocThreatActive && (
+              <div className="w-72 bg-[#2b1012]/95 border border-rose-400/65 rounded-lg px-3 py-2 shadow-lg">
+                <div className="flex items-center justify-between text-xs text-rose-100 font-semibold mb-1">
+                  <span className="flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                    تمساح يطارد سمكتك — اسحب بسرعة!
+                  </span>
+                  <span className="font-mono-nums text-rose-200">{hud.crocDistanceMeters.toFixed(1)} م</span>
+                </div>
+                <div className="h-1.5 w-full bg-rose-950 rounded overflow-hidden">
+                  <div
+                    className="h-full bg-rose-400 transition-[width] duration-75"
+                    style={{
+                      width: `${Math.min(100, Math.max(8, Math.round((1 - Math.min(20, hud.crocDistanceMeters) / 20) * 100)))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {hud.rivalContestActive && hud.rivalName && (
+              <div className="w-72 bg-[#1c160e]/95 border border-amber-400/60 rounded-lg px-3 py-2 shadow-lg">
+                <div className="flex items-center justify-between text-xs text-amber-100 font-semibold mb-1">
+                  <span className="flex items-center gap-1.5">
+                    <Swords className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                    صراع على نفس السمكة مع {hud.rivalName}
+                  </span>
+                  <span className="font-mono-nums text-amber-200">
+                    {Math.round(hud.rivalContestBalance * 100)}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-stone-300 mb-1">
+                  <span>{hud.rivalName}</span>
+                  <span>أنت (واصل السحب!)</span>
+                </div>
+                <div className="h-2 w-full bg-rose-900/70 rounded overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-400 transition-[width] duration-75"
+                    style={{ width: `${Math.round(hud.rivalContestBalance * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="w-72 bg-[#0d171c]/92 border border-white/15 rounded-lg p-3 shadow-lg">
+              <div className="flex items-center justify-between text-xs text-stone-200 mb-1.5">
+                <span className="font-semibold text-emerald-200">{hud.hookedSpeciesName}</span>
+                <span className="font-mono-nums text-stone-300">المسافة {hud.fishDistance} م</span>
+              </div>
+              {(hud.isHeavyHookedFish || hud.heavyFishStress > 0.62) && (
+                <div className="flex items-center justify-between text-[11px] font-medium px-2 py-1 rounded bg-amber-500/15 border border-amber-400/40 text-amber-200 mb-2">
+                  <span className="flex items-center gap-1">
+                    <Activity className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                    {hud.heavyFishStress > 0.72
+                      ? 'إجهاد حرج على الخيط — خفّف السحب!'
+                      : 'سمكة ثقيلة — الخيط يتوتر ويهتز'}
+                  </span>
+                </div>
+              )}
+              <div className="text-[11px] text-stone-400 flex justify-between mb-1">
+                <span>شدّ الخيط</span>
+                <span className="font-mono-nums">{Math.round(hud.lineTension * 100)}%</span>
+              </div>
+              <div className="h-2.5 w-full bg-stone-800 rounded overflow-hidden mb-2">
+                <div
+                  className={`h-full transition-colors ${
+                    hud.lineTension > 0.78
+                      ? 'bg-rose-500'
+                      : hud.lineTension > 0.52
+                        ? 'bg-amber-400'
+                        : 'bg-emerald-400'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.round(hud.lineTension * 100))}%` }}
+                />
+              </div>
+              <div className="text-[11px] text-stone-400 flex justify-between mb-1">
+                <span>طاقة السمكة</span>
+                <span className="font-mono-nums">{Math.round(hud.fishStamina * 100)}%</span>
+              </div>
+              <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden">
+                <div className="h-full bg-sky-400" style={{ width: `${Math.round(hud.fishStamina * 100)}%` }} />
+              </div>
             </div>
           </div>
         )}
 
-        {/* Active Catch Celebration Card (positioned to the side so 3D fish showcase stays unobstructed) */}
+        {/* Active Catch Celebration Card */}
         {hud.phase === 'caught' && hud.activeCatch && (
           catchCardHidden ? (
             <div className="pointer-events-auto self-start md:mr-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0e191d]/92 border border-emerald-400/40 shadow-xl">
@@ -633,9 +673,31 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                   <div className="text-xs text-emerald-300 font-medium mb-0.5">
                     صيد موفق · {hud.activeCatch.species.rarity} · +{hud.activeCatch.xpEarned} خبرة
                   </div>
+                  {hud.activeCatch.isNewRecord && (
+                    <div className="inline-flex items-center gap-1 text-[11px] text-amber-200 bg-amber-500/20 border border-amber-400/50 rounded px-2 py-0.5 font-semibold mb-1">
+                      <Trophy className="w-3 h-3 text-amber-300" />
+                      <span>
+                        رقم قياسي جديد!
+                        {hud.activeCatch.previousRecordKg
+                          ? ` (تجاوز ${hud.activeCatch.previousRecordKg} كجم)`
+                          : ' (أول وزن مسجّل)'}
+                        {hud.activeCatch.recordBonusXp ? ` · +${hud.activeCatch.recordBonusXp} XP` : ''}
+                      </span>
+                    </div>
+                  )}
                   {hud.activeCatch.dailyChallengeBonusXp ? (
                     <div className="text-[11px] text-amber-300 font-semibold mb-0.5">
                       مكافأة تحدٍّ يومي: +{hud.activeCatch.dailyChallengeBonusXp} XP إضافية!
+                    </div>
+                  ) : null}
+                  {hud.activeCatch.crocEscapeBonusXp ? (
+                    <div className="text-[11px] text-rose-300 font-semibold mb-0.5">
+                      مكافأة نجاة من التمساح: +{hud.activeCatch.crocEscapeBonusXp} XP إضافية!
+                    </div>
+                  ) : null}
+                  {hud.activeCatch.rivalWinBonusXp ? (
+                    <div className="text-[11px] text-sky-300 font-semibold mb-0.5">
+                      مكافأة التفوق على المنافس: +{hud.activeCatch.rivalWinBonusXp} XP إضافية!
                     </div>
                   ) : null}
                   <h2 className="font-display text-lg font-bold text-stone-50 truncate">
@@ -657,9 +719,12 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 font-mono-nums text-xs text-stone-200 bg-white/5 px-3 py-1.5 rounded-lg border border-white/10 mb-2.5">
+              <div className="grid grid-cols-3 gap-2 font-mono-nums text-xs text-stone-200 bg-white/5 px-3 py-1.5 rounded-lg border border-white/10 mb-2.5">
                 <div>الطول: {hud.activeCatch.lengthCm} سم</div>
                 <div>الوزن: {hud.activeCatch.weightKg} كجم</div>
+                <div className="text-amber-300">
+                  القياسي: {hud.speciesRecords[hud.activeCatch.species.id]?.maxWeightKg ?? hud.activeCatch.weightKg} كجم
+                </div>
               </div>
 
               <p className="text-xs text-stone-300 leading-relaxed mb-2.5">
@@ -693,51 +758,157 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         )}
       </div>
 
-      {/* Bottom Collapsible Control Dock (Zero Viewport Occlusion) */}
-      <div className="pointer-events-none flex flex-col items-center pb-4 px-3">
-        <button
-          type="button"
-          onClick={() => setDockCollapsed((v) => !v)}
-          className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-1 rounded-t-lg bg-[#0d171c]/92 border border-b-0 border-white/15 text-[11px] text-stone-200 hover:text-white transition-colors"
-        >
-          {dockCollapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          <span>{dockCollapsed ? 'إظهار لوحة التحكم (H)' : 'إخفاء اللوحة للتأمل (H)'}</span>
-        </button>
+      {/* Minimal Bottom Fishing Action Strip (Cast/Reel + Compact Boat Helm only while steering on boat) */}
+      <div className="pointer-events-none flex items-center justify-center gap-2.5 pb-4 px-3">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-[#0a1317]/82 border border-white/15 shadow-xl">
+          <button
+            type="button"
+            onPointerDown={onPrimaryPress}
+            onPointerUp={onPrimaryRelease}
+            onPointerLeave={() => {
+              if (hud.phase === 'charging' || hud.phase === 'reeling') onPrimaryRelease();
+            }}
+            disabled={hud.isSailing || hud.phase === 'casting' || hud.phase === 'caught'}
+            className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+              hud.phase === 'biting'
+                ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
+                : hud.phase === 'reeling'
+                  ? 'bg-sky-600 hover:bg-sky-500 text-white'
+                  : 'bg-emerald-600 hover:bg-emerald-500 disabled:bg-stone-700 disabled:text-stone-400 text-white'
+            }`}
+          >
+            {primaryLabel}
+          </button>
 
-        {!dockCollapsed && (
-          <div className="pointer-events-auto w-full max-w-[920px] bg-[#0d171c]/92 border border-white/15 rounded-xl p-3.5 shadow-2xl">
-            {/* Top Row inside Dock: Status + Primary Action Button + Tab Switcher */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-white/10">
-              <div className="flex items-center gap-3 min-w-0 flex-1">
-                <button
-                  type="button"
-                  onPointerDown={onPrimaryPress}
-                  onPointerUp={onPrimaryRelease}
-                  onPointerLeave={() => {
-                    if (hud.phase === 'charging' || hud.phase === 'reeling') onPrimaryRelease();
-                  }}
-                  disabled={hud.phase === 'casting' || hud.phase === 'caught'}
-                  className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                    hud.phase === 'biting'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
-                      : hud.phase === 'reeling'
-                        ? 'bg-sky-600 hover:bg-sky-500 text-white'
-                        : 'bg-emerald-600 hover:bg-emerald-500 disabled:bg-stone-700 disabled:text-stone-400 text-white'
-                  }`}
-                >
-                  {primaryLabel}
-                </button>
-                <div className="text-xs text-stone-300 truncate" title={hud.statusMessage}>
-                  {hud.statusMessage}
+          {hud.isOnBoat && hud.phase === 'idle' && (
+            <div
+              className="flex items-center gap-1 pr-2 border-r border-white/15"
+              title="قيادة القارب (يمكنك استخدام مفاتيح W/A/S/D)"
+            >
+              <button
+                type="button"
+                aria-label="تقدم بالقارب"
+                onPointerDown={() => onBoatSteer(1, 0)}
+                onPointerUp={() => onBoatSteer(0, 0)}
+                onPointerLeave={() => onBoatSteer(0, 0)}
+                onPointerCancel={() => onBoatSteer(0, 0)}
+                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="انعطاف يمين"
+                onPointerDown={() => onBoatSteer(0, -1)}
+                onPointerUp={() => onBoatSteer(0, 0)}
+                onPointerLeave={() => onBoatSteer(0, 0)}
+                onPointerCancel={() => onBoatSteer(0, 0)}
+                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="انعطاف يسار"
+                onPointerDown={() => onBoatSteer(0, 1)}
+                onPointerUp={() => onBoatSteer(0, 0)}
+                onPointerLeave={() => onBoatSteer(0, 0)}
+                onPointerCancel={() => onBoatSteer(0, 0)}
+                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="تراجع بالقارب"
+                onPointerDown={() => onBoatSteer(-1, 0)}
+                onPointerUp={() => onBoatSteer(0, 0)}
+                onPointerLeave={() => onBoatSteer(0, 0)}
+                onPointerCancel={() => onBoatSteer(0, 0)}
+                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Unified Settings Control Center (ALL controls, radio, audio, boat, POIs, weather, skills & journal) */}
+      {settingsOpen && (
+        <div
+          className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-black/60 p-3 sm:p-5"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSettingsOpen(false);
+          }}
+        >
+          <div className="w-full max-w-4xl max-h-[88vh] flex flex-col bg-[#0c161b] border border-white/15 rounded-2xl shadow-2xl overflow-hidden">
+            {/* Settings Header + Valley Status Bar */}
+            <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-white/10 bg-[#091115] space-y-2.5 shrink-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Settings className="w-5 h-5 text-emerald-300 shrink-0" />
+                  <h2 className="font-display text-base sm:text-lg font-bold text-stone-50 truncate">
+                    إعدادات الوادي والصيد
+                  </h2>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onResetLook();
+                      setSettingsOpen(false);
+                    }}
+                    title="توسيط النظر نحو البحيرة"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-stone-100 bg-white/5 hover:bg-white/10 border border-white/15 rounded-lg transition-colors"
+                  >
+                    <Compass className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>توسيط النظر</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(false)}
+                    aria-label="إغلاق الإعدادات"
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/15 text-stone-300 hover:text-white border border-white/10 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
 
-              {/* Segmented Tabs */}
-              <div className="flex items-center gap-1 p-1 bg-black/35 rounded-lg border border-white/10 shrink-0 overflow-x-auto">
+              {/* Status metadata strip */}
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-stone-300 font-mono-nums">
+                <span>المستوى {hud.progression.level}</span>
+                <span className="text-stone-500">·</span>
+                <span className="text-amber-300">{hud.progression.availableXp} خبرة متاحة</span>
+                <span className="text-stone-500">·</span>
+                <span>{formatHourToClock(hud.timeOfDay)}</span>
+                <span className="text-stone-500">·</span>
+                <span>{currentSeason.nameAr}</span>
+                <span className="text-stone-500">·</span>
+                <span>{currentWeatherLabel}</span>
+                <span className="text-stone-500">·</span>
+                <span>رياح {hud.windSpeedKmh} كم/س</span>
+                <span className="text-stone-500">·</span>
+                <span className="text-sky-200">{currentLocationLabel}</span>
+                {hud.coldIntensity > 0.45 && (
+                  <>
+                    <span className="text-stone-500">·</span>
+                    <span className="inline-flex items-center gap-1 text-sky-200">
+                      <Snowflake className="w-3.5 h-3.5 text-sky-300" />
+                      طقس بارد
+                    </span>
+                  </>
+                )}
+              </div>
+
+              {/* 7 Unified Tabs */}
+              <div className="flex items-center gap-1 p-1 bg-black/40 rounded-xl border border-white/10 overflow-x-auto">
                 <button
                   type="button"
                   onClick={() => setActiveTab('fishing')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
                     activeTab === 'fishing' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
                   }`}
                 >
@@ -745,11 +916,29 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 </button>
                 <button
                   type="button"
+                  onClick={() => setActiveTab('boat')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                    activeTab === 'boat' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <Anchor className="w-3.5 h-3.5" />
+                  <span>القارب والاستكشاف</span>
+                  <span
+                    className={`font-mono-nums text-[10px] ${
+                      activeTab === 'boat' ? 'text-sky-700' : 'text-sky-300'
+                    }`}
+                  >
+                    ({discoveredPoisCount}/{hud.pois.length || 5})
+                  </span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setActiveTab('challenges')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap flex items-center gap-1 ${
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 ${
                     activeTab === 'challenges' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
                   }`}
                 >
+                  <Target className="w-3.5 h-3.5" />
                   <span>التحديات اليومية</span>
                   <span
                     className={`font-mono-nums text-[10px] ${
@@ -766,7 +955,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('atmosphere')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
                     activeTab === 'atmosphere' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
                   }`}
                 >
@@ -775,7 +964,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('skills')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
                     activeTab === 'skills' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
                   }`}
                 >
@@ -784,544 +973,870 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('radio')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 ${
                     activeTab === 'radio' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
                   }`}
                 >
-                  الصوت والراديو
+                  <Radio className="w-3.5 h-3.5" />
+                  <span>السينما والراديو والصوت</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('journal')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                    activeTab === 'journal' ? 'bg-stone-100 text-stone-900' : 'text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>السجل والأسماك ({hud.catchHistory.length})</span>
                 </button>
               </div>
             </div>
 
-            {/* Tab 1: Fishing Gear, Baits, Hooks & Depth */}
-            {activeTab === 'fishing' && (
-              <div className="pt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                <div>
-                  <div className="text-stone-400 mb-1.5">الطعم المستخدم</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {BAIT_CATALOG.map((bait) => {
-                      const unlocked = hud.progression.unlockedBaits.includes(bait.id);
-                      const active = hud.selectedBait === bait.id;
-                      return (
-                        <button
-                          key={bait.id}
-                          type="button"
-                          disabled={!unlocked}
-                          onClick={() => onSelectBait(bait.id)}
-                          title={unlocked ? bait.subtitleAr : `يُفتح عند المستوى ${bait.unlockLevel}`}
-                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
-                            active
-                              ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
-                              : unlocked
-                                ? 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
-                                : 'bg-black/25 border-white/5 text-stone-500 cursor-not-allowed'
-                          }`}
-                        >
-                          {!unlocked && <Lock className="w-3 h-3" />}
-                          <span>{bait.nameAr}</span>
-                          {!unlocked && <span className="font-mono-nums text-[10px]">({bait.unlockLevel})</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-stone-400 mb-1.5">نوع الخطاف</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {HOOK_CATALOG.map((hook) => {
-                      const unlocked = hud.progression.unlockedHooks.includes(hook.id);
-                      const active = hud.selectedHook === hook.id;
-                      return (
-                        <button
-                          key={hook.id}
-                          type="button"
-                          disabled={!unlocked}
-                          onClick={() => onSelectHook(hook.id)}
-                          title={unlocked ? hook.subtitleAr : `يُفتح عند المستوى ${hook.unlockLevel}`}
-                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
-                            active
-                              ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
-                              : unlocked
-                                ? 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
-                                : 'bg-black/25 border-white/5 text-stone-500 cursor-not-allowed'
-                          }`}
-                        >
-                          {!unlocked && <Lock className="w-3 h-3" />}
-                          <span>{hook.nameAr}</span>
-                          {!unlocked && <span className="font-mono-nums text-[10px]">({hook.unlockLevel})</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-stone-400 mb-1.5 flex items-center justify-between">
-                    <span>عمق الطعم تحت العوامة</span>
-                    {hud.currentCastZone && (
-                      <span className="text-emerald-300">{LAKE_ZONE_LABELS[hud.currentCastZone]}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {[
-                      { label: 'سطحي 0.6م', val: 0.6 },
-                      { label: 'متوسط 1.5م', val: 1.5 },
-                      { label: 'عميق 2.6م', val: 2.6 },
-                    ].map((d) => (
-                      <button
-                        key={d.val}
-                        type="button"
-                        onClick={() => onSelectDepth(d.val)}
-                        className={`flex-1 py-1.5 px-2 rounded-md border text-center transition-colors whitespace-nowrap ${
-                          Math.abs(hud.lineDepthMeters - d.val) < 0.35
-                            ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
-                            : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
-                        }`}
-                      >
-                        {d.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="mt-1.5 text-[11px] text-stone-400">
-                    اضغط مطولاً على الشاشة للرمي أو السحب · اسحب يميناً ويساراً للالتفات حول الجبال والكرسي
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Tab 2: Daily Challenges */}
-            {activeTab === 'challenges' && (
-              <div className="pt-3 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-stone-100">تحديات اليوم ({hud.dailyChallenges.dateKey})</span>
-                    <span className="text-stone-400">· تتجدد يومياً بمهام ومكافآت خبرة إضافية</span>
-                  </div>
-                  <div className="flex items-center gap-3 font-mono-nums">
-                    <span className="text-emerald-300">
-                      المكتمل اليوم: {completedChallengesToday}/{totalChallengesToday}
-                    </span>
-                    <span className="text-amber-300">إجمالي المنجز: {hud.dailyChallenges.completedTotal}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-                  {hud.dailyChallenges.challenges.map((ch) => {
-                    const targetSpecies = ch.speciesId
-                      ? FISH_SPECIES.find((s) => s.id === ch.speciesId)
-                      : undefined;
-                    const targetBait = ch.baitId ? BAIT_CATALOG.find((b) => b.id === ch.baitId) : undefined;
-                    const targetWeather = ch.weather
-                      ? WEATHER_OPTIONS.find((w) => w.id === ch.weather)
-                      : undefined;
-
-                    const baitMatched = !ch.baitId || hud.selectedBait === ch.baitId;
-                    const baitUnlocked = !ch.baitId || hud.progression.unlockedBaits.includes(ch.baitId);
-                    const weatherMatched = !ch.weather || hud.weather === ch.weather;
-                    const pct = Math.min(100, Math.round((ch.progress / Math.max(1, ch.targetCount)) * 100));
-
-                    return (
-                      <div
-                        key={ch.id}
-                        className={`p-2.5 rounded-lg border flex flex-col justify-between gap-2 ${
-                          ch.completed
-                            ? 'bg-emerald-950/35 border-emerald-400/40'
-                            : 'bg-white/5 border-white/10'
-                        }`}
-                      >
-                        <div>
-                          <div className="flex items-start justify-between gap-2 mb-1">
-                            <span className="font-semibold text-stone-100">{ch.titleAr}</span>
-                            {ch.completed ? (
-                              <span className="flex items-center gap-1 text-emerald-300 font-semibold shrink-0">
-                                <Check className="w-3.5 h-3.5" />
-                                <span>مكتمل</span>
-                              </span>
-                            ) : (
-                              <span className="font-mono-nums text-amber-300 font-semibold shrink-0">
-                                +{ch.xpReward} XP
-                              </span>
-                            )}
-                          </div>
-
-                          <p className="text-stone-200 leading-snug mb-2">{ch.descriptionAr}</p>
-
-                          <div className="flex flex-wrap gap-1.5 mb-2 text-[11px]">
-                            {targetSpecies && (
-                              <span className="px-2 py-0.5 rounded bg-black/30 border border-white/10 text-stone-200">
-                                السمكة: {targetSpecies.nameAr}
-                              </span>
-                            )}
-                            {targetBait && (
-                              <button
-                                type="button"
-                                disabled={!baitUnlocked || baitMatched || ch.completed}
-                                onClick={() => ch.baitId && onSelectBait(ch.baitId)}
-                                title={
-                                  baitMatched
-                                    ? 'الطعم مجهز حالياً'
-                                    : baitUnlocked
-                                      ? `اضغط لتجهيز ${targetBait.nameAr}`
-                                      : `يُفتح عند المستوى ${targetBait.unlockLevel}`
-                                }
-                                className={`px-2 py-0.5 rounded border transition-colors ${
-                                  baitMatched
-                                    ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
-                                    : baitUnlocked && !ch.completed
-                                      ? 'bg-amber-500/15 border-amber-400/40 text-amber-200 hover:bg-amber-500/25'
-                                      : 'bg-black/30 border-white/10 text-stone-400'
-                                }`}
-                              >
-                                الطُعم: {targetBait.nameAr} {baitMatched ? '✓' : baitUnlocked && !ch.completed ? '· تجهيز' : ''}
-                              </button>
-                            )}
-                            {targetWeather && (
-                              <button
-                                type="button"
-                                disabled={weatherMatched || ch.completed}
-                                onClick={() => ch.weather && onSelectWeather(ch.weather)}
-                                title={weatherMatched ? 'الطقس الحالي مطابق' : `اضغط لضبط الطقس إلى ${targetWeather.label}`}
-                                className={`px-2 py-0.5 rounded border transition-colors ${
-                                  weatherMatched
-                                    ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
-                                    : !ch.completed
-                                      ? 'bg-amber-500/15 border-amber-400/40 text-amber-200 hover:bg-amber-500/25'
-                                      : 'bg-black/30 border-white/10 text-stone-400'
-                                }`}
-                              >
-                                الطقس: {targetWeather.label} {weatherMatched ? '✓' : !ch.completed ? '· ضبط' : ''}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex items-center justify-between text-[11px] text-stone-400 mb-1">
-                            <span className="truncate">{ch.hintAr}</span>
-                            <span className="font-mono-nums text-stone-200 shrink-0 mr-2">
-                              {ch.progress}/{ch.targetCount}
-                            </span>
-                          </div>
-                          <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden">
-                            <div
-                              className={`h-full transition-[width] ${ch.completed ? 'bg-emerald-400' : 'bg-amber-400'}`}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Tab 3: Dynamic Weather, Seasons & Time of Day */}
-            {activeTab === 'atmosphere' && (
-              <div className="pt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                <div className="space-y-2.5">
+            {/* Settings Scrollable Body */}
+            <div className="p-4 sm:p-5 overflow-y-auto flex-1">
+              {/* Tab 1: Fishing Gear, Baits, Hooks & Depth */}
+              {activeTab === 'fishing' && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
                   <div>
-                    <div className="text-stone-400 mb-1.5 flex items-center justify-between gap-2">
-                      <span>الموسم</span>
-                      <span className="text-stone-300 truncate">{hud.fishingConditionLabel}</span>
+                    <div className="text-stone-400 mb-2 font-medium">الطعم المستخدم</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {BAIT_CATALOG.map((bait) => {
+                        const unlocked = hud.progression.unlockedBaits.includes(bait.id);
+                        const active = hud.selectedBait === bait.id;
+                        return (
+                          <button
+                            key={bait.id}
+                            type="button"
+                            disabled={!unlocked}
+                            onClick={() => onSelectBait(bait.id)}
+                            title={unlocked ? bait.subtitleAr : `يُفتح عند المستوى ${bait.unlockLevel}`}
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
+                              active
+                                ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
+                                : unlocked
+                                  ? 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
+                                  : 'bg-black/25 border-white/5 text-stone-500 cursor-not-allowed'
+                            }`}
+                          >
+                            {!unlocked && <Lock className="w-3 h-3" />}
+                            <span>{bait.nameAr}</span>
+                            {!unlocked && <span className="font-mono-nums text-[10px]">({bait.unlockLevel})</span>}
+                          </button>
+                        );
+                      })}
                     </div>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {SEASON_CATALOG.map((s) => (
+                  </div>
+
+                  <div>
+                    <div className="text-stone-400 mb-2 font-medium">نوع الخطاف</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {HOOK_CATALOG.map((hook) => {
+                        const unlocked = hud.progression.unlockedHooks.includes(hook.id);
+                        const active = hud.selectedHook === hook.id;
+                        return (
+                          <button
+                            key={hook.id}
+                            type="button"
+                            disabled={!unlocked}
+                            onClick={() => onSelectHook(hook.id)}
+                            title={unlocked ? hook.subtitleAr : `يُفتح عند المستوى ${hook.unlockLevel}`}
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
+                              active
+                                ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
+                                : unlocked
+                                  ? 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
+                                  : 'bg-black/25 border-white/5 text-stone-500 cursor-not-allowed'
+                            }`}
+                          >
+                            {!unlocked && <Lock className="w-3 h-3" />}
+                            <span>{hook.nameAr}</span>
+                            {!unlocked && <span className="font-mono-nums text-[10px]">({hook.unlockLevel})</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-stone-400 mb-2 flex items-center justify-between font-medium">
+                      <span>عمق الطعم تحت العوامة</span>
+                      {hud.currentCastZone && (
+                        <span className="text-emerald-300">{LAKE_ZONE_LABELS[hud.currentCastZone]}</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {[
+                        { label: 'سطحي 0.6م', val: 0.6 },
+                        { label: 'متوسط 1.5م', val: 1.5 },
+                        { label: 'عميق 2.6م', val: 2.6 },
+                        { label: 'أعماق 4.4م', val: 4.4 },
+                      ].map((d) => (
                         <button
-                          key={s.id}
+                          key={d.val}
                           type="button"
-                          onClick={() => onSelectSeason(s.id)}
-                          title={s.descriptionAr}
-                          className={`py-1.5 px-2 rounded-md border transition-colors whitespace-nowrap ${
-                            hud.season === s.id
+                          onClick={() => onSelectDepth(d.val)}
+                          className={`py-2 px-2 rounded-md border text-center transition-colors whitespace-nowrap ${
+                            Math.abs(hud.lineDepthMeters - d.val) < 0.45
                               ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
                               : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
                           }`}
                         >
-                          {s.nameAr}
+                          {d.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-2.5 text-[11px] text-stone-400 leading-relaxed">
+                      اضغط مطولاً على الشاشة للرمي أو السحب · اسحب يميناً ويساراً للالتفات حول الجبال والبحيرة.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 2: Boat Upgrades, Free Roam, Anchor Spots & POIs */}
+              {activeTab === 'boat' && (
+                <div className="space-y-4 text-xs">
+                  {/* Free Roam Explorer Banner */}
+                  <div className="p-3 rounded-xl bg-sky-950/35 border border-sky-400/30 flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-0.5">
+                      <div className="font-semibold text-sky-100 flex items-center gap-1.5">
+                        <Compass className="w-4 h-4 text-sky-300 shrink-0" />
+                        <span>التجول الحر بالقارب واستكشاف البحيرة</span>
+                      </div>
+                      <p className="text-[11px] text-stone-300">
+                        {hud.isOnBoat
+                          ? 'أنت الآن على متن القارب — استخدم مفاتيح W / A / S / D أو أزرار الدفة أسفل الشاشة للإبحار بحرية.'
+                          : 'انطلق بالقارب في أي اتجاه لاستكشاف الخلجان الضحلة والكهوف والمزارات حول البحيرة.'}
+                      </p>
+                    </div>
+                    {!hud.isOnBoat ? (
+                      <button
+                        type="button"
+                        disabled={hud.phase === 'caught'}
+                        onClick={() => {
+                          onBoardBoatFreeRoam();
+                          setSettingsOpen(false);
+                        }}
+                        className="px-3.5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:bg-stone-700 disabled:text-stone-400 text-stone-950 font-semibold transition-colors whitespace-nowrap shrink-0"
+                      >
+                        انطلاق للتجول الحر بالقارب
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={hud.isSailing || hud.phase === 'caught'}
+                        onClick={() => {
+                          onSelectLocation('pier');
+                          setSettingsOpen(false);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-stone-100 font-medium transition-colors whitespace-nowrap shrink-0"
+                      >
+                        العودة للرصيف
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+                    {/* Boat Tier Status & Upgrade Card */}
+                    <div className="lg:col-span-5 p-3 rounded-lg bg-white/5 border border-white/10 flex flex-col justify-between gap-2.5">
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-1.5 font-semibold text-stone-100">
+                            <Anchor className="w-4 h-4 text-sky-300 shrink-0" />
+                            <span>{currentBoat.nameAr}</span>
+                          </div>
+                          <span className="font-mono-nums text-[11px] text-sky-300">
+                            المستوى {currentBoat.level}/4
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-stone-300 leading-snug mb-2">{currentBoat.subtitleAr}</p>
+                        <div className="grid grid-cols-3 gap-1.5 text-[11px] font-mono-nums bg-black/30 rounded p-2 border border-white/10 text-stone-200">
+                          <div>
+                            <span className="text-stone-400 block text-[10px]">أقصى عمق</span>
+                            <span>{currentBoat.maxReachDepthMeters} م</span>
+                          </div>
+                          <div>
+                            <span className="text-stone-400 block text-[10px]">السرعة</span>
+                            <span>{currentBoat.speedMps} م/ث</span>
+                          </div>
+                          <div>
+                            <span className="text-stone-400 block text-[10px]">جذب النوادر</span>
+                            <span className="text-emerald-300">
+                              +{Math.round((currentBoat.rareAttractionBonus - 1) * 100)}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {nextBoat ? (
+                        <div className="pt-2 border-t border-white/10 space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-amber-300 font-semibold">الترقية التالية: {nextBoat.nameAr}</span>
+                            <span className="font-mono-nums text-stone-300">
+                              متاح: {hud.progression.availableXp} XP
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-stone-400">{nextBoat.unlockSummaryAr}</div>
+                          <button
+                            type="button"
+                            disabled={hud.progression.availableXp < nextBoat.upgradeCostXp}
+                            onClick={onUpgradeBoat}
+                            className={`w-full py-2 px-3 rounded-md flex items-center justify-center gap-1.5 font-semibold transition-colors ${
+                              hud.progression.availableXp >= nextBoat.upgradeCostXp
+                                ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
+                                : 'bg-stone-800 text-stone-500 cursor-not-allowed'
+                            }`}
+                          >
+                            <ArrowUpRight className="w-3.5 h-3.5" />
+                            <span className="font-mono-nums">
+                              ترقية القارب ({nextBoat.upgradeCostXp} نقطة خبرة)
+                            </span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="pt-2 border-t border-white/10 flex items-center gap-1.5 text-emerald-300 font-semibold text-[11px]">
+                          <Check className="w-4 h-4 shrink-0" />
+                          <span>وصلت لأعلى فئة قوارب — جميع أعماق وسط البحيرة مفتوحة!</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Lake Anchor Spots Selector */}
+                    <div className="lg:col-span-7 flex flex-col gap-2">
+                      <div className="flex items-center justify-between text-stone-300">
+                        <span className="font-semibold flex items-center gap-1.5">
+                          <Navigation className="w-3.5 h-3.5 text-emerald-300" />
+                          <span>مواقع الصيد العميقة</span>
+                        </span>
+                        <span className="font-mono-nums text-[11px] text-sky-300">
+                          العمق تحتك: {hud.waterDepthUnderPlayer} م
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {LAKE_ANCHOR_SPOTS.map((spot) => {
+                          const unlocked = hud.progression.boatLevel >= spot.requiredBoatLevel;
+                          const isCurrent = hud.currentLocationId === spot.id;
+                          return (
+                            <button
+                              key={spot.id}
+                              type="button"
+                              disabled={!unlocked || isCurrent || hud.isSailing || hud.phase === 'caught'}
+                              onClick={() => {
+                                onSelectLocation(spot.id);
+                                setSettingsOpen(false);
+                              }}
+                              className={`p-2 rounded-lg border text-right transition-colors flex flex-col justify-between gap-1 ${
+                                isCurrent
+                                  ? 'bg-sky-600/25 border-sky-400/70 text-sky-100'
+                                  : unlocked
+                                    ? 'bg-white/5 border-white/12 text-stone-200 hover:bg-white/12'
+                                    : 'bg-black/30 border-white/5 text-stone-500 cursor-not-allowed'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-1.5 w-full">
+                                <span className="font-semibold truncate flex items-center gap-1">
+                                  {!unlocked && <Lock className="w-3 h-3 shrink-0" />}
+                                  <span>{spot.nameAr}</span>
+                                </span>
+                                <span className="font-mono-nums text-[10px] px-1.5 py-0.5 rounded bg-black/35 text-amber-300 shrink-0">
+                                  {spot.waterDepthMeters}م
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-stone-400 truncate w-full">
+                                الأسماك: {spot.notableSpeciesAr}
+                              </div>
+                              <div className="text-[10px] font-medium mt-0.5">
+                                {isCurrent ? (
+                                  <span className="text-sky-300">● موقعك الحالي</span>
+                                ) : !unlocked ? (
+                                  <span className="text-stone-500">
+                                    يتطلب ترقية القارب للمستوى {spot.requiredBoatLevel}
+                                  </span>
+                                ) : hud.isSailing ? (
+                                  <span className="text-stone-400">جاري الإبحار...</span>
+                                ) : (
+                                  <span className="text-emerald-300">
+                                    {spot.id === 'pier' ? '← العودة للرصيف' : '← أبحر إلى هذه المنطقة'}
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Points of Interest (POI) Explorer Directory */}
+                  <div className="pt-3 border-t border-white/10">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                      <div className="flex items-center gap-1.5 font-semibold text-stone-100">
+                        <MapPin className="w-4 h-4 text-amber-300 shrink-0" />
+                        <span>نقاط الاهتمام والمعالم السرية حول البحيرة</span>
+                      </div>
+                      <span className="font-mono-nums text-amber-300 text-[11px]">
+                        المكتشف: {discoveredPoisCount} / {hud.pois.length || 5}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {hud.pois.map((poi) => (
+                        <div
+                          key={poi.id}
+                          className={`p-3 rounded-lg border flex flex-col justify-between gap-2 ${
+                            poi.discovered
+                              ? 'bg-emerald-950/30 border-emerald-400/35'
+                              : 'bg-white/5 border-white/10'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <div className="min-w-0">
+                                <div className="font-semibold text-stone-100 truncate">
+                                  {poi.discovered ? poi.nameAr : poi.mysteryTitleAr}
+                                </div>
+                                <div className="text-[10px] text-stone-400">{poi.categoryAr}</div>
+                              </div>
+                              {poi.discovered ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-[10px] font-semibold shrink-0">
+                                  <Check className="w-3 h-3" />
+                                  مكتشف
+                                </span>
+                              ) : (
+                                <span className="font-mono-nums px-2 py-0.5 rounded bg-amber-500/15 border border-amber-400/35 text-amber-200 text-[10px] font-semibold shrink-0">
+                                  +{poi.xpReward} XP
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="text-[11px] text-stone-300 leading-relaxed mb-2">
+                              {poi.discovered ? poi.discoveryStoryAr : poi.hintAr}
+                            </p>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/8">
+                            <span className="font-mono-nums text-[11px] text-sky-200">
+                              الاتجاه: {poi.bearingLabelAr} · {poi.distanceMeters} م
+                            </span>
+
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onLookAtPoi(poi.id);
+                                  setSettingsOpen(false);
+                                }}
+                                className="px-2.5 py-1 rounded bg-white/8 hover:bg-white/15 border border-white/12 text-stone-100 text-[11px] transition-colors"
+                              >
+                                توجيه النظر
+                              </button>
+                              {poi.discovered && (
+                                <button
+                                  type="button"
+                                  disabled={hud.isSailing || hud.phase === 'caught'}
+                                  onClick={() => {
+                                    onSailToPoi(poi.id);
+                                    setSettingsOpen(false);
+                                  }}
+                                  className="px-2.5 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 disabled:bg-stone-700 text-white text-[11px] font-medium transition-colors"
+                                >
+                                  إبحار للمعلم
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 3: Daily Challenges */}
+              {activeTab === 'challenges' && (
+                <div className="text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-stone-100">
+                        تحديات اليوم ({hud.dailyChallenges.dateKey})
+                      </span>
+                      <span className="text-stone-400">· تتجدد يومياً بمهام ومكافآت خبرة إضافية</span>
+                    </div>
+                    <div className="flex items-center gap-3 font-mono-nums">
+                      <span className="text-emerald-300">
+                        المكتمل اليوم: {completedChallengesToday}/{totalChallengesToday}
+                      </span>
+                      <span className="text-amber-300">إجمالي المنجز: {hud.dailyChallenges.completedTotal}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                    {hud.dailyChallenges.challenges.map((ch) => {
+                      const targetSpecies = ch.speciesId
+                        ? FISH_SPECIES.find((s) => s.id === ch.speciesId)
+                        : undefined;
+                      const targetBait = ch.baitId ? BAIT_CATALOG.find((b) => b.id === ch.baitId) : undefined;
+                      const targetWeather = ch.weather
+                        ? WEATHER_OPTIONS.find((w) => w.id === ch.weather)
+                        : undefined;
+
+                      const baitMatched = !ch.baitId || hud.selectedBait === ch.baitId;
+                      const baitUnlocked = !ch.baitId || hud.progression.unlockedBaits.includes(ch.baitId);
+                      const weatherMatched = !ch.weather || hud.weather === ch.weather;
+                      const pct = Math.min(100, Math.round((ch.progress / Math.max(1, ch.targetCount)) * 100));
+
+                      return (
+                        <div
+                          key={ch.id}
+                          className={`p-3 rounded-lg border flex flex-col justify-between gap-2 ${
+                            ch.completed
+                              ? 'bg-emerald-950/35 border-emerald-400/40'
+                              : 'bg-white/5 border-white/10'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <span className="font-semibold text-stone-100">{ch.titleAr}</span>
+                              {ch.completed ? (
+                                <span className="flex items-center gap-1 text-emerald-300 font-semibold shrink-0">
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>مكتمل</span>
+                                </span>
+                              ) : (
+                                <span className="font-mono-nums text-amber-300 font-semibold shrink-0">
+                                  +{ch.xpReward} XP
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="text-stone-200 leading-snug mb-2">{ch.descriptionAr}</p>
+
+                            <div className="flex flex-wrap gap-1.5 mb-2 text-[11px]">
+                              {targetSpecies && (
+                                <span className="px-2 py-0.5 rounded bg-black/30 border border-white/10 text-stone-200">
+                                  السمكة: {targetSpecies.nameAr}
+                                </span>
+                              )}
+                              {targetBait && (
+                                <button
+                                  type="button"
+                                  disabled={!baitUnlocked || baitMatched || ch.completed}
+                                  onClick={() => ch.baitId && onSelectBait(ch.baitId)}
+                                  title={
+                                    baitMatched
+                                      ? 'الطعم مجهز حالياً'
+                                      : baitUnlocked
+                                        ? `اضغط لتجهيز ${targetBait.nameAr}`
+                                        : `يُفتح عند المستوى ${targetBait.unlockLevel}`
+                                  }
+                                  className={`px-2 py-0.5 rounded border transition-colors ${
+                                    baitMatched
+                                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
+                                      : baitUnlocked && !ch.completed
+                                        ? 'bg-amber-500/15 border-amber-400/40 text-amber-200 hover:bg-amber-500/25'
+                                        : 'bg-black/30 border-white/10 text-stone-400'
+                                  }`}
+                                >
+                                  الطُعم: {targetBait.nameAr}{' '}
+                                  {baitMatched ? '✓' : baitUnlocked && !ch.completed ? '· تجهيز' : ''}
+                                </button>
+                              )}
+                              {targetWeather && (
+                                <button
+                                  type="button"
+                                  disabled={weatherMatched || ch.completed}
+                                  onClick={() => ch.weather && onSelectWeather(ch.weather)}
+                                  title={
+                                    weatherMatched
+                                      ? 'الطقس الحالي مطابق'
+                                      : `اضغط لضبط الطقس إلى ${targetWeather.label}`
+                                  }
+                                  className={`px-2 py-0.5 rounded border transition-colors ${
+                                    weatherMatched
+                                      ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                                      : !ch.completed
+                                        ? 'bg-amber-500/15 border-amber-400/40 text-amber-200 hover:bg-amber-500/25'
+                                        : 'bg-black/30 border-white/10 text-stone-400'
+                                  }`}
+                                >
+                                  الطقس: {targetWeather.label}{' '}
+                                  {weatherMatched ? '✓' : !ch.completed ? '· ضبط' : ''}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-stone-400 mb-1">
+                              <span className="truncate">{ch.hintAr}</span>
+                              <span className="font-mono-nums text-stone-200 shrink-0 mr-2">
+                                {ch.progress}/{ch.targetCount}
+                              </span>
+                            </div>
+                            <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden">
+                              <div
+                                className={`h-full transition-[width] ${
+                                  ch.completed ? 'bg-emerald-400' : 'bg-amber-400'
+                                }`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 4: Dynamic Weather, Seasons & Time of Day */}
+              {activeTab === 'atmosphere' && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                  <div className="space-y-3">
+                    <div>
+                      <div className="text-stone-400 mb-1.5 flex items-center justify-between gap-2">
+                        <span>الموسم</span>
+                        <span className="text-stone-300 truncate">{hud.fishingConditionLabel}</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {SEASON_CATALOG.map((s) => (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => onSelectSeason(s.id)}
+                            title={s.descriptionAr}
+                            className={`py-1.5 px-2 rounded-md border transition-colors whitespace-nowrap ${
+                              hud.season === s.id
+                                ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
+                                : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
+                            }`}
+                          >
+                            {s.nameAr}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-stone-400 mb-1 flex items-center justify-between gap-2">
+                        <span>
+                          سرعة الرياح والأمواج ({hud.windSpeedKmh} كم/س ·{' '}
+                          {hud.windSpeedKmh >= 24 ? 'أمواج عالية' : hud.windSpeedKmh >= 10 ? 'متموجة' : 'هادئة'})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onToggleAutoWind(!hud.autoWind)}
+                          className={`text-[11px] underline shrink-0 ${
+                            hud.autoWind ? 'text-emerald-300' : 'text-stone-400'
+                          }`}
+                        >
+                          {hud.autoWind ? 'تلقائية' : 'يدوية'}
+                        </button>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={45}
+                        step={1}
+                        value={hud.windSpeedKmh}
+                        onChange={(e) => onSetWindSpeed(parseInt(e.target.value, 10))}
+                        aria-label="سرعة الرياح"
+                        className="w-full accent-sky-400 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-stone-400 mb-1.5 flex items-center justify-between">
+                      <span>حالة الطقس</span>
+                      <button
+                        type="button"
+                        onClick={() => onToggleAutoWeather(!hud.autoWeather)}
+                        className={`text-[11px] underline ${
+                          hud.autoWeather ? 'text-emerald-300' : 'text-stone-400'
+                        }`}
+                      >
+                        {hud.autoWeather ? 'تغير تلقائي: مفعّل' : 'تغير تلقائي: متوقف'}
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {WEATHER_OPTIONS.map((w) => (
+                        <button
+                          key={w.id}
+                          type="button"
+                          onClick={() => onSelectWeather(w.id)}
+                          className={`px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
+                            hud.weather === w.id
+                              ? 'bg-sky-600/30 border-sky-400 text-sky-100'
+                              : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
+                          }`}
+                        >
+                          {w.label}
                         </button>
                       ))}
                     </div>
                   </div>
 
                   <div>
-                    <div className="text-stone-400 mb-1 flex items-center justify-between gap-2">
-                      <span>
-                        سرعة الرياح والأمواج ({hud.windSpeedKmh} كم/س ·{' '}
-                        {hud.windSpeedKmh >= 24 ? 'أمواج عالية' : hud.windSpeedKmh >= 10 ? 'متموجة' : 'هادئة'})
-                      </span>
+                    <div className="text-stone-400 mb-1.5 flex items-center justify-between">
+                      <span>الوقت ({formatHourToClock(hud.timeOfDay)})</span>
                       <button
                         type="button"
-                        onClick={() => onToggleAutoWind(!hud.autoWind)}
-                        className={`text-[11px] underline shrink-0 ${hud.autoWind ? 'text-emerald-300' : 'text-stone-400'}`}
+                        onClick={() => onToggleAutoTime(!hud.autoTimeCycle)}
+                        className={`text-[11px] underline ${
+                          hud.autoTimeCycle ? 'text-emerald-300' : 'text-stone-400'
+                        }`}
                       >
-                        {hud.autoWind ? 'تلقائية' : 'يدوية'}
+                        {hud.autoTimeCycle ? 'دورة تلقائية: مفعّلة' : 'دورة تلقائية: متوقفة'}
                       </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {TIME_PRESETS.map((tp) => (
+                        <button
+                          key={tp.id}
+                          type="button"
+                          onClick={() => onSelectTimePreset(tp.id, tp.hour)}
+                          className={`px-2 py-1 rounded border text-[11px] transition-colors whitespace-nowrap ${
+                            hud.timePreset === tp.id
+                              ? 'bg-amber-500/25 border-amber-400 text-amber-100'
+                              : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
+                          }`}
+                        >
+                          {tp.label}
+                        </button>
+                      ))}
                     </div>
                     <input
                       type="range"
                       min={0}
-                      max={45}
-                      step={1}
-                      value={hud.windSpeedKmh}
-                      onChange={(e) => onSetWindSpeed(parseInt(e.target.value, 10))}
-                      aria-label="سرعة الرياح"
-                      className="w-full accent-sky-400 cursor-pointer"
+                      max={23.9}
+                      step={0.1}
+                      value={hud.timeOfDay}
+                      onChange={(e) => onSetTimeHour(parseFloat(e.target.value))}
+                      aria-label="الوقت"
+                      className="w-full accent-amber-400 cursor-pointer"
                     />
                   </div>
                 </div>
+              )}
 
-                <div>
-                  <div className="text-stone-400 mb-1.5 flex items-center justify-between">
-                    <span>حالة الطقس</span>
-                    <button
-                      type="button"
-                      onClick={() => onToggleAutoWeather(!hud.autoWeather)}
-                      className={`text-[11px] underline ${hud.autoWeather ? 'text-emerald-300' : 'text-stone-400'}`}
-                    >
-                      {hud.autoWeather ? 'تغير تلقائي: مفعّل' : 'تغير تلقائي: متوقف'}
-                    </button>
+              {/* Tab 5: Player XP Progression & Upgradeable Skills */}
+              {activeTab === 'skills' && (
+                <div className="text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                    <div className="flex items-center gap-3">
+                      <span className="font-semibold text-stone-100">مستوى الصياد {hud.progression.level}</span>
+                      <span className="text-stone-400 font-mono-nums">
+                        إجمالي الخبرة: {hud.progression.totalXp} / {nextThreshold}
+                      </span>
+                    </div>
+                    <div className="text-amber-300 font-semibold font-mono-nums">
+                      نقاط خبرة للترقية: {hud.progression.availableXp}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {WEATHER_OPTIONS.map((w) => (
-                      <button
-                        key={w.id}
-                        type="button"
-                        onClick={() => onSelectWeather(w.id)}
-                        className={`px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
-                          hud.weather === w.id
-                            ? 'bg-sky-600/30 border-sky-400 text-sky-100'
-                            : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
-                        }`}
-                      >
-                        {w.label}
-                      </button>
-                    ))}
+                  <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden mb-3">
+                    <div className="h-full bg-amber-400 transition-[width]" style={{ width: `${levelProgressPct}%` }} />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                    {SKILL_CATALOG.map((sk) => {
+                      const lvl = hud.progression.skills[sk.key];
+                      const maxed = lvl >= sk.maxLevel;
+                      const cost = getSkillUpgradeCost(sk, lvl);
+                      const canAfford = !maxed && hud.progression.availableXp >= cost;
+
+                      return (
+                        <div
+                          key={sk.key}
+                          className="p-3 rounded-lg bg-white/5 border border-white/10 flex flex-col justify-between gap-2"
+                        >
+                          <div>
+                            <div className="flex items-center justify-between font-semibold text-stone-100 mb-1">
+                              <span>{sk.nameAr}</span>
+                              <span className="font-mono-nums text-emerald-300">
+                                {lvl}/{sk.maxLevel}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-stone-400 leading-snug">{sk.effectAr}</p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={!canAfford}
+                            onClick={() => onUpgradeSkill(sk.key)}
+                            className={`w-full py-1.5 px-2 rounded flex items-center justify-center gap-1 text-[11px] font-medium transition-colors ${
+                              maxed
+                                ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30'
+                                : canAfford
+                                  ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
+                                  : 'bg-stone-800 text-stone-500 cursor-not-allowed'
+                            }`}
+                          >
+                            {maxed ? (
+                              <>
+                                <Check className="w-3 h-3" />
+                                <span>مكتمل</span>
+                              </>
+                            ) : (
+                              <>
+                                <ArrowUpRight className="w-3 h-3" />
+                                <span className="font-mono-nums">ترقية ({cost} خبرة)</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
+              )}
 
-                <div>
-                  <div className="text-stone-400 mb-1.5 flex items-center justify-between">
-                    <span>الوقت ({formatHourToClock(hud.timeOfDay)})</span>
-                    <button
-                      type="button"
-                      onClick={() => onToggleAutoTime(!hud.autoTimeCycle)}
-                      className={`text-[11px] underline ${hud.autoTimeCycle ? 'text-emerald-300' : 'text-stone-400'}`}
-                    >
-                      {hud.autoTimeCycle ? 'دورة تلقائية: مفعّلة' : 'دورة تلقائية: متوقفة'}
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-1 mb-1.5">
-                    {TIME_PRESETS.map((tp) => (
+              {/* Tab 6: Cinematic View, Nature Ambience Mixer (incl. Frogs) & Live Radio */}
+              {activeTab === 'radio' && (
+                <div className="space-y-2 text-xs">
+                  {/* Cinematic Camera Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-white/5 border border-white/10">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                        <Film className="w-4 h-4 shrink-0" />
+                        <span>الرؤية السينمائية</span>
+                      </span>
                       <button
-                        key={tp.id}
                         type="button"
-                        onClick={() => onSelectTimePreset(tp.id, tp.hour)}
-                        className={`px-2 py-1 rounded border text-[11px] transition-colors whitespace-nowrap ${
-                          hud.timePreset === tp.id
-                            ? 'bg-amber-500/25 border-amber-400 text-amber-100'
-                            : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
+                        onClick={() => {
+                          onToggleCinematic();
+                          if (!hud.cinematicActive) setSettingsOpen(false);
+                        }}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border font-medium transition-colors ${
+                          hud.cinematicActive
+                            ? 'bg-emerald-500/25 border-emerald-400/70 text-emerald-100 hover:bg-emerald-500/35'
+                            : 'bg-emerald-600/20 hover:bg-emerald-600/35 border-emerald-400/40 text-emerald-100'
                         }`}
                       >
-                        {tp.label}
+                        <span>
+                          {hud.cinematicActive ? 'إنهاء الرؤية السينمائية' : 'تشغيل لقطة سينمائية الآن'}
+                        </span>
                       </button>
-                    ))}
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={23.9}
-                    step={0.1}
-                    value={hud.timeOfDay}
-                    onChange={(e) => onSetTimeHour(parseFloat(e.target.value))}
-                    className="w-full accent-amber-400 cursor-pointer"
-                  />
-                  <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-stone-300">اللقطة السينمائية عند الخمول (18ث)</span>
+                    </div>
+
                     <button
                       type="button"
                       onClick={() => onToggleCinematicAuto(!hud.cinematicAutoEnabled)}
-                      className={`underline shrink-0 ${
-                        hud.cinematicAutoEnabled ? 'text-emerald-300' : 'text-stone-400'
+                      className={`px-2.5 py-1.5 rounded-md border text-[11px] transition-colors ${
+                        hud.cinematicAutoEnabled
+                          ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                          : 'bg-black/25 border-white/10 text-stone-400 hover:text-stone-200'
                       }`}
                     >
-                      {hud.cinematicAutoEnabled ? 'مفعّلة' : 'متوقفة'}
+                      تفعيل تلقائي عند الخمول (18ث): {hud.cinematicAutoEnabled ? 'مفعّل' : 'متوقف'}
                     </button>
                   </div>
-                </div>
-              </div>
-            )}
 
-            {/* Tab 3: Player XP Progression & Upgradeable Skills */}
-            {activeTab === 'skills' && (
-              <div className="pt-3 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                  <div className="flex items-center gap-3">
-                    <span className="font-semibold text-stone-100">مستوى الصياد {hud.progression.level}</span>
-                    <span className="text-stone-400 font-mono-nums">
-                      إجمالي الخبرة: {hud.progression.totalXp} / {nextThreshold}
-                    </span>
+                  <LiveRadioPlayer
+                    activeStation={activeStation}
+                    customUrl={customUrl}
+                    isCustomActive={isCustomActive}
+                    isPlaying={radioPlaying}
+                    status={radioStatus}
+                    volume={radioVolume}
+                    errorMessage={radioError}
+                    ambienceMix={hud.ambienceMix}
+                    soundMuted={hud.soundMuted}
+                    onToggleMute={onToggleMute}
+                    onSetAmbienceMix={onSetAmbienceMix}
+                    onSelectStation={handleSelectStation}
+                    onPlayCustomUrl={handlePlayCustomUrl}
+                    onTogglePlay={handleToggleRadioPlay}
+                    onVolumeChange={setRadioVolume}
+                  />
+                </div>
+              )}
+
+              {/* Tab 7: Fisherman's Journal & Species Field Guide */}
+              {activeTab === 'journal' && (
+                <div className="space-y-5">
+                  <div className="text-xs text-stone-400">
+                    أنواع الأسماك في الأعماق: {FISH_SPECIES.length} (تظهر كمفاجأة عند الصيد) · إجمالي الصيد:{' '}
+                    {hud.catchHistory.length}
                   </div>
-                  <div className="text-amber-300 font-semibold font-mono-nums">
-                    نقاط خبرة للترقية: {hud.progression.availableXp}
-                  </div>
-                </div>
-                <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden mb-3">
-                  <div className="h-full bg-amber-400 transition-[width]" style={{ width: `${levelProgressPct}%` }} />
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                  {SKILL_CATALOG.map((sk) => {
-                    const lvl = hud.progression.skills[sk.key];
-                    const maxed = lvl >= sk.maxLevel;
-                    const cost = getSkillUpgradeCost(sk, lvl);
-                    const canAfford = !maxed && hud.progression.availableXp >= cost;
-
-                    return (
-                      <div
-                        key={sk.key}
-                        className="p-2.5 rounded-lg bg-white/5 border border-white/10 flex flex-col justify-between gap-2"
-                      >
-                        <div>
-                          <div className="flex items-center justify-between font-semibold text-stone-100 mb-0.5">
-                            <span>{sk.nameAr}</span>
-                            <span className="font-mono-nums text-emerald-300">
-                              {lvl}/{sk.maxLevel}
-                            </span>
+                  <div>
+                    <h3 className="font-display text-sm font-semibold text-emerald-300 mb-2.5">
+                      أنواع الأسماك وسلوكياتها
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {FISH_SPECIES.map((sp) => {
+                        const rec = hud.speciesRecords[sp.id];
+                        return (
+                          <div key={sp.id} className="p-3 rounded-lg bg-white/5 border border-white/10 text-xs">
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <div>
+                                <span className="font-semibold text-stone-100 block">{sp.nameAr}</span>
+                                <span className="text-amber-300 text-[11px]">{sp.rarity}</span>
+                              </div>
+                              <FishIllustration species={sp} className="w-16 h-9 shrink-0" />
+                            </div>
+                            <p className="text-stone-300 mb-2 leading-relaxed">{sp.descriptionAr}</p>
+                            <div className="flex items-center justify-between px-2.5 py-1 rounded bg-black/30 border border-white/10 mb-2 text-[11px] font-mono-nums">
+                              <span className="flex items-center gap-1 text-amber-300">
+                                <Trophy className="w-3.5 h-3.5 shrink-0" />
+                                <span>الوزن القياسي:</span>
+                              </span>
+                              <span className={rec ? 'text-stone-100 font-semibold' : 'text-stone-500'}>
+                                {rec ? `${rec.maxWeightKg} كجم (${rec.maxLengthCm} سم)` : 'لم يُسجّل بعد'}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-stone-400 space-y-0.5">
+                              <div>السلوك: {sp.behaviorLabelAr}</div>
+                              <div>المواقع: {sp.preferredZones.map((z) => LAKE_ZONE_LABELS[z]).join(' · ')}</div>
+                              <div>
+                                الطعوم المفضلة:{' '}
+                                {sp.favoriteBaits
+                                  .map((bId) => BAIT_CATALOG.find((b) => b.id === bId)?.nameAr ?? bId)
+                                  .join('، ')}
+                              </div>
+                            </div>
                           </div>
-                          <p className="text-[11px] text-stone-400 leading-snug">{sk.effectAr}</p>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={!canAfford}
-                          onClick={() => onUpgradeSkill(sk.key)}
-                          className={`w-full py-1.5 px-2 rounded flex items-center justify-center gap-1 text-[11px] font-medium transition-colors ${
-                            maxed
-                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30'
-                              : canAfford
-                                ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
-                                : 'bg-stone-800 text-stone-500 cursor-not-allowed'
-                          }`}
-                        >
-                          {maxed ? (
-                            <>
-                              <Check className="w-3 h-3" />
-                              <span>مكتمل</span>
-                            </>
-                          ) : (
-                            <>
-                              <ArrowUpRight className="w-3 h-3" />
-                              <span className="font-mono-nums">ترقية ({cost} خبرة)</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Tab 4: Nature Ambience Library & Live Internet Radio Streams */}
-            {activeTab === 'radio' && (
-              <LiveRadioPlayer
-                activeStation={activeStation}
-                customUrl={customUrl}
-                isCustomActive={isCustomActive}
-                isPlaying={radioPlaying}
-                status={radioStatus}
-                volume={radioVolume}
-                errorMessage={radioError}
-                ambienceMix={hud.ambienceMix}
-                soundMuted={hud.soundMuted}
-                onToggleMute={onToggleMute}
-                onSetAmbienceMix={onSetAmbienceMix}
-                onSelectStation={handleSelectStation}
-                onPlayCustomUrl={handlePlayCustomUrl}
-                onTogglePlay={handleToggleRadioPlay}
-                onVolumeChange={setRadioVolume}
-              />
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Fisherman's Journal & Species Field Guide Modal */}
-      {journalOpen && (
-        <div className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-3xl max-h-[85vh] overflow-y-auto bg-[#0e181c] border border-white/15 rounded-xl p-5 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 mb-4 border-b border-white/10">
-              <div>
-                <h2 className="font-display text-lg font-bold text-stone-50">دليل أسماك الوادي وسجل الصيد</h2>
-                <div className="text-xs text-stone-400">
-                  أنواع الأسماك في الأعماق: {FISH_SPECIES.length} (تظهر كمفاجأة عند الصيد) · إجمالي الصيد: {hud.catchHistory.length}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setJournalOpen(false)}
-                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-stone-300 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="mb-5">
-              <h3 className="font-display text-sm font-semibold text-emerald-300 mb-2.5">أنواع الأسماك وسلوكياتها</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {FISH_SPECIES.map((sp) => (
-                  <div key={sp.id} className="p-3 rounded-lg bg-white/5 border border-white/10 text-xs">
-                    <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <div>
-                        <span className="font-semibold text-stone-100 block">{sp.nameAr}</span>
-                        <span className="text-amber-300 text-[11px]">{sp.rarity}</span>
-                      </div>
-                      <FishIllustration species={sp} className="w-16 h-9 shrink-0" />
-                    </div>
-                    <p className="text-stone-300 mb-2 leading-relaxed">{sp.descriptionAr}</p>
-                    <div className="text-[11px] text-stone-400 space-y-0.5">
-                      <div>السلوك: {sp.behaviorLabelAr}</div>
-                      <div>المواقع: {sp.preferredZones.map((z) => LAKE_ZONE_LABELS[z]).join(' · ')}</div>
-                      <div>
-                        الطعوم المفضلة:{' '}
-                        {sp.favoriteBaits
-                          .map((bId) => BAIT_CATALOG.find((b) => b.id === bId)?.nameAr ?? bId)
-                          .join('، ')}
-                      </div>
+                        );
+                      })}
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
 
-            <div>
-              <h3 className="font-display text-sm font-semibold text-amber-300 mb-2.5">سجل صيدك الأخير</h3>
-              {hud.catchHistory.length === 0 ? (
-                <div className="p-4 rounded-lg bg-black/25 border border-white/10 text-xs text-stone-400 text-center">
-                  لم تصطد أي سمكة بعد — اضغط مطولاً على الشاشة لرمي الصنارة وانتظر مفاجأة الأعماق.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {hud.catchHistory.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-xs"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <FishIllustration species={item.species} className="w-12 h-7 shrink-0" />
-                        <span className="font-semibold text-stone-100">{item.species.nameAr}</span>
-                        <span className="text-stone-400">·</span>
-                        <span className="text-stone-300">{LAKE_ZONE_LABELS[item.zone]}</span>
+                  <div>
+                    <h3 className="font-display text-sm font-semibold text-amber-300 mb-2.5">سجل صيدك الأخير</h3>
+                    {hud.catchHistory.length === 0 ? (
+                      <div className="p-4 rounded-lg bg-black/25 border border-white/10 text-xs text-stone-400 text-center">
+                        لم تصطد أي سمكة بعد — اضغط مطولاً على الشاشة لرمي الصنارة وانتظر مفاجأة الأعماق.
                       </div>
-                      <div className="flex items-center gap-3 font-mono-nums text-stone-300">
-                        <span>{item.lengthCm} سم</span>
-                        <span>{item.weightKg} كجم</span>
-                        <span className="text-amber-300">+{item.xpEarned} XP</span>
-                        <span className="text-stone-400">{item.released ? 'أُطلقت' : 'محتفظ بها'}</span>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {hud.catchHistory.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-xs"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <FishIllustration species={item.species} className="w-12 h-7 shrink-0" />
+                              <span className="font-semibold text-stone-100">{item.species.nameAr}</span>
+                              {item.isNewRecord && (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-amber-200 bg-amber-500/20 border border-amber-400/40 rounded px-1.5 py-0.5">
+                                  <Trophy className="w-2.5 h-2.5 text-amber-300" />
+                                  قياسي
+                                </span>
+                              )}
+                              <span className="text-stone-400">·</span>
+                              <span className="text-stone-300">{LAKE_ZONE_LABELS[item.zone]}</span>
+                            </div>
+                            <div className="flex items-center gap-3 font-mono-nums text-stone-300">
+                              <span>{item.lengthCm} سم</span>
+                              <span>{item.weightKg} كجم</span>
+                              <span className="text-amber-300">+{item.xpEarned} XP</span>
+                              <span className="text-stone-400">{item.released ? 'أُطلقت' : 'محتفظ بها'}</span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))}
+                    )}
+                  </div>
                 </div>
               )}
             </div>

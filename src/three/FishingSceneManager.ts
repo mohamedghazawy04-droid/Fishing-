@@ -7,7 +7,9 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { NatureSoundEngine } from '../audio/soundEngine';
 import {
   BAIT_CATALOG,
+  BOAT_CATALOG,
   HOOK_CATALOG,
+  LAKE_ANCHOR_SPOTS,
   SEASON_CATALOG,
   SKILL_CATALOG,
   WEATHER_OPTIONS,
@@ -25,27 +27,39 @@ import {
   type FishingHudState,
   type FishingPhase,
   type HookId,
+  type LakeSpotId,
   type PlayerProgression,
+  type PoiDiscoveryNotice,
+  type PoiHudItem,
+  type PoiId,
   type SeasonId,
   type SkillKey,
+  type SpeciesRecordEntry,
   type TimePresetId,
   type WeatherType,
 } from '../types/fishing';
+import { createBoatSystem } from './boatSystem';
+import { createCrocodilesAndFrogs } from './crocodilesAndFrogs';
 import { createDockAndRig } from './dockAndRig';
 import { createEnvironment, groundHeightAt } from './environment';
 import { createFishSystem, type ActiveFish } from './fishSystem';
+import { createPointsOfInterest } from './pointsOfInterest';
+import { createRivalAnglers } from './rivalAnglers';
 import { createProceduralTextures } from './textures';
 import { createCrystalWater } from './water';
 import { createWildlifeSystem } from './wildlife';
 
 const STORAGE_KEY = 'serene_valley_angler_save_v1';
 const DAILY_STORAGE_KEY = 'serene_valley_daily_challenges_v1';
+const SPECIES_RECORDS_STORAGE_KEY = 'serene_valley_species_records_v1';
+const DISCOVERED_POIS_STORAGE_KEY = 'serene_valley_discovered_pois_v1';
 
 function createInitialProgression(): PlayerProgression {
   return {
     level: 1,
     totalXp: 0,
     availableXp: 0,
+    boatLevel: 1,
     skills: {
       castMastery: 1,
       reelSpeed: 1,
@@ -70,6 +84,7 @@ function loadSavedProgression(): PlayerProgression {
       level,
       totalXp,
       availableXp: typeof parsed.availableXp === 'number' ? Math.max(0, parsed.availableXp) : 0,
+      boatLevel: THREE.MathUtils.clamp(typeof parsed.boatLevel === 'number' ? parsed.boatLevel : 1, 1, 4),
       skills: {
         castMastery: THREE.MathUtils.clamp(parsed.skills?.castMastery ?? 1, 1, 5),
         reelSpeed: THREE.MathUtils.clamp(parsed.skills?.reelSpeed ?? 1, 1, 5),
@@ -134,6 +149,58 @@ function saveDailyChallenges(state: DailyChallengesState): void {
   }
 }
 
+function loadSpeciesRecords(): Record<string, SpeciesRecordEntry> {
+  try {
+    const raw = localStorage.getItem(SPECIES_RECORDS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, SpeciesRecordEntry>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSpeciesRecords(records: Record<string, SpeciesRecordEntry>): void {
+  try {
+    localStorage.setItem(SPECIES_RECORDS_STORAGE_KEY, JSON.stringify(records));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function loadDiscoveredPois(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DISCOVERED_POIS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveDiscoveredPois(records: Record<string, string>): void {
+  try {
+    localStorage.setItem(DISCOVERED_POIS_STORAGE_KEY, JSON.stringify(records));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function formatArabicCompassBearing(dx: number, dz: number): string {
+  // World +X = East, -X = West, -Z = North (across lake), +Z = South (behind pier)
+  const angle = Math.atan2(dx, -dz); // 0 = North, +PI/2 = East
+  const deg = ((angle * 180) / Math.PI + 360) % 360;
+  if (deg < 22.5 || deg >= 337.5) return 'شمال';
+  if (deg < 67.5) return 'شمال شرق';
+  if (deg < 112.5) return 'شرق';
+  if (deg < 157.5) return 'جنوب شرق';
+  if (deg < 202.5) return 'جنوب';
+  if (deg < 247.5) return 'جنوب غرب';
+  if (deg < 292.5) return 'غرب';
+  return 'شمال غرب';
+}
+
 export class FishingSceneManager {
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
@@ -149,7 +216,11 @@ export class FishingSceneManager {
   private water: ReturnType<typeof createCrystalWater>;
   private fishSystem: ReturnType<typeof createFishSystem>;
   private dockRig: ReturnType<typeof createDockAndRig>;
+  private boatSystem: ReturnType<typeof createBoatSystem>;
+  private poiSystem: ReturnType<typeof createPointsOfInterest>;
   private wildlife: ReturnType<typeof createWildlifeSystem>;
+  private crocsAndFrogs: ReturnType<typeof createCrocodilesAndFrogs>;
+  private rivalAnglers: ReturnType<typeof createRivalAnglers>;
   private sound = new NatureSoundEngine();
 
   private sunLight: THREE.DirectionalLight;
@@ -157,7 +228,7 @@ export class FishingSceneManager {
   private catchShowcaseLight: THREE.PointLight;
   private fog: THREE.FogExp2;
 
-  // Weather particle systems (Rain / Snow, Fireflies & Morning/Sunset Pollen/Dust Motes)
+  // Weather particle systems (Rain / Snow, Fireflies, Morning/Sunset Pollen, Cold Breath Vapor)
   private rainPoints: THREE.Points;
   private rainGeo: THREE.BufferGeometry;
   private rainMat: THREE.PointsMaterial;
@@ -171,6 +242,17 @@ export class FishingSceneManager {
   private pollenMat: THREE.ShaderMaterial;
   private pollenPositions: Float32Array;
   private pollenSeeds: Float32Array;
+  private breathPoints: THREE.Points;
+  private breathGeo: THREE.BufferGeometry;
+  private breathMat: THREE.ShaderMaterial;
+  private breathPositions: Float32Array;
+  private breathVelocities: Float32Array;
+  private breathAges: Float32Array;
+  private breathMaxAges: Float32Array;
+  private breathSizes: Float32Array;
+  private breathAlphas: Float32Array;
+  private breathBurstTimer = 1.4;
+  private breathCursor = 0;
 
   // Seated Camera Look Controls + Screen Press-and-Hold Disambiguation
   private targetYaw = 0; // 0 looks straight across lake (-Z)
@@ -248,6 +330,29 @@ export class FishingSceneManager {
   private challengeNoticeTimer = 0;
   private progression: PlayerProgression;
   private dailyChallenges: DailyChallengesState;
+  private coldIntensity = 0;
+  private crocThreatActive = false;
+  private crocDistanceMeters = 999;
+  private crocCloseEscape = false;
+  private crocSurfaceSplashPending = false;
+  private rivalContestActive = false;
+  private rivalName: string | null = null;
+  private rivalContestBalance = 0.56;
+  private rivalWonThisCatch = false;
+  private rivalNotice: string | null = null;
+  private rivalNoticeTimer = 0;
+  private speciesRecords: Record<string, SpeciesRecordEntry>;
+  private recordBrokenNotice: string | null = null;
+  private recordNoticeTimer = 0;
+  private heavyFishFactor = 0;
+  private isHeavyHookedFish = false;
+  private discoveredPois: Record<string, string>;
+  private poiDiscoveredNotice: PoiDiscoveryNotice | null = null;
+  private poiNoticeTimer = 0;
+  private nearbyPoiName: string | null = null;
+  private uiSteerForward = 0;
+  private uiSteerTurn = 0;
+  private prevBoatYaw = 0.18;
 
   private onHudUpdate: (state: FishingHudState) => void;
   private lastHudEmit = 0;
@@ -272,12 +377,20 @@ export class FishingSceneManager {
   private _cineQuat = new THREE.Quaternion();
   private _lookMatrix = new THREE.Matrix4();
   private _camUp = new THREE.Vector3(0, 1, 0);
+  private _breathOrigin = new THREE.Vector3();
+  private _breathForward = new THREE.Vector3();
+  private _breathDown = new THREE.Vector3();
+  private _playerAnchorOffset = new THREE.Vector3();
+  private _boatWorldPos = new THREE.Vector3();
+  private _landingPoint = new THREE.Vector3();
 
   constructor(container: HTMLElement, onHudUpdate: (state: FishingHudState) => void) {
     this.container = container;
     this.onHudUpdate = onHudUpdate;
     this.progression = loadSavedProgression();
     this.dailyChallenges = loadDailyChallenges(this.progression.unlockedBaits);
+    this.speciesRecords = loadSpeciesRecords();
+    this.discoveredPois = loadDiscoveredPois();
 
     // Probe software WebGL (SwiftShader / llvmpipe / WARP)
     this.isSoftwareGl = (() => {
@@ -356,13 +469,23 @@ export class FishingSceneManager {
     this.fishSystem = createFishSystem();
     this.dockRig = createDockAndRig(this.textures);
     this.dockRig.setActiveBaitVisual(this.selectedBait);
+    this.boatSystem = createBoatSystem(this.textures);
+    this.boatSystem.setBoatLevel(this.progression.boatLevel);
+    this.poiSystem = createPointsOfInterest(this.textures);
+    this.poiSystem.setDiscoveredIds(Object.keys(this.discoveredPois) as PoiId[]);
     this.wildlife = createWildlifeSystem();
+    this.crocsAndFrogs = createCrocodilesAndFrogs();
+    this.rivalAnglers = createRivalAnglers();
 
     this.scene.add(this.environment.group);
     this.scene.add(this.dockRig.group);
+    this.scene.add(this.boatSystem.group);
+    this.scene.add(this.poiSystem.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
     this.scene.add(this.wildlife.group);
+    this.scene.add(this.crocsAndFrogs.group);
+    this.scene.add(this.rivalAnglers.group);
 
     // Rain / Snow Particles
     const rainCount = 950;
@@ -473,6 +596,52 @@ export class FishingSceneManager {
     this.pollenPoints.frustumCulled = false;
     this.scene.add(this.pollenPoints);
 
+    // Cold-Weather Angler Breath Vapor Pool
+    const breathCount = 32;
+    this.breathGeo = new THREE.BufferGeometry();
+    this.breathPositions = new Float32Array(breathCount * 3);
+    this.breathVelocities = new Float32Array(breathCount * 3);
+    this.breathAges = new Float32Array(breathCount).fill(99);
+    this.breathMaxAges = new Float32Array(breathCount).fill(1.5);
+    this.breathSizes = new Float32Array(breathCount).fill(28);
+    this.breathAlphas = new Float32Array(breathCount).fill(0);
+    this.breathGeo.setAttribute('position', new THREE.BufferAttribute(this.breathPositions, 3));
+    this.breathGeo.setAttribute('aSize', new THREE.BufferAttribute(this.breathSizes, 1));
+    this.breathGeo.setAttribute('aAlpha', new THREE.BufferAttribute(this.breathAlphas, 1));
+    this.breathMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: {
+        uPixelRatio: { value: this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2) },
+      },
+      vertexShader: `
+        attribute float aSize;
+        attribute float aAlpha;
+        uniform float uPixelRatio;
+        varying float vAlpha;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float d = max(0.35, -mv.z);
+          gl_PointSize = clamp(aSize * uPixelRatio / d, 2.0, 96.0);
+          vAlpha = aAlpha;
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying float vAlpha;
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5);
+          float r = length(c) * 2.0;
+          if (r > 1.0) discard;
+          float puff = pow(1.0 - r, 1.85);
+          gl_FragColor = vec4(0.88, 0.94, 0.99, puff * vAlpha);
+        }
+      `,
+    });
+    this.breathPoints = new THREE.Points(this.breathGeo, this.breathMat);
+    this.breathPoints.frustumCulled = false;
+    this.scene.add(this.breathPoints);
+
     if (!this.isSoftwareGl) {
       this.composer = new EffectComposer(this.renderer);
       this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -571,7 +740,10 @@ export class FishingSceneManager {
       this.catchInspectAngle += dx * 0.012;
       this.catchInspectTilt = THREE.MathUtils.clamp(this.catchInspectTilt + dy * 0.006, -0.45, 0.45);
     } else {
-      this.targetYaw = THREE.MathUtils.clamp(this.targetYaw - dx * 0.0045, -2.55, 2.55);
+      const rigYaw = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
+      const nextYaw = this.targetYaw - dx * 0.0045;
+      const rel = Math.atan2(Math.sin(nextYaw - rigYaw), Math.cos(nextYaw - rigYaw));
+      this.targetYaw = rigYaw + THREE.MathUtils.clamp(rel, -2.55, 2.55);
       this.targetPitch = THREE.MathUtils.clamp(this.targetPitch - dy * 0.0040, -1.25, 0.85);
     }
     this.markUserActivity(true);
@@ -635,6 +807,7 @@ export class FishingSceneManager {
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(dpr);
     this.pollenMat.uniforms.uPixelRatio.value = dpr;
+    this.breathMat.uniforms.uPixelRatio.value = dpr;
     if (this.composer) {
       this.composer.setPixelRatio(dpr);
       this.composer.setSize(w, h);
@@ -645,6 +818,11 @@ export class FishingSceneManager {
   public handlePrimaryActionPress(): void {
     this.sound.unlock();
     this.markUserActivity(true);
+    if (this.boatSystem.isSailing()) {
+      this.statusMessage = 'انتظر قليلاً حتى يرسو القارب في الموقع المحدد...';
+      this.emitHudState(true);
+      return;
+    }
     if (this.phase === 'idle') {
       this.phase = 'charging';
       this.castPower = 0.08;
@@ -695,7 +873,7 @@ export class FishingSceneManager {
   }
 
   public setLineDepth(depthMeters: number): void {
-    this.lineDepthMeters = THREE.MathUtils.clamp(depthMeters, 0.5, 3.2);
+    this.lineDepthMeters = THREE.MathUtils.clamp(depthMeters, 0.5, 5.5);
     this.emitHudState(true);
   }
 
@@ -779,8 +957,74 @@ export class FishingSceneManager {
 
   public lookReset(): void {
     this.markUserActivity(true);
-    this.targetYaw = 0;
+    this.targetYaw = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
     this.targetPitch = -0.20;
+  }
+
+  public boardBoatFreeRoam(): void {
+    this.sound.unlock();
+    this.markUserActivity(true);
+    if (this.phase === 'caught') {
+      this.statusMessage = 'احفظ أو أطلق السمكة أولاً قبل ركوب القارب';
+      this.emitHudState(true);
+      return;
+    }
+    if (this.phase !== 'idle') {
+      this.resetToIdle('تم سحب الخيط للانطلاق بالقارب...');
+    }
+    this.boatSystem.boardForFreeRoam();
+    this.prevBoatYaw = this.boatSystem.getBoatYaw();
+    this.targetYaw = this.prevBoatYaw;
+    this.currentYaw = this.prevBoatYaw;
+    this.sound.playSplash(0.65);
+    this.statusMessage = 'أنت الآن على متن القارب — حرّك بـ W/A/S/D أو أزرار الدفة لاستكشاف معالم البحيرة!';
+    this.emitHudState(true);
+  }
+
+  public setBoatSteer(forward: number, turn: number): void {
+    this.sound.unlock();
+    this.markUserActivity(true);
+    if ((Math.abs(forward) > 0.05 || Math.abs(turn) > 0.05) && !this.boatSystem.isOnBoat()) {
+      this.boardBoatFreeRoam();
+    }
+    this.uiSteerForward = forward;
+    this.uiSteerTurn = turn;
+  }
+
+  public sailToPoi(poiId: PoiId): void {
+    if (!this.discoveredPois[poiId]) return;
+    const approach = this.poiSystem.getPoiApproach(poiId);
+    if (!approach) return;
+    if (this.phase === 'caught') {
+      this.statusMessage = 'احفظ أو أطلق السمكة أولاً قبل تحريك القارب';
+      this.emitHudState(true);
+      return;
+    }
+    if (this.phase !== 'idle') {
+      this.resetToIdle('تم سحب الخيط للتحرك نحو المعلم...');
+    }
+    this.sound.unlock();
+    this.markUserActivity(true);
+    this.boatSystem.sailToCoordinates(approach.x, approach.z);
+    this.sound.playSplash(0.75);
+    const info = this.poiSystem.getPoiInfos().find((p) => p.definition.id === poiId);
+    this.statusMessage = `جاري الإبحار نحو ${info?.definition.nameAr ?? 'المعلم'}...`;
+    this.emitHudState(true);
+  }
+
+  public lookAtPoi(poiId: PoiId): void {
+    const info = this.poiSystem.getPoiInfos().find((p) => p.definition.id === poiId);
+    if (!info) return;
+    this.markUserActivity(true);
+    const px = this.boatSystem.isOnBoat() ? this._boatWorldPos.x : 0;
+    const pz = this.boatSystem.isOnBoat() ? this._boatWorldPos.z : 2.3;
+    const desiredYaw = Math.atan2(-(info.worldX - px), -(info.worldZ - pz));
+    this.targetYaw = desiredYaw;
+    this.targetPitch = -0.06;
+    this.statusMessage = info.discovered
+      ? `توجيه النظر نحو: ${info.definition.nameAr}`
+      : `تم توجيه النظر نحو ${info.definition.mysteryTitleAr} — أبحر بالقارب لاستكشافه!`;
+    this.emitHudState(true);
   }
 
   public upgradeSkill(key: SkillKey): void {
@@ -805,6 +1049,53 @@ export class FishingSceneManager {
     this.emitHudState(true);
   }
 
+  public selectLakeLocation(spotId: LakeSpotId): void {
+    const spot = LAKE_ANCHOR_SPOTS.find((s) => s.id === spotId);
+    if (!spot) return;
+    if (spot.requiredBoatLevel > this.progression.boatLevel) {
+      this.statusMessage = `يتطلب الوصول إلى «${spot.nameAr}» ترقية القارب إلى المستوى ${spot.requiredBoatLevel}`;
+      this.emitHudState(true);
+      return;
+    }
+    if (this.phase === 'caught') {
+      this.statusMessage = 'احفظ أو أطلق السمكة المصطادة أولاً قبل تحريك القارب';
+      this.emitHudState(true);
+      return;
+    }
+    if (this.phase !== 'idle') {
+      this.resetToIdle(`تم سحب الخيط للتحرك نحو ${spot.nameAr}...`);
+    }
+
+    this.sound.unlock();
+    this.markUserActivity(true);
+    this.boatSystem.setTargetLocation(spotId, false);
+    this.sound.playSplash(0.75);
+    this.statusMessage =
+      spotId === 'pier'
+        ? 'جاري الإبحار والعودة إلى رصيف الصيد الخشبي...'
+        : `جاري الإبحار بالقارب نحو ${spot.nameAr} (عمق ${spot.waterDepthMeters}م)...`;
+    this.emitHudState(true);
+  }
+
+  public upgradeBoat(): void {
+    const nextTier = BOAT_CATALOG.find((b) => b.level === this.progression.boatLevel + 1);
+    if (!nextTier) return;
+    if (this.progression.availableXp < nextTier.upgradeCostXp) return;
+
+    this.progression = {
+      ...this.progression,
+      availableXp: this.progression.availableXp - nextTier.upgradeCostXp,
+      boatLevel: nextTier.level,
+    };
+    saveProgression(this.progression);
+    this.boatSystem.setBoatLevel(nextTier.level);
+    this.sound.playCatchChime();
+    this.newlyUnlockedNotice = `تمت ترقية القارب إلى «${nextTier.nameAr}»! ${nextTier.unlockSummaryAr}`;
+    this.unlockNoticeTimer = 7.0;
+    this.statusMessage = `أصبح لديك «${nextTier.nameAr}» — أبحر الآن نحو المناطق الأعمق في وسط البحيرة!`;
+    this.emitHudState(true);
+  }
+
   public resolveActiveCatch(releaseFish: boolean): void {
     if (!this.activeCatch) return;
     const record: CaughtFishRecord = {
@@ -816,7 +1107,8 @@ export class FishingSceneManager {
       bonusXp = Math.round(record.xpEarned * 0.2);
       record.xpEarned += bonusXp;
       this.applyXpGain(bonusXp);
-      this.water.spawnSplash(0, -3.5, 1.0);
+      this.getPlayerLandingAnchor(this._landingPoint);
+      this.water.spawnSplash(this._landingPoint.x, this._landingPoint.z, 1.0);
       this.sound.playSplash(0.6);
       this.statusMessage = `أُطلقت السمكة في المياه الصافية (+${bonusXp} خبرة إضافية للحفاظ على البيئة)`;
     } else {
@@ -835,6 +1127,19 @@ export class FishingSceneManager {
     this.emitHudState(true);
   }
 
+  private getPlayerLandingAnchor(out: THREE.Vector3): THREE.Vector3 {
+    if (this.boatSystem.isOnBoat()) {
+      this.boatSystem.getBoatPosition(this._boatWorldPos);
+      const yaw = this.boatSystem.getBoatYaw();
+      return out.set(
+        this._boatWorldPos.x - Math.sin(yaw) * 2.35,
+        -0.5,
+        this._boatWorldPos.z - Math.cos(yaw) * 2.35,
+      );
+    }
+    return out.set(0, -0.5, 0.2);
+  }
+
   // --- Internal Fishing Mechanics ---
   private launchCast(): void {
     this.sound.playCast();
@@ -843,25 +1148,31 @@ export class FishingSceneManager {
 
     this.dockRig.getRodTipWorldPos(this.castStartPos);
 
-    // Cast along seated view yaw toward expanded lake (-Z)
-    const castYaw = THREE.MathUtils.clamp(this.currentYaw, -1.25, 1.25);
+    const onBoat = this.boatSystem.isOnBoat();
+    const rigYaw = onBoat ? this.boatSystem.getBoatYaw() : 0;
+    const relYaw = Math.atan2(Math.sin(this.currentYaw - rigYaw), Math.cos(this.currentYaw - rigYaw));
+    const maxRelYaw = onBoat ? 2.15 : 1.25;
+    const castYaw = rigYaw + THREE.MathUtils.clamp(relYaw, -maxRelYaw, maxRelYaw);
     const castBonus = 1 + (this.progression.skills.castMastery - 1) * 0.14;
-    const baseDist = (8.5 + this.castPower * 34.0) * castBonus;
+    const baseDist = (8.5 + this.castPower * 32.0) * castBonus;
     const windDriftX =
       (0.18 + (this.currentWindSpeedKmh / 18) * 1.15) *
       (1 - (this.progression.skills.castMastery - 1) * 0.18) *
       (Math.random() - 0.5);
 
-    let tx = -Math.sin(castYaw) * baseDist + windDriftX;
-    let tz = 1.0 - Math.cos(castYaw) * baseDist;
+    const originX = this._playerAnchorOffset.x - Math.sin(rigYaw) * 0.5;
+    const originZ = (onBoat ? 2.3 : 1.0) + this._playerAnchorOffset.z - Math.cos(rigYaw) * 0.5;
+
+    let tx = originX - Math.sin(castYaw) * baseDist + windDriftX;
+    let tz = originZ - Math.cos(castYaw) * baseDist;
 
     // Clamp target into valid expanded lake water
-    tx = THREE.MathUtils.clamp(tx, -44, 44);
-    tz = THREE.MathUtils.clamp(tz, -56, -2.5);
+    tx = THREE.MathUtils.clamp(tx, -74, 74);
+    tz = THREE.MathUtils.clamp(tz, -92, 4.0);
     let bedY = groundHeightAt(tx, tz);
-    for (let i = 0; i < 8 && bedY > -0.45; i++) {
-      tx *= 0.85;
-      tz = THREE.MathUtils.lerp(tz, -24, 0.25);
+    for (let i = 0; i < 10 && bedY > -0.45; i++) {
+      tx = THREE.MathUtils.lerp(tx, 0, 0.22);
+      tz = THREE.MathUtils.lerp(tz, -44, 0.25);
       bedY = groundHeightAt(tx, tz);
     }
 
@@ -871,6 +1182,15 @@ export class FishingSceneManager {
     this.emitHudState(true);
   }
 
+  private computeFishDimensions(fish: ActiveFish): { lengthCm: number; weightKg: number; heavyFactor: number } {
+    const sp = fish.species;
+    const ratio = THREE.MathUtils.clamp((fish.lengthScale - 0.65) / 0.85, 0.12, 1.0);
+    const lengthCm = Math.round(THREE.MathUtils.lerp(sp.minLengthCm, sp.maxLengthCm, ratio));
+    const weightKg = Number((sp.baseWeightKg * (0.65 + ratio * 0.95)).toFixed(2));
+    const heavyFactor = THREE.MathUtils.clamp((weightKg - 1.3) / 4.2, 0, 1);
+    return { lengthCm, weightKg, heavyFactor };
+  }
+
   private attemptHookSet(): void {
     const hooked = this.fishSystem.hookBitingFish();
     if (!hooked) {
@@ -878,12 +1198,22 @@ export class FishingSceneManager {
       return;
     }
     this.hookedFish = hooked;
+    const dims = this.computeFishDimensions(hooked);
+    this.heavyFishFactor = dims.heavyFactor;
+    this.isHeavyHookedFish = dims.weightKg >= 2.2 || dims.heavyFactor >= 0.25;
+
     this.phase = 'reeling';
-    this.lineTension = 0.28;
+    this.lineTension = 0.28 + this.heavyFishFactor * 0.14;
     this.reelHeld = false;
+    this.crocCloseEscape = false;
+    this.crocSurfaceSplashPending = true;
+    this.rivalWonThisCatch = false;
+    this.rivalAnglers.resetContest();
     this.sound.playSplash(1.1);
-    this.water.spawnSplash(hooked.position.x, hooked.position.z, 1.15);
-    this.statusMessage = `علقت ${hooked.species.nameAr}! اسحب بحذر وراقب شدّ الخيط`;
+    this.water.spawnSplash(hooked.position.x, hooked.position.z, 1.15 + this.heavyFishFactor * 0.45);
+    this.statusMessage = this.isHeavyHookedFish
+      ? `سمكة ثقيلة جداً (${hooked.species.nameAr})! راقب إجهاد الخيط واهتزازه!`
+      : `علقت ${hooked.species.nameAr}! اسحب بحذر وراقب التماسيح والمنافسين`;
     this.emitHudState(true);
   }
 
@@ -894,6 +1224,15 @@ export class FishingSceneManager {
     this.rodBend = 0;
     this.reelHeld = false;
     this.chargeHeld = false;
+    this.heavyFishFactor = 0;
+    this.isHeavyHookedFish = false;
+    this.crocThreatActive = false;
+    this.crocDistanceMeters = 999;
+    this.crocCloseEscape = false;
+    this.rivalContestActive = false;
+    this.rivalName = null;
+    this.rivalWonThisCatch = false;
+    this.rivalAnglers.resetContest();
     if (this.hookedFish) {
       this.hookedFish.mesh.scale.setScalar(this.hookedFish.lengthScale);
       this.hookedFish.mesh.rotation.set(0, this.hookedFish.heading, 0);
@@ -946,14 +1285,51 @@ export class FishingSceneManager {
     this.rodBend = 0.25;
 
     const sp = fish.species;
-    const ratio = THREE.MathUtils.clamp((fish.lengthScale - 0.65) / 0.85, 0.15, 1.0);
-    const lengthCm = Math.round(THREE.MathUtils.lerp(sp.minLengthCm, sp.maxLengthCm, ratio));
-    const weightKg = Number((sp.baseWeightKg * (0.65 + ratio * 0.85)).toFixed(2));
+    const { lengthCm, weightKg } = this.computeFishDimensions(fish);
     const rarityBase = sp.rarity === 'أسطوري' ? 190 : sp.rarity === 'نادر' ? 95 : 42;
     const xpEarned = Math.round(rarityBase + weightKg * 14);
 
+    // Check & update Species Record Weight
+    const existingRecord = this.speciesRecords[sp.id];
+    let isNewRecord = false;
+    let previousRecordKg: number | undefined;
+    let recordBonusXp = 0;
+
+    if (!existingRecord || weightKg > existingRecord.maxWeightKg) {
+      isNewRecord = true;
+      previousRecordKg = existingRecord?.maxWeightKg;
+      recordBonusXp = existingRecord ? 40 : 20;
+      const updatedRecords: Record<string, SpeciesRecordEntry> = {
+        ...this.speciesRecords,
+        [sp.id]: {
+          speciesId: sp.id,
+          maxWeightKg: weightKg,
+          maxLengthCm: Math.max(lengthCm, existingRecord?.maxLengthCm ?? 0),
+          achievedAt: formatHourToClock(this.timeOfDay),
+        },
+      };
+      this.speciesRecords = updatedRecords;
+      saveSpeciesRecords(updatedRecords);
+
+      this.recordBrokenNotice = existingRecord
+        ? `رقم قياسي جديد لـ ${sp.nameAr}: ${weightKg} كجم (حطّم ${existingRecord.maxWeightKg} كجم)! (+${recordBonusXp} XP)`
+        : `أول وزن قياسي مسجّل لـ ${sp.nameAr}: ${weightKg} كجم! (+${recordBonusXp} XP)`;
+      this.recordNoticeTimer = 6.5;
+    }
+
     const challengeBonusXp = this.evaluateDailyChallenges(sp.id, this.selectedBait, this.weather);
-    this.applyXpGain(xpEarned + challengeBonusXp);
+    const crocEscapeBonusXp = this.crocCloseEscape ? 35 : 0;
+    const rivalWinBonusXp = this.rivalWonThisCatch ? 50 : 0;
+    this.applyXpGain(xpEarned + challengeBonusXp + crocEscapeBonusXp + rivalWinBonusXp + recordBonusXp);
+
+    this.heavyFishFactor = 0;
+    this.isHeavyHookedFish = false;
+    this.crocCloseEscape = false;
+    this.rivalWonThisCatch = false;
+    this.crocThreatActive = false;
+    this.rivalContestActive = false;
+    this.rivalName = null;
+    this.rivalAnglers.resetContest();
 
     const bedDepth = Math.max(0.3, -groundHeightAt(this.castTargetPos.x, this.castTargetPos.z));
     const zone = classifyLakeZone(this.castTargetPos.x, this.castTargetPos.z, bedDepth);
@@ -972,6 +1348,11 @@ export class FishingSceneManager {
       hookUsed: this.selectedHook,
       released: false,
       dailyChallengeBonusXp: challengeBonusXp > 0 ? challengeBonusXp : undefined,
+      crocEscapeBonusXp: crocEscapeBonusXp > 0 ? crocEscapeBonusXp : undefined,
+      rivalWinBonusXp: rivalWinBonusXp > 0 ? rivalWinBonusXp : undefined,
+      isNewRecord,
+      previousRecordKg,
+      recordBonusXp: recordBonusXp > 0 ? recordBonusXp : undefined,
     };
 
     // Reveal caught fish by lifting it gracefully into close-up 3D showcase in front of the angler
@@ -983,9 +1364,10 @@ export class FishingSceneManager {
     this.catchInspectAngle = Math.PI * 0.45;
     this.catchInspectTilt = 0.06;
 
+    const totalBonus = challengeBonusXp + crocEscapeBonusXp + rivalWinBonusXp + recordBonusXp;
     this.statusMessage =
-      challengeBonusXp > 0
-        ? `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} XP + ${challengeBonusXp} مكافأة تحدٍّ!)`
+      totalBonus > 0
+        ? `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} XP + ${totalBonus} مكافأة!)`
         : `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} نقطة خبرة)`;
     this.emitHudState(true);
   }
@@ -1197,8 +1579,8 @@ export class FishingSceneManager {
         this.rainDropTimer -= dt;
         if (this.rainDropTimer <= 0) {
           this.rainDropTimer = this.weather === 'storm' ? 0.08 : 0.16;
-          const rx = (Math.random() - 0.5) * 56;
-          const rz = -3 - Math.random() * 48;
+          const rx = (Math.random() - 0.5) * 90;
+          const rz = -3 - Math.random() * 76;
           if (groundHeightAt(rx, rz) < -0.2) {
             this.water.addRipple(rx, rz, 0.42);
           }
@@ -1266,6 +1648,72 @@ export class FishingSceneManager {
       this.pollenGeo.attributes.position.needsUpdate = true;
     }
 
+    // Cold Weather Intensity & Angler Cold Breath Vapor Emitter
+    let targetCold = 0.0;
+    if (this.season === 'winter') {
+      targetCold = 1.0;
+    } else if (this.season === 'autumn') {
+      targetCold = nightFactor > 0.35 || this.weather === 'mist' || this.weather === 'rain' || this.weather === 'storm' ? 0.56 : 0.2;
+    } else if (this.season === 'spring') {
+      targetCold = nightFactor > 0.55 || this.weather === 'mist' ? 0.44 : 0.0;
+    }
+    this.coldIntensity = THREE.MathUtils.damp(this.coldIntensity, targetCold, 0.9, dt);
+
+    const canBreathe = this.coldIntensity > 0.32 && this.cinematicBlend < 0.25;
+    this.breathPoints.visible = this.coldIntensity > 0.2 && this.cinematicBlend < 0.35;
+    if (canBreathe) {
+      this.breathBurstTimer -= dt;
+      if (this.breathBurstTimer <= 0) {
+        this.breathBurstTimer = 2.9 + Math.random() * 0.7;
+        this._breathForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        this._breathDown.set(0, -1, 0).applyQuaternion(this.camera.quaternion);
+        this._breathOrigin
+          .copy(this.camera.position)
+          .addScaledVector(this._breathForward, 0.38)
+          .addScaledVector(this._breathDown, 0.14);
+
+        for (let b = 0; b < 7; b++) {
+          const idx = this.breathCursor;
+          this.breathCursor = (this.breathCursor + 1) % this.breathAges.length;
+          const pIdx = idx * 3;
+          this.breathPositions[pIdx] = this._breathOrigin.x + (Math.random() - 0.5) * 0.04;
+          this.breathPositions[pIdx + 1] = this._breathOrigin.y + (Math.random() - 0.5) * 0.03;
+          this.breathPositions[pIdx + 2] = this._breathOrigin.z + (Math.random() - 0.5) * 0.04;
+
+          this.breathVelocities[pIdx] = this._breathForward.x * (0.42 + Math.random() * 0.18) + (windSpeedKmh * 0.015) + (Math.random() - 0.5) * 0.08;
+          this.breathVelocities[pIdx + 1] = 0.09 + Math.random() * 0.08;
+          this.breathVelocities[pIdx + 2] = this._breathForward.z * (0.42 + Math.random() * 0.18) + (Math.random() - 0.5) * 0.08;
+
+          this.breathAges[idx] = -b * 0.055;
+          this.breathMaxAges[idx] = 1.35 + Math.random() * 0.45;
+        }
+      }
+    }
+
+    if (this.breathPoints.visible) {
+      for (let i = 0; i < this.breathAges.length; i++) {
+        this.breathAges[i] += dt;
+        const age = this.breathAges[i];
+        const maxA = this.breathMaxAges[i];
+        if (age < 0 || age >= maxA) {
+          this.breathAlphas[i] = 0;
+          continue;
+        }
+        const pIdx = i * 3;
+        this.breathPositions[pIdx] += this.breathVelocities[pIdx] * dt;
+        this.breathPositions[pIdx + 1] += this.breathVelocities[pIdx + 1] * dt;
+        this.breathPositions[pIdx + 2] += this.breathVelocities[pIdx + 2] * dt;
+        this.breathVelocities[pIdx] *= 1 - dt * 1.4;
+        this.breathVelocities[pIdx + 2] *= 1 - dt * 1.4;
+        const normAge = age / maxA;
+        this.breathSizes[i] = 24 + normAge * 58;
+        this.breathAlphas[i] = Math.sin(normAge * Math.PI) * 0.24 * this.coldIntensity;
+      }
+      this.breathGeo.attributes.position.needsUpdate = true;
+      (this.breathGeo.attributes.aSize as THREE.BufferAttribute).needsUpdate = true;
+      (this.breathGeo.attributes.aAlpha as THREE.BufferAttribute).needsUpdate = true;
+    }
+
     // Distant Forest Wildlife & Aquatic Surface Animals (Deer, Fox, Turtles & Sparkling Jumping Fish)
     this.wildlife.update(
       dt,
@@ -1331,27 +1779,144 @@ export class FishingSceneManager {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.elapsed += dt;
 
-    // Keyboard head-look support (Arrows / WASD)
+    // Keyboard look (Arrows always look; WASD steers boat when on boat & idle, or looks when on pier)
+    const onBoat = this.boatSystem.isOnBoat();
+    const rigYawNow = onBoat ? this.boatSystem.getBoatYaw() : 0;
+    const canSteerBoat = onBoat && this.phase === 'idle';
     const lookSpeed = 1.45 * dt;
-    if (this.keyState['ArrowLeft'] || this.keyState['KeyA']) {
-      this.targetYaw = THREE.MathUtils.clamp(this.targetYaw + lookSpeed, -2.55, 2.55);
+
+    let yawDeltaInput = 0;
+    if (this.keyState['ArrowLeft'] || (!canSteerBoat && this.keyState['KeyA'])) yawDeltaInput += lookSpeed;
+    if (this.keyState['ArrowRight'] || (!canSteerBoat && this.keyState['KeyD'])) yawDeltaInput -= lookSpeed;
+    if (yawDeltaInput !== 0) {
+      const nextYaw = this.targetYaw + yawDeltaInput;
+      const rel = Math.atan2(Math.sin(nextYaw - rigYawNow), Math.cos(nextYaw - rigYawNow));
+      this.targetYaw = rigYawNow + THREE.MathUtils.clamp(rel, -2.55, 2.55);
     }
-    if (this.keyState['ArrowRight'] || this.keyState['KeyD']) {
-      this.targetYaw = THREE.MathUtils.clamp(this.targetYaw - lookSpeed, -2.55, 2.55);
-    }
-    if (this.keyState['ArrowUp'] || this.keyState['KeyW']) {
+
+    if (this.keyState['ArrowUp'] || (!canSteerBoat && this.keyState['KeyW'])) {
       this.targetPitch = THREE.MathUtils.clamp(this.targetPitch + lookSpeed, -1.25, 0.85);
     }
-    if (this.keyState['ArrowDown'] || this.keyState['KeyS']) {
+    if (this.keyState['ArrowDown'] || (!canSteerBoat && this.keyState['KeyS'])) {
       this.targetPitch = THREE.MathUtils.clamp(this.targetPitch - lookSpeed, -1.25, 0.85);
     }
 
-    // Damped seated camera orientation + tiny natural breathing sway
+    // Free-roam boat steering (W/S/A/D when on boat & idle + UI Helm buttons)
+    let kbForward = 0;
+    let kbTurn = 0;
+    if (canSteerBoat) {
+      if (this.keyState['KeyW']) kbForward += 1;
+      if (this.keyState['KeyS']) kbForward -= 1;
+      if (this.keyState['KeyA']) kbTurn += 1;
+      if (this.keyState['KeyD']) kbTurn -= 1;
+    }
+    const totalFwd = this.phase === 'idle' ? THREE.MathUtils.clamp(kbForward + this.uiSteerForward, -1, 1) : 0;
+    const totalTurn = this.phase === 'idle' ? THREE.MathUtils.clamp(kbTurn + this.uiSteerTurn, -1, 1) : 0;
+    this.boatSystem.setSteerInput(totalFwd, totalTurn);
+
+    const { nightFactor, windSpeedKmh, conditionLabel } = this.updateAtmosphere(dt);
+
+    // Update Boat Buoyancy & Sailing Navigation
+    this.boatSystem.getBoatPosition(this._boatWorldPos);
+    const waterDepthAtBoat = Math.max(0.2, -groundHeightAt(this._boatWorldPos.x, this._boatWorldPos.z));
+    const boatResult = this.boatSystem.update({
+      dt,
+      elapsed: this.elapsed,
+      windSpeedKmh,
+      nightFactor,
+      coldSnowFactor: this.coldIntensity,
+      waterDepthAtBoat,
+      getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
+      onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
+      onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
+    });
+
+    // Update Lake Points of Interest (POIs) & Check Boat Exploration Discovery
+    this.boatSystem.getBoatPosition(this._boatWorldPos);
+    const poiResult = this.poiSystem.update({
+      dt,
+      elapsed: this.elapsed,
+      nightFactor,
+      coldSnowFactor: this.coldIntensity,
+      boatPos: this._boatWorldPos,
+      isOnBoat: this.boatSystem.isOnBoat(),
+      onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
+    });
+
+    if (poiResult.newlyDiscoveredId) {
+      const poiInfo = this.poiSystem.getPoiInfos().find((p) => p.definition.id === poiResult.newlyDiscoveredId);
+      if (poiInfo) {
+        const def = poiInfo.definition;
+        this.discoveredPois = {
+          ...this.discoveredPois,
+          [def.id]: formatHourToClock(this.timeOfDay),
+        };
+        saveDiscoveredPois(this.discoveredPois);
+        this.applyXpGain(def.xpReward);
+        this.sound.playDiscoveryChime();
+        this.water.spawnSplash(this._boatWorldPos.x, this._boatWorldPos.z, 1.3);
+        this.poiDiscoveredNotice = {
+          id: def.id,
+          titleAr: def.nameAr,
+          storyAr: def.discoveryStoryAr,
+          xpReward: def.xpReward,
+        };
+        this.poiNoticeTimer = 7.5;
+        this.statusMessage = `اكتشفت معلماً جديداً: ${def.nameAr}! (+${def.xpReward} XP للاستكشاف)`;
+        this.emitHudState(true);
+      }
+    }
+
+    if (poiResult.nearbyUndiscoveredId) {
+      const nearby = this.poiSystem.getPoiInfos().find((p) => p.definition.id === poiResult.nearbyUndiscoveredId);
+      this.nearbyPoiName = nearby
+        ? `${nearby.definition.mysteryTitleAr} (${Math.round(poiResult.nearbyDistance)} م)`
+        : null;
+    } else {
+      this.nearbyPoiName = null;
+    }
+
+    if (boatResult.arrivedSpotId) {
+      this.sound.playSplash(0.5);
+      if (boatResult.arrivedSpotId === 'free_roam') {
+        this.statusMessage = 'وصل القارب إلى المعلم المختار — استعد لرمي الصنارة أو التجول بالجوار!';
+      } else {
+        const spot = LAKE_ANCHOR_SPOTS.find((s) => s.id === boatResult.arrivedSpotId);
+        if (spot) {
+          this.statusMessage =
+            spot.id === 'pier'
+              ? 'رسا القارب بجانب الرصيف — مرحباً بك على الشاطئ!'
+              : `رسا القارب في ${spot.nameAr} (عمق ${spot.waterDepthMeters}م) — ارمِ الصنارة في الأعماق!`;
+        }
+      }
+      this.emitHudState(true);
+    }
+
+    const isOnBoatNow = this.boatSystem.isOnBoat();
+    const rigYaw = isOnBoatNow ? this.boatSystem.getBoatYaw() : 0;
+    if (isOnBoatNow) {
+      const yawDelta = Math.atan2(Math.sin(rigYaw - this.prevBoatYaw), Math.cos(rigYaw - this.prevBoatYaw));
+      this.targetYaw += yawDelta;
+      this.currentYaw += yawDelta;
+      this.boatSystem.getPlayerRigOffset(this._playerAnchorOffset);
+    } else {
+      this._playerAnchorOffset.set(0, 0, 0);
+    }
+    this.prevBoatYaw = rigYaw;
+
+    const { pitch: boatPitch, roll: boatRoll } = this.boatSystem.getBoatPitchRoll();
+    this.dockRig.setPlayerRigTransform(this._playerAnchorOffset, boatPitch, boatRoll, rigYaw);
+
+    // Damped seated camera orientation + tiny natural breathing sway (tracks pier OR boat)
     this.currentYaw = THREE.MathUtils.damp(this.currentYaw, this.targetYaw, 10, dt);
     this.currentPitch = THREE.MathUtils.damp(this.currentPitch, this.targetPitch, 10, dt);
 
     const headBob = Math.sin(this.elapsed * 1.45) * 0.005;
-    this._seatedPos.set(0, 1.76 + headBob, 2.32);
+    this._seatedPos.set(
+      this._playerAnchorOffset.x - Math.sin(rigYaw) * 0.02,
+      1.76 + headBob + this._playerAnchorOffset.y,
+      2.30 + this._playerAnchorOffset.z - Math.cos(rigYaw) * 0.02,
+    );
     this._camLookDir.set(
       -Math.sin(this.currentYaw) * Math.cos(this.currentPitch),
       Math.sin(this.currentPitch),
@@ -1385,19 +1950,19 @@ export class FishingSceneManager {
     if (this.cinematicBlend > 0.002) {
       this.cinematicTime += dt;
       const t = this.cinematicTime;
-      const theta = Math.PI * 0.5 + t * 0.115;
-      const rx = 24 + Math.sin(t * 0.19) * 5.0;
-      const rz = 16 + Math.cos(t * 0.16) * 3.0;
+      const theta = Math.PI * 0.5 + t * 0.105;
+      const rx = 38 + Math.sin(t * 0.19) * 8.0;
+      const rz = 26 + Math.cos(t * 0.16) * 5.0;
       const cx = Math.cos(theta) * rx;
-      const cz = -25 + Math.sin(theta) * rz;
+      const cz = -40 + Math.sin(theta) * rz;
       const groundY = Math.max(0, groundHeightAt(cx, cz));
-      const cy = Math.max(groundY + 2.2, 3.6 + Math.sin(t * 0.24) * 2.1 + Math.cos(t * 0.11) * 1.1);
+      const cy = Math.max(groundY + 2.4, 4.2 + Math.sin(t * 0.24) * 2.2 + Math.cos(t * 0.11) * 1.1);
 
       this._cinePos.set(cx, cy, cz);
       this._cineTarget.set(
-        Math.sin(t * 0.17) * 11.0,
-        2.4 + Math.sin(t * 0.21) * 1.15,
-        -26 + Math.cos(t * 0.13) * 9.0,
+        Math.sin(t * 0.17) * 16.0,
+        2.5 + Math.sin(t * 0.21) * 1.15,
+        -40 + Math.cos(t * 0.13) * 12.0,
       );
       this._lookMatrix.lookAt(this._cinePos, this._cineTarget, this._camUp);
       this._cineQuat.setFromRotationMatrix(this._lookMatrix);
@@ -1409,7 +1974,7 @@ export class FishingSceneManager {
       this.camera.quaternion.copy(this._seatedQuat);
     }
 
-    const { nightFactor, windSpeedKmh, conditionLabel } = this.updateAtmosphere(dt);
+    // Note: atmosphere was updated before camera/boat sync above
 
     // Clear timed notices
     if (this.lineSnapTimer > 0) {
@@ -1423,6 +1988,18 @@ export class FishingSceneManager {
     if (this.challengeNoticeTimer > 0) {
       this.challengeNoticeTimer -= dt;
       if (this.challengeNoticeTimer <= 0) this.challengeCompletedNotice = null;
+    }
+    if (this.rivalNoticeTimer > 0) {
+      this.rivalNoticeTimer -= dt;
+      if (this.rivalNoticeTimer <= 0) this.rivalNotice = null;
+    }
+    if (this.recordNoticeTimer > 0) {
+      this.recordNoticeTimer -= dt;
+      if (this.recordNoticeTimer <= 0) this.recordBrokenNotice = null;
+    }
+    if (this.poiNoticeTimer > 0) {
+      this.poiNoticeTimer -= dt;
+      if (this.poiNoticeTimer <= 0) this.poiDiscoveredNotice = null;
     }
 
     // --- Fishing Gameplay Loop ---
@@ -1459,6 +2036,7 @@ export class FishingSceneManager {
           shore_reeds: 'ضفة القصب',
           rocky_ledge: 'الحافة الصخرية',
           deep_basin: 'الحوض العميق',
+          alpine_abyss: 'أعماق وسط البحيرة',
         };
         this.statusMessage = `العوامة مستقرة في ${zoneMap[zone]} — راقب العوامة وانتظر المفاجأة`;
         this.emitHudState(true);
@@ -1493,45 +2071,50 @@ export class FishingSceneManager {
       }
 
       const isSurging = f.stamina > 0.12 && Math.sin(this.elapsed * 2.6 + f.id) > 0.15;
-      const dockPos = this._toDock.set(0, -0.5, 0.2).sub(f.position);
-      const distToDock = Math.hypot(f.position.x, f.position.z - 0.2);
+      this.getPlayerLandingAnchor(this._landingPoint);
+      const dockPos = this._toDock.copy(this._landingPoint).sub(f.position);
+      const distToDock = Math.hypot(f.position.x - this._landingPoint.x, f.position.z - this._landingPoint.z);
       dockPos.y = 0;
       if (distToDock > 0.01) dockPos.divideScalar(distToDock);
 
       // Perpendicular dart direction
       this._rightVec.set(-dockPos.z, 0, dockPos.x).multiplyScalar(f.surgeDir);
 
-      const fightForce = f.species.fightStrength * (isSurging ? 1.35 : 0.55) * (0.45 + f.stamina * 0.55);
+      const heavyLoadMult = 1 + this.heavyFishFactor * 0.36;
+      const fightForce =
+        f.species.fightStrength *
+        (isSurging ? 1.35 : 0.55) *
+        (0.45 + f.stamina * 0.55) *
+        heavyLoadMult;
 
       if (this.reelHeld) {
         this.sound.playReelTick(this.elapsed);
-        const pullSpeed = 3.2 * reelSkill - fightForce * 1.25;
-        f.position.addScaledVector(dockPos, Math.max(0.45, pullSpeed) * dt);
+        const pullSpeed = 3.2 * reelSkill - fightForce * 1.15;
+        f.position.addScaledVector(dockPos, Math.max(0.42, pullSpeed) * dt);
         f.position.addScaledVector(this._rightVec, fightForce * 1.15 * dt);
-        f.stamina = Math.max(0, f.stamina - dt * 0.22 * reelSkill);
+        f.stamina = Math.max(0, f.stamina - (dt * 0.22 * reelSkill) / (1 + this.heavyFishFactor * 0.25));
 
         const tensionGain = (0.34 + fightForce * 0.58) / (hookDef.tensionTolerance * strengthSkill);
         this.lineTension = Math.min(1.05, this.lineTension + tensionGain * dt);
       } else {
-        // Letting line breathe reduces tension while fish still pulls out slowly
-        f.position.addScaledVector(dockPos, -fightForce * 1.15 * dt);
+        // Letting line breathe reduces tension while heavy fish still pulls out slowly
+        f.position.addScaledVector(dockPos, -fightForce * 1.1 * dt);
         f.position.addScaledVector(this._rightVec, fightForce * 1.65 * dt);
         f.stamina = Math.max(0, f.stamina - dt * 0.06);
-        this.lineTension = Math.max(0.12, this.lineTension - dt * 0.55);
+        this.lineTension = Math.max(0.12 + this.heavyFishFactor * 0.12, this.lineTension - dt * 0.55);
       }
 
-      // Keep fish hidden underwater until reeled close to the dock for a surprise reveal
-      const wasRevealed = f.mesh.visible;
-      const shouldReveal = distToDock <= 7.0;
-      f.mesh.visible = shouldReveal;
-      if (shouldReveal && !wasRevealed) {
+      // Trigger dramatic surface splash as hooked fish is pulled within 7m (fish remains permanently visible underwater)
+      f.mesh.visible = true;
+      if (distToDock <= 7.0 && this.crocSurfaceSplashPending) {
+        this.crocSurfaceSplashPending = false;
         this.sound.playSplash(1.0);
         this.water.spawnSplash(f.position.x, f.position.z, 1.35);
       }
 
-      // Clamp hooked fish inside water basin
+      // Clamp hooked fish inside deep water basin
       const bedY = groundHeightAt(f.position.x, f.position.z);
-      f.position.y = THREE.MathUtils.clamp(f.position.y, Math.max(bedY + 0.22, -2.5), shouldReveal ? -0.14 : -0.35);
+      f.position.y = THREE.MathUtils.clamp(f.position.y, Math.max(bedY + 0.22, -5.4), distToDock <= 7.0 ? -0.14 : -0.35);
       f.mesh.position.copy(f.position);
       f.mesh.rotation.y = Math.atan2(
         this.reelHeld ? -dockPos.x : this._rightVec.x,
@@ -1558,10 +2141,17 @@ export class FishingSceneManager {
       const f = this.hookedFish;
       f.mesh.visible = true;
 
-      // Smoothly lift fish from water up into an unobstructed close-up showcase in front of the fisherman
-      const targetX = -0.22;
-      const targetY = 1.62 + Math.sin(this.elapsed * 2.1) * 0.024;
-      const targetZ = 0.92;
+      // Smoothly lift fish from water up into an unobstructed close-up showcase in front of the fisherman (pier or boat)
+      const rigYaw = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
+      const cosY = Math.cos(rigYaw);
+      const sinY = Math.sin(rigYaw);
+      const localX = -0.22;
+      const localZ = -1.38; // 1.38m ahead of seat pivot (2.30 - 1.38 = 0.92 on pier)
+      const seatWorldX = this._playerAnchorOffset.x;
+      const seatWorldZ = 2.30 + this._playerAnchorOffset.z;
+      const targetX = seatWorldX + localX * cosY + localZ * sinY;
+      const targetY = 1.62 + this._playerAnchorOffset.y + Math.sin(this.elapsed * 2.1) * 0.024;
+      const targetZ = seatWorldZ - localX * sinY + localZ * cosY;
       f.position.x = THREE.MathUtils.damp(f.position.x, targetX, 5.5, dt);
       f.position.y = THREE.MathUtils.damp(f.position.y, targetY, 5.5, dt);
       f.position.z = THREE.MathUtils.damp(f.position.z, targetZ, 5.5, dt);
@@ -1597,6 +2187,7 @@ export class FishingSceneManager {
 
     // Update Fish AI System
     const lureInWater = this.phase === 'waiting' || this.phase === 'nibbling' || this.phase === 'biting';
+    const boatDef = BOAT_CATALOG.find((b) => b.level === this.progression.boatLevel) ?? BOAT_CATALOG[0];
     this.fishSystem.update({
       dt,
       elapsed: this.elapsed,
@@ -1608,6 +2199,7 @@ export class FishingSceneManager {
       season: this.season,
       timePreset: getPresetFromHour(this.timeOfDay),
       anglerSenseLevel: this.progression.skills.anglerSense,
+      rareAttractionBonus: this.boatSystem.isOnBoat() ? boatDef.rareAttractionBonus : 1.0,
       isReelingPhase: this.phase === 'reeling' || this.phase === 'caught',
       onNibble: (rx, rz) => {
         if (this.phase === 'waiting' || this.phase === 'nibbling') {
@@ -1656,17 +2248,111 @@ export class FishingSceneManager {
       this.phase === 'biting' ||
       this.phase === 'reeling';
 
+    // Update Crocodiles, Frogs & Rival Anglers Tug-of-War
+    this.getPlayerLandingAnchor(this._landingPoint);
+    const activeReelingFish = this.phase === 'reeling' && this.hookedFish ? this.hookedFish : null;
+    const hookedDist = activeReelingFish
+      ? Math.hypot(activeReelingFish.position.x - this._landingPoint.x, activeReelingFish.position.z - this._landingPoint.z)
+      : 999;
+
+    const rivalTargets = this.rivalAnglers.getActiveFishTargets();
+    const crocResult = this.crocsAndFrogs.update({
+      dt,
+      elapsed: this.elapsed,
+      weather: this.weather,
+      nightFactor,
+      hookedFishPos: activeReelingFish ? activeReelingFish.position : null,
+      hookedFishDistToDock: hookedDist,
+      playerReeling: this.reelHeld,
+      rivalFishTargets: rivalTargets,
+      getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
+      onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
+      onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
+      onCrocSnap: () => this.sound.playCrocSnap(),
+      onFrogCroak: (pan) => this.sound.playFrogCroak(pan),
+    });
+
+    for (const rIdx of crocResult.devouredRivalIndices) {
+      const eatenRivalName = this.rivalAnglers.devourRivalFish(rIdx);
+      if (eatenRivalName && !this.rivalContestActive) {
+        this.rivalNotice = `التهم التمساح صيد ${eatenRivalName} في البحيرة!`;
+        this.rivalNoticeTimer = 3.8;
+      }
+    }
+
+    this.crocThreatActive = crocResult.threatActive;
+    this.crocDistanceMeters = crocResult.distanceToFish;
+    if (crocResult.threatActive && crocResult.distanceToFish < 7.0) {
+      this.crocCloseEscape = true;
+    }
+    if (crocResult.devoured && activeReelingFish) {
+      this.fishSystem.consumeHookedFish();
+      this.hookedFish = null;
+      this.lineSnappedNotice = 'التهم التمساح السمكة لتباطؤ السحب! واصل السحب بثبات قبل اقترابه.';
+      this.lineSnapTimer = 5.2;
+      this.resetToIdle('التهم التمساح السمكة! ارمِ الصنارة من جديد');
+    }
+
+    const reelSkillFactor = 1 + (this.progression.skills.reelSpeed - 1) * 0.14;
+    const stillReelingFish = this.phase === 'reeling' && this.hookedFish ? this.hookedFish : null;
+    const stillHookedDist = stillReelingFish
+      ? Math.hypot(stillReelingFish.position.x - this._landingPoint.x, stillReelingFish.position.z - this._landingPoint.z)
+      : 999;
+
+    const rivalResult = this.rivalAnglers.update({
+      dt,
+      elapsed: this.elapsed,
+      hookedFishPos: stillReelingFish ? stillReelingFish.position : null,
+      hookedFishDistToDock: stillHookedDist,
+      playerReeling: this.reelHeld,
+      reelSkillFactor,
+      getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
+      onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
+      onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
+    });
+
+    this.rivalContestActive = rivalResult.contestActive;
+    this.rivalName = rivalResult.rivalName;
+    this.rivalContestBalance = rivalResult.contestBalance;
+
+    if (rivalResult.justStarted && rivalResult.rivalName) {
+      this.rivalNotice = `اشتبك ${rivalResult.rivalName} على نفس السمكة! اسحب بقوة للفوز بها!`;
+      this.rivalNoticeTimer = 4.5;
+    }
+    if (rivalResult.contestActive && stillReelingFish) {
+      stillReelingFish.position.x += rivalResult.pullVectorX * dt;
+      stillReelingFish.position.z += rivalResult.pullVectorZ * dt;
+      stillReelingFish.mesh.position.copy(stillReelingFish.position);
+    }
+    if (rivalResult.justWon) {
+      this.rivalWonThisCatch = true;
+      this.rivalNotice = 'حسمت صراع السحب لصالحك ضد المنافس! (+50 خبرة عند الصيد)';
+      this.rivalNoticeTimer = 4.5;
+    } else if (rivalResult.justStolen && stillReelingFish) {
+      this.fishSystem.consumeHookedFish();
+      this.hookedFish = null;
+      this.rivalNotice = 'خطف الصياد المنافس السمكة من أمامك في صراع السحب!';
+      this.rivalNoticeTimer = 5.2;
+      this.resetToIdle('فاز المنافس بالسمكة! ارمِ الصنارة في نقطة أخرى');
+    }
+
+    const rigYawForRod = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
+    const relRodYaw = Math.atan2(Math.sin(this.currentYaw - rigYawForRod), Math.cos(this.currentYaw - rigYawForRod));
+
     this.dockRig.updateRodAndLine({
       elapsed: this.elapsed,
       castBackAngle: this.phase === 'charging' ? this.castPower : 0,
       rodBend: this.rodBend,
-      rodYawOffset: THREE.MathUtils.clamp(this.currentYaw * 0.45, -0.55, 0.55),
+      rodYawOffset: THREE.MathUtils.clamp(relRodYaw * 0.45, -0.55, 0.55),
       bobberPos: this.bobberPos,
       lurePos: this.lurePos,
       bobberVisible,
       reeling: this.phase === 'reeling' && this.reelHeld,
       nightFactor,
       windStrength: windSpeedKmh / 12,
+      coldSnowFactor: this.coldIntensity,
+      lineTension: this.lineTension,
+      heavyFishFactor: this.phase === 'reeling' ? this.heavyFishFactor : 0,
     });
 
     // Periodic HUD refresh (15 Hz smooth meters without React spam)
@@ -1721,11 +2407,40 @@ export class FishingSceneManager {
           )
         : null;
 
+    this.getPlayerLandingAnchor(this._landingPoint);
+    const playerDepthX = this.boatSystem.isOnBoat() ? this._boatWorldPos.x : 0;
+    const playerDepthZ = this.boatSystem.isOnBoat() ? this._boatWorldPos.z : 2.3;
+    const waterDepthUnderPlayer = Math.max(0.5, Number((-groundHeightAt(playerDepthX, playerDepthZ)).toFixed(1)));
+
+    const poisHud: PoiHudItem[] = this.poiSystem.getPoiInfos().map((info) => {
+      const dx = info.worldX - playerDepthX;
+      const dz = info.worldZ - playerDepthZ;
+      return {
+        ...info.definition,
+        discovered: info.discovered || Boolean(this.discoveredPois[info.definition.id]),
+        discoveredAt: this.discoveredPois[info.definition.id],
+        distanceMeters: Math.round(Math.hypot(dx, dz)),
+        bearingLabelAr: formatArabicCompassBearing(dx, dz),
+        worldX: info.worldX,
+        worldZ: info.worldZ,
+      };
+    });
+
     this.onHudUpdate({
       phase: this.phase,
       castPower: this.castPower,
       lineTension: this.lineTension,
-      fishDistance: this.hookedFish ? Math.max(0, Number(Math.hypot(this.hookedFish.position.x, this.hookedFish.position.z - 0.2).toFixed(1))) : 0,
+      fishDistance: this.hookedFish
+        ? Math.max(
+            0,
+            Number(
+              Math.hypot(
+                this.hookedFish.position.x - this._landingPoint.x,
+                this.hookedFish.position.z - this._landingPoint.z,
+              ).toFixed(1),
+            ),
+          )
+        : 0,
       fishStamina: this.hookedFish ? this.hookedFish.stamina : 0,
       biteUrgency: biting ? THREE.MathUtils.clamp(biting.stateTimer / 2.4, 0, 1) : 0,
       hookedSpeciesName: this.hookedFish ? this.hookedFish.species.nameAr : null,
@@ -1755,6 +2470,24 @@ export class FishingSceneManager {
       newlyUnlockedNotice: this.newlyUnlockedNotice,
       dailyChallenges: this.dailyChallenges,
       challengeCompletedNotice: this.challengeCompletedNotice,
+      coldIntensity: this.coldIntensity,
+      crocThreatActive: this.crocThreatActive,
+      crocDistanceMeters: Number(this.crocDistanceMeters.toFixed(1)),
+      rivalContestActive: this.rivalContestActive,
+      rivalName: this.rivalName,
+      rivalContestBalance: this.rivalContestBalance,
+      rivalNotice: this.rivalNotice,
+      speciesRecords: this.speciesRecords,
+      recordBrokenNotice: this.recordBrokenNotice,
+      isHeavyHookedFish: this.phase === 'reeling' && this.isHeavyHookedFish,
+      heavyFishStress: this.phase === 'reeling' ? THREE.MathUtils.clamp(Math.max(this.lineTension, this.heavyFishFactor * 0.68), 0, 1) : 0,
+      currentLocationId: this.boatSystem.getCurrentLocationId(),
+      isOnBoat: this.boatSystem.isOnBoat(),
+      isSailing: this.boatSystem.isSailing(),
+      waterDepthUnderPlayer,
+      pois: poisHud,
+      poiDiscoveredNotice: this.poiDiscoveredNotice,
+      nearbyPoiName: this.nearbyPoiName,
     });
   }
 
@@ -1779,7 +2512,11 @@ export class FishingSceneManager {
     this.water.dispose();
     this.fishSystem.dispose();
     this.dockRig.dispose();
+    this.boatSystem.dispose();
+    this.poiSystem.dispose();
     this.wildlife.dispose();
+    this.crocsAndFrogs.dispose();
+    this.rivalAnglers.dispose();
     this.textures.dispose();
     this.rainGeo.dispose();
     this.rainMat.dispose();
@@ -1787,6 +2524,8 @@ export class FishingSceneManager {
     this.fireflyMat.dispose();
     this.pollenGeo.dispose();
     this.pollenMat.dispose();
+    this.breathGeo.dispose();
+    this.breathMat.dispose();
     this.pmremEnv.dispose();
     this.bloomPass?.dispose();
     this.composer?.dispose();

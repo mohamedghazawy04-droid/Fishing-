@@ -22,10 +22,14 @@ export class NatureSoundEngine {
     water: 0.78,
     trees: 0.72,
     birds: 0.75,
+    frogs: 0.76,
   };
 
   private lastBirdTime = 0;
   private nextBirdInterval = 3.2;
+  private lastFrogTime = 0;
+  private nextFrogInterval = 4.6;
+  private lastFrogPreviewAt = 0;
   private lastHawkTime = 0;
   private lastBubbleTime = 0;
   private lastReelClickTime = 0;
@@ -226,11 +230,23 @@ export class NatureSoundEngine {
   }
 
   public setAmbienceMix(partial: Partial<AmbienceMix>): void {
+    const prevFrogs = this.mix.frogs;
+    const nextFrogs =
+      partial.frogs !== undefined ? Math.max(0, Math.min(1, partial.frogs)) : this.mix.frogs;
     this.mix = {
       water: partial.water !== undefined ? Math.max(0, Math.min(1, partial.water)) : this.mix.water,
       trees: partial.trees !== undefined ? Math.max(0, Math.min(1, partial.trees)) : this.mix.trees,
       birds: partial.birds !== undefined ? Math.max(0, Math.min(1, partial.birds)) : this.mix.birds,
+      frogs: nextFrogs,
     };
+
+    if (partial.frogs !== undefined && nextFrogs > 0.08 && nextFrogs >= prevFrogs) {
+      const nowMs = performance.now();
+      if (nowMs - this.lastFrogPreviewAt > 650) {
+        this.lastFrogPreviewAt = nowMs;
+        this.playFrogCroak((Math.random() - 0.5) * 0.6);
+      }
+    }
   }
 
   public getAmbienceMix(): AmbienceMix {
@@ -314,6 +330,14 @@ export class NatureSoundEngine {
       ) {
         this.lastHawkTime = elapsed;
         this.playDistantHawkCall();
+      }
+
+      // Ambient shoreline & lily-pad frog croaks (natively active at dawn, dusk, night & calm weather)
+      if (this.mix.frogs > 0.05 && weather !== 'storm' && elapsed - this.lastFrogTime > this.nextFrogInterval) {
+        this.lastFrogTime = elapsed;
+        const nightOrRainBoost = hour < 7.2 || hour > 17.5 || weather === 'rain' || weather === 'mist' ? 0.72 : 1.05;
+        this.nextFrogInterval = (4.5 + Math.random() * 5.2) * nightOrRainBoost;
+        this.playFrogCroak((Math.random() - 0.5) * 1.35);
       }
     }
   }
@@ -652,6 +676,28 @@ export class NatureSoundEngine {
     });
   }
 
+  public playDiscoveryChime(): void {
+    this.unlock();
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    const notes = [440, 554.37, 659.25, 880, 1108.73];
+    notes.forEach((f, idx) => {
+      if (!this.ctx) return;
+      const start = now + idx * 0.085;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(f, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.linearRampToValueAtTime(0.085, start + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.72);
+      osc.connect(gain);
+      this.routeAmbientVoice(gain, (idx - 2) * 0.25, 0.52);
+      osc.start(start);
+      osc.stop(start + 0.75);
+    });
+  }
+
   public playThunder(): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
@@ -673,6 +719,58 @@ export class NatureSoundEngine {
     gain.connect(this.masterGain);
     src.start(now);
     oscSafeStop(src, now + 2.45);
+  }
+
+  public playCrocSnap(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    this.playSplash(1.4);
+
+    // Sharp jaw clap + low predatory thump
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(165, now);
+    osc.frequency.exponentialRampToValueAtTime(42, now + 0.18);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.24, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.26);
+  }
+
+  public playFrogCroak(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted || this.mix.frogs < 0.05) return;
+    const now = this.ctx.currentTime;
+    const pulses = Math.random() < 0.45 ? 3 : 2;
+    const basePitch = 108 + Math.random() * 24;
+
+    for (let pulse = 0; pulse < pulses; pulse++) {
+      const t = now + pulse * 0.165;
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(basePitch + pulse * 14, t);
+      osc.frequency.exponentialRampToValueAtTime(basePitch + 72 + pulse * 18, t + 0.085);
+      filter.type = 'bandpass';
+      filter.frequency.value = 520 + pulse * 35;
+      filter.Q.value = 3.0;
+
+      const amp = 0.085 * this.mix.frogs;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(amp, t + 0.022);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.125);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      this.routeAmbientVoice(gain, pan, 0.28);
+      osc.start(t);
+      osc.stop(t + 0.145);
+    }
   }
 
   public dispose(): void {

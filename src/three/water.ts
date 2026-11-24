@@ -37,12 +37,12 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
   const group = new THREE.Group();
 
   // 1. Expanded Crystal-Clear Lake Water Surface Mesh with higher vertex density for physical wave swells & ripples
-  const waterWidth = 140;
-  const waterDepthLen = 120;
-  const segs = isSoftwareGl ? 84 : 148;
+  const waterWidth = 220;
+  const waterDepthLen = 170;
+  const segs = isSoftwareGl ? 96 : 168;
   const waterGeo = new THREE.PlaneGeometry(waterWidth, waterDepthLen, segs, segs);
   waterGeo.rotateX(-Math.PI / 2);
-  waterGeo.translate(0, 0, -28);
+  waterGeo.translate(0, 0, -44);
 
   const pos = waterGeo.attributes.position;
   const depthAttr = new Float32Array(pos.count);
@@ -213,7 +213,7 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
         float caustics = smoothstep(0.35, 0.95, causticPattern * 0.5 + 0.5) * (1.0 - smoothstep(0.5, 3.6, vDepth)) * 0.14;
 
         // Crystal-clear alpine tint
-        float depthFactor = smoothstep(0.1, 4.4, vDepth);
+        float depthFactor = smoothstep(0.1, 6.2, vDepth);
         vec3 waterTint = mix(uShallowColor, uDeepColor, depthFactor) + uSunColor * caustics;
 
         // Shoreline foam + wind-driven whitecap crest foam when wind speed is strong

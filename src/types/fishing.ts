@@ -4,7 +4,9 @@ export type SeasonId = 'spring' | 'summer' | 'autumn' | 'winter';
 
 export type TimePresetId = 'dawn' | 'morning' | 'noon' | 'sunset' | 'dusk' | 'night';
 
-export type LakeZoneId = 'dock_shade' | 'shore_reeds' | 'rocky_ledge' | 'deep_basin';
+export type LakeZoneId = 'dock_shade' | 'shore_reeds' | 'rocky_ledge' | 'deep_basin' | 'alpine_abyss';
+
+export type LakeSpotId = 'pier' | 'rocky_ledge' | 'deep_basin' | 'alpine_abyss' | 'abyss_heart';
 
 export type BaitId = 'worm' | 'fly' | 'spinner' | 'glow_minnow' | 'golden_corn';
 
@@ -40,9 +42,35 @@ export interface PlayerProgression {
   level: number;
   totalXp: number;
   availableXp: number;
+  boatLevel: number; // 1..4
   skills: PlayerSkills;
   unlockedBaits: BaitId[];
   unlockedHooks: HookId[];
+}
+
+export interface BoatDefinition {
+  level: number;
+  id: string;
+  nameAr: string;
+  subtitleAr: string;
+  upgradeCostXp: number;
+  maxSpotOrder: number;
+  maxReachDepthMeters: number;
+  speedMps: number;
+  rareAttractionBonus: number;
+  unlockSummaryAr: string;
+}
+
+export interface LakeAnchorSpot {
+  id: LakeSpotId;
+  nameAr: string;
+  subtitleAr: string;
+  requiredBoatLevel: number;
+  x: number;
+  z: number;
+  waterDepthMeters: number;
+  zoneLabel: string;
+  notableSpeciesAr: string;
 }
 
 export interface SkillDefinition {
@@ -115,6 +143,13 @@ export interface FishSpecies {
   descriptionAr: string;
 }
 
+export interface SpeciesRecordEntry {
+  speciesId: string;
+  maxWeightKg: number;
+  maxLengthCm: number;
+  achievedAt: string;
+}
+
 export interface CaughtFishRecord {
   id: string;
   species: FishSpecies;
@@ -129,6 +164,11 @@ export interface CaughtFishRecord {
   hookUsed: HookId;
   released: boolean;
   dailyChallengeBonusXp?: number;
+  crocEscapeBonusXp?: number;
+  rivalWinBonusXp?: number;
+  isNewRecord?: boolean;
+  previousRecordKg?: number;
+  recordBonusXp?: number;
 }
 
 export type DailyChallengeCategory = 'species_weather' | 'bait_weather' | 'combo';
@@ -158,6 +198,41 @@ export interface AmbienceMix {
   water: number; // 0..1
   trees: number; // 0..1
   birds: number; // 0..1
+  frogs: number; // 0..1
+}
+
+export type PoiId =
+  | 'old_pier'
+  | 'hidden_cave'
+  | 'sunken_bell_tower'
+  | 'ancient_lantern_shrine'
+  | 'wrecked_skiff_cove';
+
+export interface LakePoiDefinition {
+  id: PoiId;
+  nameAr: string;
+  mysteryTitleAr: string;
+  categoryAr: string;
+  hintAr: string;
+  discoveryStoryAr: string;
+  xpReward: number;
+  discoveryRadius: number;
+}
+
+export interface PoiHudItem extends LakePoiDefinition {
+  discovered: boolean;
+  discoveredAt?: string;
+  distanceMeters: number;
+  bearingLabelAr: string;
+  worldX: number;
+  worldZ: number;
+}
+
+export interface PoiDiscoveryNotice {
+  id: PoiId;
+  titleAr: string;
+  storyAr: string;
+  xpReward: number;
 }
 
 export interface FishingHudState {
@@ -194,6 +269,24 @@ export interface FishingHudState {
   newlyUnlockedNotice: string | null;
   dailyChallenges: DailyChallengesState;
   challengeCompletedNotice: string | null;
+  coldIntensity: number; // 0..1
+  crocThreatActive: boolean;
+  crocDistanceMeters: number;
+  rivalContestActive: boolean;
+  rivalName: string | null;
+  rivalContestBalance: number; // 0..1 (1 = player winning, 0 = rival steals fish)
+  rivalNotice: string | null;
+  speciesRecords: Record<string, SpeciesRecordEntry>;
+  recordBrokenNotice: string | null;
+  isHeavyHookedFish: boolean;
+  heavyFishStress: number; // 0..1
+  currentLocationId: LakeSpotId | 'free_roam';
+  isOnBoat: boolean;
+  isSailing: boolean;
+  waterDepthUnderPlayer: number;
+  pois: PoiHudItem[];
+  poiDiscoveredNotice: PoiDiscoveryNotice | null;
+  nearbyPoiName: string | null;
 }
 
 export const SEASON_CATALOG: SeasonDefinition[] = [
@@ -301,7 +394,175 @@ export const LAKE_ZONE_LABELS: Record<LakeZoneId, string> = {
   shore_reeds: 'ضفة القصب الضحلة',
   rocky_ledge: 'الحافة الصخرية',
   deep_basin: 'حوض البحيرة العميق',
+  alpine_abyss: 'أعماق وسط البحيرة الجبلية',
 };
+
+export const BOAT_CATALOG: BoatDefinition[] = [
+  {
+    level: 1,
+    id: 'wooden_skiff',
+    nameAr: 'قارب التجديف الخشبي',
+    subtitleAr: 'قارب تقليدي خفيف يرسو بجانب الرصيف للإبحار قرب الحافة الصخرية',
+    upgradeCostXp: 0,
+    maxSpotOrder: 1,
+    maxReachDepthMeters: 2.8,
+    speedMps: 4.2,
+    rareAttractionBonus: 1.0,
+    unlockSummaryAr: 'يفتح الإبحار إلى الحافة الصخرية (عمق 2.8م)',
+  },
+  {
+    level: 2,
+    id: 'reinforced_cutter',
+    nameAr: 'قارب الاستكشاف المقوّى',
+    subtitleAr: 'هيكل خشبي متين بمقدمة حادة وفانوس أمامي يشق الأمواج نحو وسط البحيرة',
+    upgradeCostXp: 140,
+    maxSpotOrder: 2,
+    maxReachDepthMeters: 4.6,
+    speedMps: 5.6,
+    rareAttractionBonus: 1.08,
+    unlockSummaryAr: 'يصل إلى وسط البحيرة العميق ومواطن الشبوط والكراكي العملاق',
+  },
+  {
+    level: 3,
+    id: 'motor_cruiser',
+    nameAr: 'قارب الصيد البخاري الهادئ',
+    subtitleAr: 'مزود بمحرك خلفي هادئ ومقعد مريح للوصول إلى الأعماق السحيقة',
+    upgradeCostXp: 320,
+    maxSpotOrder: 3,
+    maxReachDepthMeters: 5.8,
+    speedMps: 7.4,
+    rareAttractionBonus: 1.16,
+    unlockSummaryAr: 'يصل إلى أعماق وسط البحيرة حيث حفش الجبال وسلور الأعماق',
+  },
+  {
+    level: 4,
+    id: 'alpine_expedition',
+    nameAr: 'يخت الأعماق الجبلي بالسّونار',
+    subtitleAr: 'مجهز بسونار أعماق وكشاف ليلي ومظلة للوصول إلى قلب الهاوية الجبلية',
+    upgradeCostXp: 620,
+    maxSpotOrder: 4,
+    maxReachDepthMeters: 6.5,
+    speedMps: 9.2,
+    rareAttractionBonus: 1.28,
+    unlockSummaryAr: 'يفتح قلب الأعماق السحيقة (+28% فرص الأسماك الأسطورية العملاقة)',
+  },
+];
+
+export const LAKE_ANCHOR_SPOTS: LakeAnchorSpot[] = [
+  {
+    id: 'pier',
+    nameAr: 'رصيف الصيد (الشاطئ)',
+    subtitleAr: 'العودة إلى كرسي الرصيف الخشبي الدافئ',
+    requiredBoatLevel: 0,
+    x: 0,
+    z: 2.3,
+    waterDepthMeters: 1.1,
+    zoneLabel: 'ظل الرصيف',
+    notableSpeciesAr: 'فرخ البحيرة، القاروص، سلمون قوس قزح',
+  },
+  {
+    id: 'rocky_ledge',
+    nameAr: 'مرسى الحافة الصخرية',
+    subtitleAr: 'مياه صافية على بُعد 19 متراً من الشاطئ',
+    requiredBoatLevel: 1,
+    x: -9.0,
+    z: -16.5,
+    waterDepthMeters: 2.9,
+    zoneLabel: 'الحافة الصخرية',
+    notableSpeciesAr: 'القاروص، الشبوط الذهبي، السلمون',
+  },
+  {
+    id: 'deep_basin',
+    nameAr: 'وسط البحيرة العميق',
+    subtitleAr: 'حوض فيروزي عميق بعيد عن ضوضاء الضفة',
+    requiredBoatLevel: 2,
+    x: 9.5,
+    z: -32.0,
+    waterDepthMeters: 4.7,
+    zoneLabel: 'حوض البحيرة العميق',
+    notableSpeciesAr: 'كراكي الوادي، الشبوط، حفش الجبال',
+  },
+  {
+    id: 'alpine_abyss',
+    nameAr: 'أعماق الوادي المظلمة',
+    subtitleAr: 'مياه سحيقة غنية بالمفترسات العملاقة',
+    requiredBoatLevel: 3,
+    x: -6.0,
+    z: -48.0,
+    waterDepthMeters: 6.1,
+    zoneLabel: 'أعماق وسط البحيرة الجبلية',
+    notableSpeciesAr: 'حفش الجبال الذهبي، سلور الأعماق، سلمون القمر',
+  },
+  {
+    id: 'abyss_heart',
+    nameAr: 'قلب الهاوية الجبلية (الأعمق)',
+    subtitleAr: 'أعمق نقطة في وسط البحيرة أمام القمم الثلجية',
+    requiredBoatLevel: 4,
+    x: 1.5,
+    z: -60.0,
+    waterDepthMeters: 6.6,
+    zoneLabel: 'أعماق وسط البحيرة الجبلية',
+    notableSpeciesAr: 'تنين البحيرة الملكي، سلور الأعماق، حفش الجبال',
+  },
+];
+
+export const LAKE_POI_CATALOG: LakePoiDefinition[] = [
+  {
+    id: 'old_pier',
+    nameAr: 'الرصيف الخشبي القديم المهجور',
+    mysteryTitleAr: 'معلم غامض في الخليج الغربي',
+    categoryAr: 'أثر خشبي تاريخي',
+    hintAr: 'ابحث على الضفة الغربية الهادئة عن ألواح مائلة ومصباح حديدي عتيق.',
+    discoveryStoryAr:
+      'رصيف صيد عتيق يعود لعقود مضت، لا يزال يحتفظ بفانوسه الصدئ وحبال رسوّه المغطاة بالطحالب.',
+    xpReward: 95,
+    discoveryRadius: 14.5,
+  },
+  {
+    id: 'hidden_cave',
+    nameAr: 'كهف الشلال والبلورات المخفي',
+    mysteryTitleAr: 'كهف مخفي عند الجرف الشمالي الغربي',
+    categoryAr: 'كهف طبيعي',
+    hintAr: 'أبحر شمال غرب البحيرة نحو الصخور الشاهقة حيث يتساقط شلال صغير وتلمع بلورات زرقاء.',
+    discoveryStoryAr:
+      'مغارة صخرية سرية يحتضنها الجبل، تضيء جدرانها بلورات معدنية متوهجة تحت رذاذ الشلال البارد.',
+    xpReward: 135,
+    discoveryRadius: 15.5,
+  },
+  {
+    id: 'sunken_bell_tower',
+    nameAr: 'أطلال برج الجرس الغارق',
+    mysteryTitleAr: 'أعمدة مغمورة في المياه الشمالية الشرقية',
+    categoryAr: 'أطلال غارقة',
+    hintAr: 'اقترب من المياه الضحلة شمال شرق البحيرة للعثور على قوس حجري مغمور يتدلى منه جرس نحاسي.',
+    discoveryStoryAr:
+      'بقايا معبد حجري قديم غمرته مياه الوادي الصافية، ولا يزال جرسه البرونزي يتمايل بصمت مع نسيم الجبال.',
+    xpReward: 120,
+    discoveryRadius: 14.5,
+  },
+  {
+    id: 'ancient_lantern_shrine',
+    nameAr: 'مزار الفانوس الجبلي القديم',
+    mysteryTitleAr: 'ضوء دافئ على الضفة الشرقية',
+    categoryAr: 'مزار جبلي',
+    hintAr: 'اتجه شرقاً خلف خليج الأوز لتجد درجات حجرية وفانوساً منحوتاً يطل على البحيرة.',
+    discoveryStoryAr:
+      'مزار حجري هادئ شيّده الرحالة الأوائل ليهتدي الصيادون بنور فانوسه الدافئ في ليالي الضباب.',
+    xpReward: 105,
+    discoveryRadius: 14.5,
+  },
+  {
+    id: 'wrecked_skiff_cove',
+    nameAr: 'حطام قارب الصياد المفقود',
+    mysteryTitleAr: 'حطام قديم بين قصب الغرب',
+    categoryAr: 'حطام وكنز مفقود',
+    hintAr: 'تفحّص الضحالة الهادئة غرب البحيرة بالقرب من الصخور المتناثرة.',
+    discoveryStoryAr:
+      'قارب خشبي قديم استقر على الرمال الضحلة وبجانبه صندوق رحالة برونزي تحرسه أعشاب الماء.',
+    xpReward: 125,
+    discoveryRadius: 14.5,
+  },
+];
 
 export const BAIT_CATALOG: BaitDefinition[] = [
   {
@@ -554,7 +815,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     rarity: 'أسطوري',
     behavior: 'deep_hunter',
     behaviorLabelAr: 'مطاردة ليلية مهيبة',
-    preferredZones: ['deep_basin'],
+    preferredZones: ['deep_basin', 'alpine_abyss'],
     favoriteBaits: ['glow_minnow', 'spinner'],
     idealHooks: ['heavy_treble', 'circle_pro'],
     bodyColor: 0x456990,
@@ -564,12 +825,84 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 58,
     maxLengthCm: 105,
     baseWeightKg: 6.4,
-    preferredDepth: [2.2, 4.4],
+    preferredDepth: [2.2, 4.6],
     fightStrength: 0.94,
     speedMultiplier: 1.32,
     activeWeather: ['mist', 'storm', 'clear'],
     activeTimes: ['dusk', 'night', 'dawn'],
     descriptionAr: 'جوهرة الحوض العميق؛ يظهر ليلاً وعند الضباب وينجذب بقوة للسمكة المضيئة.',
+  },
+  {
+    id: 'alpine_sturgeon',
+    nameAr: 'حفش الجبال الذهبي',
+    scientificName: 'Acipenser montanus',
+    rarity: 'نادر',
+    behavior: 'bottom_forager',
+    behaviorLabelAr: 'عملاق قاعي مدرّع',
+    preferredZones: ['deep_basin', 'alpine_abyss'],
+    favoriteBaits: ['golden_corn', 'worm', 'glow_minnow'],
+    idealHooks: ['heavy_treble', 'circle_pro'],
+    bodyColor: 0x5d5738,
+    bellyColor: 0xe6dec2,
+    finColor: 0x8c7b4c,
+    stripeColor: 0xc4aa62,
+    minLengthCm: 76,
+    maxLengthCm: 138,
+    baseWeightKg: 9.4,
+    preferredDepth: [3.0, 5.2],
+    fightStrength: 0.93,
+    speedMultiplier: 0.98,
+    activeWeather: ['clear', 'cloudy', 'mist', 'rain'],
+    activeTimes: ['dawn', 'morning', 'dusk', 'night'],
+    descriptionAr: 'سمكة قديمة ضخمة تجوب قاع وسط البحيرة؛ تحتاج قارباً للوصول لأعماقها وخطافاً قوياً.',
+  },
+  {
+    id: 'abyssal_catfish',
+    nameAr: 'سلور الأعماق العملاق',
+    scientificName: 'Silurus abyssalis',
+    rarity: 'نادر',
+    behavior: 'deep_hunter',
+    behaviorLabelAr: 'كمين في الأعماق السحيقة',
+    preferredZones: ['alpine_abyss', 'deep_basin'],
+    favoriteBaits: ['worm', 'glow_minnow', 'spinner'],
+    idealHooks: ['heavy_treble', 'barbed_steel'],
+    bodyColor: 0x2d3842,
+    bellyColor: 0xb7c3cc,
+    finColor: 0x4b5c69,
+    stripeColor: 0x728a99,
+    minLengthCm: 88,
+    maxLengthCm: 158,
+    baseWeightKg: 13.2,
+    preferredDepth: [3.4, 5.9],
+    fightStrength: 0.98,
+    speedMultiplier: 1.08,
+    activeWeather: ['cloudy', 'mist', 'rain', 'storm'],
+    activeTimes: ['sunset', 'dusk', 'night', 'dawn'],
+    descriptionAr: 'عملاق مظلم يختبئ في أعمق حفر البحيرة الجبلية؛ يختبر أقصى تحمّل لخيط الصيد.',
+  },
+  {
+    id: 'glacial_taimen',
+    nameAr: 'تنين البحيرة الملكي (تايمن)',
+    scientificName: 'Hucho taimen',
+    rarity: 'أسطوري',
+    behavior: 'deep_hunter',
+    behaviorLabelAr: 'ملك أعماق البحيرة',
+    preferredZones: ['alpine_abyss'],
+    favoriteBaits: ['spinner', 'glow_minnow'],
+    idealHooks: ['heavy_treble', 'circle_pro'],
+    bodyColor: 0x3b4d5e,
+    bellyColor: 0xf0ebe6,
+    finColor: 0xb84a42,
+    stripeColor: 0xd96b59,
+    minLengthCm: 105,
+    maxLengthCm: 185,
+    baseWeightKg: 18.6,
+    preferredDepth: [3.8, 6.2],
+    fightStrength: 1.05,
+    speedMultiplier: 1.36,
+    activeWeather: ['clear', 'mist', 'rain', 'storm'],
+    activeTimes: ['dawn', 'morning', 'sunset', 'night'],
+    descriptionAr: 'أكبر وأندر أسماك الوادي؛ لا يظهر إلا في قلب الهاوية وسط البحيرة لذوي القوارب المتطورة.',
   },
 ];
 
@@ -684,9 +1017,10 @@ export function getPresetFromHour(hour: number): TimePresetId {
 
 export function classifyLakeZone(x: number, z: number, waterDepth: number): LakeZoneId {
   const distFromDock = Math.hypot(x, z - 2.0);
-  if (distFromDock < 11.5) return 'dock_shade';
-  if (waterDepth < 1.65 || Math.abs(x) > 25.0) return 'shore_reeds';
-  if (waterDepth > 2.95 && z < -16) return 'deep_basin';
+  if (distFromDock < 12.5) return 'dock_shade';
+  if (waterDepth < 1.65 || Math.abs(x) > 38.0) return 'shore_reeds';
+  if (waterDepth >= 4.5 && z < -32) return 'alpine_abyss';
+  if (waterDepth > 2.95 && z < -20) return 'deep_basin';
   return 'rocky_ledge';
 }
 

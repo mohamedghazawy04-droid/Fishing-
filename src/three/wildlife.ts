@@ -41,11 +41,11 @@ export interface WildlifeSystem {
 
 /**
  * Finds the nearest shoreline position (where terrain height is just above water y = 0.14..0.28)
- * stepping from a forest clearing position toward the lake center (0, -26).
+ * stepping from a forest clearing position toward the expanded lake center (0, -44).
  */
 function findShoreDrinkSpot(startX: number, startZ: number): THREE.Vector2 {
   const targetX = 0;
-  const targetZ = -26;
+  const targetZ = -44;
   const dx = targetX - startX;
   const dz = targetZ - startZ;
   const dist = Math.hypot(dx, dz) || 1;
@@ -73,11 +73,43 @@ function findShoreDrinkSpot(startX: number, startZ: number): THREE.Vector2 {
 }
 
 /**
+ * Finds a shallow wading shelf position (terrain height around -0.22..-0.06) for flamingos.
+ */
+function findShallowWaterSpot(startX: number, startZ: number, desiredDepth = -0.16): THREE.Vector2 {
+  const targetX = 0;
+  const targetZ = -44;
+  const dx = targetX - startX;
+  const dz = targetZ - startZ;
+  const dist = Math.hypot(dx, dz) || 1;
+  const ux = dx / dist;
+  const uz = dz / dist;
+
+  let bestX = startX;
+  let bestZ = startZ;
+  let bestDiff = Infinity;
+
+  for (let step = 0; step <= dist; step += 0.5) {
+    const px = startX + ux * step;
+    const pz = startZ + uz * step;
+    const h = groundHeightAt(px, pz);
+    const diff = Math.abs(h - desiredDepth);
+    if (h >= -0.34 && h <= -0.04 && diff < bestDiff) {
+      bestDiff = diff;
+      bestX = px;
+      bestZ = pz;
+    }
+    if (h < -0.55) break;
+  }
+
+  return new THREE.Vector2(bestX, bestZ);
+}
+
+/**
  * Steps from a shoreline spot back toward the pine grove until terrain reaches gentle meadow/forest height.
  */
 function findForestGrazeSpot(shoreX: number, shoreZ: number, pullDist: number, lateralOffset = 0): THREE.Vector2 {
   const dx = shoreX - 0;
-  const dz = shoreZ - -26;
+  const dz = shoreZ - -44;
   const len = Math.hypot(dx, dz) || 1;
   const outX = dx / len;
   const outZ = dz / len;
@@ -407,7 +439,7 @@ export function createWildlifeSystem(): WildlifeSystem {
     };
   }
 
-  // Spawn animals in 3 scenic lakeside forest groves clearly visible across the lake & during Cinematic Mode
+  // Spawn animals in 4 wide scenic lakeside forest groves clearly separated across the expanded lake
   const animals: ArticulatedAnimal[] = [];
 
   const spawnConfigs: {
@@ -420,17 +452,18 @@ export function createWildlifeSystem(): WildlifeSystem {
     initialBehavior: AnimalBehavior;
     initialTimer: number;
   }[] = [
-    // Left scenic bank among pine trees & shore
-    { kind: 'stag', scale: 1.38, seedX: -48, seedZ: -28, pullDist: 7.5, lateral: 2.0, initialBehavior: 'grazing', initialTimer: 9 },
-    { kind: 'doe', scale: 1.24, seedX: -45, seedZ: -24, pullDist: 4.2, lateral: -2.6, initialBehavior: 'drinking', initialTimer: 7 },
-    { kind: 'doe', scale: 1.2, seedX: -50, seedZ: -33, pullDist: 9.2, lateral: 1.5, initialBehavior: 'grazing', initialTimer: 5 },
-    // Right scenic bank among pine trees & shore
-    { kind: 'doe', scale: 1.26, seedX: 46, seedZ: -32, pullDist: 5.5, lateral: 1.8, initialBehavior: 'drinking', initialTimer: 8 },
-    { kind: 'fawn', scale: 0.88, seedX: 45, seedZ: -30, pullDist: 6.4, lateral: 3.1, initialBehavior: 'grazing', initialTimer: 6 },
-    { kind: 'fox', scale: 1.15, seedX: 42, seedZ: -19, pullDist: 6.0, lateral: -1.4, initialBehavior: 'grazing', initialTimer: 4 },
-    // Far north shore across the lake (facing dock)
-    { kind: 'stag', scale: 1.42, seedX: -12, seedZ: -64, pullDist: 6.8, lateral: -2.2, initialBehavior: 'drinking', initialTimer: 10 },
-    { kind: 'doe', scale: 1.24, seedX: 11, seedZ: -62, pullDist: 8.5, lateral: 2.0, initialBehavior: 'grazing', initialTimer: 7 },
+    // Far West scenic bank among pine trees & shore
+    { kind: 'stag', scale: 1.42, seedX: -84, seedZ: -44, pullDist: 8.0, lateral: 2.5, initialBehavior: 'grazing', initialTimer: 9 },
+    { kind: 'doe', scale: 1.26, seedX: -80, seedZ: -36, pullDist: 5.0, lateral: -3.2, initialBehavior: 'drinking', initialTimer: 7 },
+    { kind: 'doe', scale: 1.22, seedX: -86, seedZ: -54, pullDist: 9.8, lateral: 2.0, initialBehavior: 'grazing', initialTimer: 5 },
+    // Far East scenic bank among pine trees & shore
+    { kind: 'doe', scale: 1.28, seedX: 82, seedZ: -46, pullDist: 5.8, lateral: 2.2, initialBehavior: 'drinking', initialTimer: 8 },
+    { kind: 'fawn', scale: 0.90, seedX: 80, seedZ: -41, pullDist: 6.8, lateral: 3.6, initialBehavior: 'grazing', initialTimer: 6 },
+    { kind: 'fox', scale: 1.18, seedX: 74, seedZ: -26, pullDist: 6.5, lateral: -2.0, initialBehavior: 'grazing', initialTimer: 4 },
+    // Distant North-West & North-East meadow shores across the expanded lake
+    { kind: 'stag', scale: 1.45, seedX: -32, seedZ: -102, pullDist: 7.4, lateral: -2.8, initialBehavior: 'drinking', initialTimer: 10 },
+    { kind: 'doe', scale: 1.26, seedX: 28, seedZ: -100, pullDist: 8.8, lateral: 2.6, initialBehavior: 'grazing', initialTimer: 7 },
+    { kind: 'fox', scale: 1.16, seedX: -56, seedZ: -18, pullDist: 6.5, lateral: 2.5, initialBehavior: 'grazing', initialTimer: 5 },
   ];
 
   for (const cfg of spawnConfigs) {
@@ -439,7 +472,7 @@ export function createWildlifeSystem(): WildlifeSystem {
     const startPos = cfg.initialBehavior === 'drinking' ? drinkPos.clone() : grazePos.clone();
 
     const parts = cfg.kind === 'fox' ? buildFox(cfg.scale) : buildDeer(cfg.kind, cfg.scale);
-    const faceWaterYaw = Math.atan2(0 - startPos.x, -26 - startPos.y);
+    const faceWaterYaw = Math.atan2(0 - startPos.x, -44 - startPos.y);
     const y = groundHeightAt(startPos.x, startPos.y);
     parts.root.position.set(startPos.x, y, startPos.y);
     parts.root.rotation.y = faceWaterYaw + (cfg.initialBehavior === 'grazing' ? 0.55 : 0);
@@ -511,10 +544,12 @@ export function createWildlifeSystem(): WildlifeSystem {
 
   const turtles: SurfaceTurtle[] = [];
   const turtleSpecs = [
-    { cx: -8.5, cz: -13.5, rx: 4.5, rz: 3.2, scale: 1.15, speed: 0.18, isBasker: false },
-    { cx: 11.5, cz: -17.0, rx: 5.2, rz: 3.8, scale: 1.05, speed: 0.15, isBasker: false },
-    { cx: -3.5, cz: -25.0, rx: 6.0, rz: 4.2, scale: 1.22, speed: 0.14, isBasker: false },
-    { cx: 19.0, cz: -10.5, rx: 2.8, rz: 2.2, scale: 0.96, speed: 0.12, isBasker: true },
+    { cx: -22.0, cz: -17.0, rx: 5.5, rz: 4.0, scale: 1.15, speed: 0.16, isBasker: false },
+    { cx: 24.5, cz: -20.5, rx: 6.0, rz: 4.4, scale: 1.05, speed: 0.14, isBasker: false },
+    { cx: -35.0, cz: -44.0, rx: 7.2, rz: 5.0, scale: 1.22, speed: 0.13, isBasker: false },
+    { cx: 36.0, cz: -47.0, rx: 6.5, rz: 4.8, scale: 1.12, speed: 0.14, isBasker: false },
+    { cx: 8.5, cz: -70.0, rx: 7.0, rz: 4.8, scale: 1.18, speed: 0.12, isBasker: false },
+    { cx: 32.0, cz: -12.5, rx: 3.4, rz: 2.5, scale: 0.96, speed: 0.11, isBasker: true },
   ];
 
   for (let i = 0; i < turtleSpecs.length; i++) {
@@ -701,6 +736,346 @@ export function createWildlifeSystem(): WildlifeSystem {
   group.add(sparklePoints);
   let sparkleCursor = 0;
 
+  // --- Graceful Shallow-Water Pink Flamingos (7 Wading Birds in Two Separated Coves) ---
+  interface FlamingoInstance {
+    root: THREE.Group;
+    neckPivot: THREE.Group;
+    headPivot: THREE.Group;
+    rightLeg: THREE.Group;
+    baseX: number;
+    baseZ: number;
+    phase: number;
+    standingOneLeg: boolean;
+    dipCooldown: number;
+    dipAnim: number;
+  }
+
+  const flamPinkMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xf67fa1, roughness: 0.62 }));
+  const flamDeepRoseMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xd9486b, roughness: 0.58 }));
+  const flamNeckMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xffa6bd, roughness: 0.6 }));
+  const flamLegMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xe36b7c, roughness: 0.55 }));
+  const flamBeakTipMat = trackMat(new THREE.MeshStandardMaterial({ color: 0x1a1719, roughness: 0.35 }));
+  const flamEyeMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xf7df68, roughness: 0.25 }));
+
+  const flamBodyGeo = trackGeo(new THREE.SphereGeometry(0.18, 12, 10));
+  flamBodyGeo.scale(0.82, 0.78, 1.38);
+  const flamWingGeo = trackGeo(new THREE.SphereGeometry(0.16, 10, 8));
+  flamWingGeo.scale(0.32, 0.62, 1.28);
+  const flamLegGeo = trackGeo(new THREE.CylinderGeometry(0.013, 0.01, 0.68, 6));
+  flamLegGeo.translate(0, -0.34, 0);
+  const flamNeckSegGeo = trackGeo(new THREE.CylinderGeometry(0.024, 0.032, 0.52, 7));
+  flamNeckSegGeo.translate(0, 0.26, 0);
+  const flamHeadGeo = trackGeo(new THREE.SphereGeometry(0.056, 8, 8));
+  flamHeadGeo.scale(0.88, 0.85, 1.2);
+  const flamBeakBaseGeo = trackGeo(new THREE.ConeGeometry(0.028, 0.085, 6));
+  flamBeakBaseGeo.rotateX(Math.PI * 0.62);
+  const flamBeakTipGeo = trackGeo(new THREE.ConeGeometry(0.019, 0.068, 6));
+  flamBeakTipGeo.rotateX(Math.PI * 0.92);
+
+  const flamingoSeeds: [number, number, boolean][] = [
+    // South-West sandy reed cove (clearly visible in left foreground/midground from dock)
+    [-34.0, -9.5, true],
+    [-37.5, -12.5, false],
+    [-41.5, -16.0, true],
+    [-45.0, -20.5, false],
+    // North-East calm cove across lake
+    [48.0, -64.0, true],
+    [52.5, -67.5, false],
+    [56.5, -71.5, true],
+  ];
+
+  const flamingos: FlamingoInstance[] = flamingoSeeds.map(([sx, sz, oneLeg], idx) => {
+    const spot = findShallowWaterSpot(sx, sz, -0.18);
+    const root = new THREE.Group();
+    const legH = 0.68;
+
+    const bodyRoot = new THREE.Group();
+    bodyRoot.position.y = legH;
+    root.add(bodyRoot);
+
+    const body = new THREE.Mesh(flamBodyGeo, flamPinkMat);
+    body.castShadow = true;
+    const wingL = new THREE.Mesh(flamWingGeo, flamDeepRoseMat);
+    wingL.position.set(0.11, 0.02, -0.02);
+    const wingR = new THREE.Mesh(flamWingGeo, flamDeepRoseMat);
+    wingR.position.set(-0.11, 0.02, -0.02);
+    bodyRoot.add(body, wingL, wingR);
+
+    const leftLeg = new THREE.Group();
+    leftLeg.position.set(-0.055, -0.06, 0);
+    leftLeg.add(new THREE.Mesh(flamLegGeo, flamLegMat));
+    const rightLeg = new THREE.Group();
+    rightLeg.position.set(0.055, -0.06, 0);
+    rightLeg.add(new THREE.Mesh(flamLegGeo, flamLegMat));
+    if (oneLeg) {
+      rightLeg.rotation.x = 0.92;
+    }
+    bodyRoot.add(leftLeg, rightLeg);
+
+    // Graceful curved flamingo neck + head
+    const neckPivot = new THREE.Group();
+    neckPivot.position.set(0, 0.05, 0.19);
+    neckPivot.rotation.x = 0.25;
+    const lowerNeck = new THREE.Mesh(flamNeckSegGeo, flamNeckMat);
+    lowerNeck.castShadow = true;
+    neckPivot.add(lowerNeck);
+
+    const upperNeckPivot = new THREE.Group();
+    upperNeckPivot.position.set(0, 0.48, 0);
+    upperNeckPivot.rotation.x = -0.35;
+    const upperNeck = new THREE.Mesh(flamNeckSegGeo, flamNeckMat);
+    upperNeck.scale.set(0.85, 0.72, 0.85);
+    upperNeckPivot.add(upperNeck);
+
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 0.36, 0.01);
+    headPivot.rotation.x = 0.22;
+    const head = new THREE.Mesh(flamHeadGeo, flamNeckMat);
+    const beakBase = new THREE.Mesh(flamBeakBaseGeo, flamNeckMat);
+    beakBase.position.set(0, -0.02, 0.065);
+    const beakTip = new THREE.Mesh(flamBeakTipGeo, flamBeakTipMat);
+    beakTip.position.set(0, -0.068, 0.095);
+    for (const s of [-1, 1]) {
+      const eye = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.011, 5, 5)), flamEyeMat);
+      eye.position.set(s * 0.04, 0.016, 0.026);
+      headPivot.add(eye);
+    }
+    headPivot.add(head, beakBase, beakTip);
+    upperNeckPivot.add(headPivot);
+    neckPivot.add(upperNeckPivot);
+    bodyRoot.add(neckPivot);
+
+    const yawToCenter = Math.atan2(0 - spot.x, -44 - spot.y) + (idx % 2 === 0 ? 0.38 : -0.42);
+    const bedY = groundHeightAt(spot.x, spot.y);
+    root.position.set(spot.x, bedY, spot.y);
+    root.rotation.y = yawToCenter;
+    root.scale.setScalar(1.12 + (idx % 3) * 0.06);
+    group.add(root);
+
+    return {
+      root,
+      neckPivot,
+      headPivot,
+      rightLeg,
+      baseX: spot.x,
+      baseZ: spot.y,
+      phase: idx * 1.4,
+      standingOneLeg: oneLeg,
+      dipCooldown: 2.0 + idx * 1.3,
+      dipAnim: -1,
+    };
+  });
+
+  // --- Valley Geese (4 Swimming in East Cove + 2 Strolling on South-East Grassy Bank) ---
+  interface SwimmingWaterbird {
+    root: THREE.Group;
+    neckPivot: THREE.Group;
+    headPivot: THREE.Group;
+    bodyGroup: THREE.Group;
+    center: THREE.Vector2;
+    rx: number;
+    rz: number;
+    phase: number;
+    speed: number;
+    dabbleCooldown: number;
+    dabbleAnim: number;
+    rippleTimer: number;
+    isLandWalker: boolean;
+    walkRange: number;
+    baseYaw: number;
+  }
+
+  const gooseBodyMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xf1ede4, roughness: 0.72 }));
+  const gooseWingMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xa29688, roughness: 0.76 }));
+  const gooseBillMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xe68422, roughness: 0.42 }));
+
+  const gooseTorsoGeo = trackGeo(new THREE.SphereGeometry(0.19, 12, 10));
+  gooseTorsoGeo.scale(0.84, 0.72, 1.35);
+  const gooseNeckGeo = trackGeo(new THREE.CylinderGeometry(0.036, 0.052, 0.34, 8));
+  gooseNeckGeo.translate(0, 0.17, 0);
+  const gooseHeadGeo = trackGeo(new THREE.SphereGeometry(0.062, 8, 8));
+  gooseHeadGeo.scale(0.88, 0.85, 1.18);
+  const gooseBillGeo = trackGeo(new THREE.ConeGeometry(0.028, 0.1, 6));
+  gooseBillGeo.rotateX(Math.PI / 2);
+  const gooseTailGeo = trackGeo(new THREE.ConeGeometry(0.07, 0.15, 6));
+  gooseTailGeo.rotateX(-Math.PI * 0.45);
+
+  const waterbirds: SwimmingWaterbird[] = [];
+
+  const gooseSpecs = [
+    // East cove swimming geese (well-spaced phases & radii)
+    { cx: 33.0, cz: -25.0, rx: 5.5, rz: 4.0, phase: 0.2, speed: 0.19, land: false, scale: 1.08 },
+    { cx: 36.5, cz: -28.0, rx: 6.2, rz: 4.5, phase: 2.5, speed: 0.17, land: false, scale: 1.02 },
+    { cx: 43.0, cz: -45.0, rx: 6.8, rz: 5.0, phase: 1.1, speed: 0.16, land: false, scale: 1.06 },
+    { cx: 46.0, cz: -48.0, rx: 7.2, rz: 5.2, phase: 3.9, speed: 0.15, land: false, scale: 0.98 },
+    // South-East grassy bank geese
+    { cx: 38.0, cz: -1.5, rx: 0, rz: 0, phase: 0.5, speed: 0.32, land: true, scale: 1.05 },
+    { cx: 42.5, cz: -4.2, rx: 0, rz: 0, phase: 2.2, speed: 0.28, land: true, scale: 0.98 },
+  ];
+
+  gooseSpecs.forEach((gs, idx) => {
+    const root = new THREE.Group();
+    const bodyGroup = new THREE.Group();
+    bodyGroup.position.y = gs.land ? 0.24 : 0.03;
+    root.add(bodyGroup);
+
+    const torso = new THREE.Mesh(gooseTorsoGeo, gooseBodyMat);
+    torso.castShadow = true;
+    const wingL = new THREE.Mesh(gooseTorsoGeo, gooseWingMat);
+    wingL.scale.set(0.35, 0.55, 0.85);
+    wingL.position.set(0.11, 0.04, -0.02);
+    const wingR = wingL.clone();
+    wingR.position.x = -0.11;
+    const tail = new THREE.Mesh(gooseTailGeo, gooseBodyMat);
+    tail.position.set(0, 0.06, -0.25);
+    bodyGroup.add(torso, wingL, wingR, tail);
+
+    const neckPivot = new THREE.Group();
+    neckPivot.position.set(0, 0.08, 0.18);
+    neckPivot.rotation.x = 0.15;
+    neckPivot.add(new THREE.Mesh(gooseNeckGeo, gooseBodyMat));
+
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 0.34, 0.02);
+    headPivot.add(new THREE.Mesh(gooseHeadGeo, gooseBodyMat));
+    const bill = new THREE.Mesh(gooseBillGeo, gooseBillMat);
+    bill.position.set(0, -0.01, 0.085);
+    const eyeL = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.011, 5, 5)), darkHoofEyeMat);
+    eyeL.position.set(0.042, 0.02, 0.03);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = -0.042;
+    headPivot.add(bill, eyeL, eyeR);
+    neckPivot.add(headPivot);
+    bodyGroup.add(neckPivot);
+
+    if (gs.land) {
+      const legMeshGeo = trackGeo(new THREE.CylinderGeometry(0.014, 0.012, 0.22, 5));
+      for (const s of [-1, 1]) {
+        const leg = new THREE.Mesh(legMeshGeo, gooseBillMat);
+        leg.position.set(s * 0.06, -0.13, 0);
+        bodyGroup.add(leg);
+      }
+      const shoreSpot = findShoreDrinkSpot(gs.cx + 18, gs.cz + 6);
+      const bankSpot = findForestGrazeSpot(shoreSpot.x, shoreSpot.y, 2.2, idx === 4 ? -1.5 : 2.0);
+      gs.cx = bankSpot.x;
+      gs.cz = bankSpot.y;
+    }
+
+    root.scale.setScalar(gs.scale);
+    group.add(root);
+
+    waterbirds.push({
+      root,
+      neckPivot,
+      headPivot,
+      bodyGroup,
+      center: new THREE.Vector2(gs.cx, gs.cz),
+      rx: gs.rx,
+      rz: gs.rz,
+      phase: gs.phase,
+      speed: gs.speed,
+      dabbleCooldown: 3.5 + idx * 1.4,
+      dabbleAnim: -1,
+      rippleTimer: 0.8 + idx * 0.6,
+      isLandWalker: gs.land,
+      walkRange: 2.2,
+      baseYaw: Math.atan2(-gs.cx, -44 - gs.cz),
+    });
+  });
+
+  // --- Lake Mallard Ducks (8 Ducks in Two Calm Separated Bays: Near-Left Reeds & North-West Inlet) ---
+  const drakeHeadMat = trackMat(new THREE.MeshStandardMaterial({ color: 0x1a6842, roughness: 0.35, metalness: 0.18 }));
+  const drakeChestMat = trackMat(new THREE.MeshStandardMaterial({ color: 0x7a3d24, roughness: 0.72 }));
+  const drakeBodyMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xb7b2a6, roughness: 0.78 }));
+  const henBodyMat = trackMat(new THREE.MeshStandardMaterial({ color: 0x856848, roughness: 0.82 }));
+  const duckBillMat = trackMat(new THREE.MeshStandardMaterial({ color: 0xf0b532, roughness: 0.42 }));
+
+  const duckBodyGeo = trackGeo(new THREE.SphereGeometry(0.135, 10, 8));
+  duckBodyGeo.scale(0.84, 0.72, 1.32);
+  const duckNeckGeo = trackGeo(new THREE.CylinderGeometry(0.032, 0.044, 0.15, 7));
+  duckNeckGeo.translate(0, 0.075, 0);
+  const duckHeadGeo = trackGeo(new THREE.SphereGeometry(0.056, 8, 8));
+  duckHeadGeo.scale(0.88, 0.88, 1.15);
+  const duckBillGeo = trackGeo(new THREE.ConeGeometry(0.025, 0.085, 6));
+  duckBillGeo.rotateX(Math.PI / 2);
+
+  const duckSpecs = [
+    // Near-left calm reed bay (clearly visible from dock & boat)
+    { cx: -21.0, cz: -10.5, rx: 3.8, rz: 2.8, phase: 0.3, speed: 0.24, isDrake: true },
+    { cx: -24.5, cz: -12.5, rx: 4.2, rz: 3.0, phase: 2.1, speed: 0.22, isDrake: false },
+    { cx: -28.0, cz: -15.5, rx: 4.5, rz: 3.4, phase: 4.4, speed: 0.20, isDrake: true },
+    { cx: -18.5, cz: -16.0, rx: 3.6, rz: 2.6, phase: 1.5, speed: 0.23, isDrake: false },
+    // North-west quiet reed inlet
+    { cx: -31.0, cz: -57.0, rx: 5.5, rz: 4.0, phase: 0.8, speed: 0.21, isDrake: true },
+    { cx: -35.0, cz: -61.0, rx: 5.8, rz: 4.2, phase: 2.9, speed: 0.19, isDrake: false },
+    { cx: -26.0, cz: -63.0, rx: 5.0, rz: 3.8, phase: 4.8, speed: 0.20, isDrake: true },
+    { cx: -38.5, cz: -55.0, rx: 4.8, rz: 3.6, phase: 5.6, speed: 0.22, isDrake: false },
+  ];
+
+  duckSpecs.forEach((ds, idx) => {
+    const root = new THREE.Group();
+    const bodyGroup = new THREE.Group();
+    bodyGroup.position.y = 0.02;
+    root.add(bodyGroup);
+
+    const bodyMat = ds.isDrake ? drakeBodyMat : henBodyMat;
+    const torso = new THREE.Mesh(duckBodyGeo, bodyMat);
+    torso.castShadow = true;
+    const chest = new THREE.Mesh(duckBodyGeo, ds.isDrake ? drakeChestMat : henBodyMat);
+    chest.scale.set(0.84, 0.84, 0.52);
+    chest.position.set(0, 0.01, 0.08);
+    const tail = new THREE.Mesh(gooseTailGeo, bodyMat);
+    tail.scale.setScalar(0.72);
+    tail.position.set(0, 0.04, -0.17);
+    bodyGroup.add(torso, chest, tail);
+
+    const neckPivot = new THREE.Group();
+    neckPivot.position.set(0, 0.05, 0.12);
+    const neckMat = ds.isDrake ? drakeHeadMat : henBodyMat;
+    neckPivot.add(new THREE.Mesh(duckNeckGeo, neckMat));
+
+    if (ds.isDrake) {
+      const collar = new THREE.Mesh(trackGeo(new THREE.TorusGeometry(0.042, 0.009, 6, 10)), gooseBodyMat);
+      collar.rotation.x = Math.PI / 2;
+      collar.position.y = 0.03;
+      neckPivot.add(collar);
+    }
+
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 0.15, 0.01);
+    headPivot.add(new THREE.Mesh(duckHeadGeo, neckMat));
+    const bill = new THREE.Mesh(duckBillGeo, duckBillMat);
+    bill.position.set(0, -0.01, 0.072);
+    const eyeL = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.01, 5, 5)), darkHoofEyeMat);
+    eyeL.position.set(0.038, 0.016, 0.024);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = -0.038;
+    headPivot.add(bill, eyeL, eyeR);
+    neckPivot.add(headPivot);
+    bodyGroup.add(neckPivot);
+
+    root.scale.setScalar(0.95 + (idx % 2) * 0.08);
+    group.add(root);
+
+    waterbirds.push({
+      root,
+      neckPivot,
+      headPivot,
+      bodyGroup,
+      center: new THREE.Vector2(ds.cx, ds.cz),
+      rx: ds.rx,
+      rz: ds.rz,
+      phase: ds.phase,
+      speed: ds.speed,
+      dabbleCooldown: 2.5 + idx * 1.1,
+      dabbleAnim: -1,
+      rippleTimer: 0.6 + idx * 0.45,
+      isLandWalker: false,
+      walkRange: 0,
+      baseYaw: 0,
+    });
+  });
+
   const emitSparkles = (x: number, y: number, z: number, count: number, spread: number) => {
     for (let s = 0; s < count; s++) {
       const idx = sparkleCursor;
@@ -782,7 +1157,7 @@ export function createWildlifeSystem(): WildlifeSystem {
           }
         } else if (a.behavior === 'drinking') {
           // Face lake water smoothly while drinking
-          const waterYaw = Math.atan2(0 - a.currentPos.x, -26 - a.currentPos.y);
+          const waterYaw = Math.atan2(0 - a.currentPos.x, -44 - a.currentPos.y);
           const diff = Math.atan2(Math.sin(waterYaw - a.heading), Math.cos(waterYaw - a.heading));
           a.heading += diff * Math.min(1, dt * 3.5);
 
@@ -882,6 +1257,111 @@ export function createWildlifeSystem(): WildlifeSystem {
         }
       }
 
+      // --- Update Wading Flamingos ---
+      const birdsActive = weather !== 'storm';
+      for (let i = 0; i < flamingos.length; i++) {
+        const fl = flamingos[i];
+        fl.root.visible = birdsActive;
+        if (!birdsActive) continue;
+
+        const sway = Math.sin(elapsed * 0.85 + fl.phase) * 0.035;
+        fl.root.rotation.z = sway * 0.4;
+
+        if (fl.dipAnim >= 0) {
+          fl.dipAnim += dt * 0.72;
+          if (fl.dipAnim >= 1) {
+            fl.dipAnim = -1;
+            fl.dipCooldown = 4.5 + Math.random() * 5.0;
+          } else {
+            const p = Math.sin(fl.dipAnim * Math.PI);
+            fl.neckPivot.rotation.x = 0.25 + p * 0.98;
+            fl.headPivot.rotation.x = 0.22 + p * 0.42;
+            fl.headPivot.rotation.y = Math.sin(elapsed * 9.0 + fl.phase) * 0.25 * p;
+            if (Math.abs(fl.dipAnim - 0.5) < dt * 0.8 && onDrinkRipple) {
+              onDrinkRipple(fl.baseX, fl.baseZ, 0.32);
+            }
+          }
+        } else {
+          fl.dipCooldown -= dt;
+          if (fl.dipCooldown <= 0) {
+            fl.dipAnim = 0;
+          }
+          fl.neckPivot.rotation.x = 0.25 + Math.sin(elapsed * 1.15 + fl.phase) * 0.07;
+          fl.headPivot.rotation.x = 0.22 + Math.sin(elapsed * 1.5 + fl.phase) * 0.08;
+          fl.headPivot.rotation.y = Math.sin(elapsed * 0.7 + fl.phase * 1.3) * 0.32;
+        }
+
+        if (fl.standingOneLeg) {
+          fl.rightLeg.rotation.x = 0.92 + Math.sin(elapsed * 1.2 + fl.phase) * 0.04;
+        }
+      }
+
+      // --- Update Valley Geese & Mallard Ducks ---
+      for (let i = 0; i < waterbirds.length; i++) {
+        const wb = waterbirds[i];
+        wb.root.visible = birdsActive;
+        if (!birdsActive) continue;
+
+        if (wb.isLandWalker) {
+          const walkT = elapsed * wb.speed + wb.phase;
+          const ox = wb.center.x + Math.cos(walkT) * wb.walkRange;
+          const oz = wb.center.y + Math.sin(walkT * 0.7) * (wb.walkRange * 0.65);
+          const nx = wb.center.x + Math.cos(walkT + 0.06) * wb.walkRange;
+          const nz = wb.center.y + Math.sin((walkT + 0.06) * 0.7) * (wb.walkRange * 0.65);
+          const gy = groundHeightAt(ox, oz);
+          wb.root.position.set(ox, gy, oz);
+          wb.root.rotation.y = Math.atan2(nx - ox, nz - oz);
+          wb.bodyGroup.rotation.z = Math.sin(elapsed * 5.2 + i) * 0.05;
+          wb.neckPivot.rotation.x = 0.12 + Math.max(0, Math.sin(elapsed * 1.3 + i * 2.1)) * 0.55;
+          wb.headPivot.rotation.y = Math.sin(elapsed * 1.1 + i) * 0.24;
+          continue;
+        }
+
+        const ang = elapsed * wb.speed + wb.phase;
+        const wx = wb.center.x + Math.cos(ang) * wb.rx;
+        const wz = wb.center.y + Math.sin(ang) * wb.rz;
+        const nextAng = ang + 0.05;
+        const nx = wb.center.x + Math.cos(nextAng) * wb.rx;
+        const nz = wb.center.y + Math.sin(nextAng) * wb.rz;
+        const yaw = Math.atan2(nx - wx, nz - wz);
+
+        const surfY = getWaterSurfaceY ? getWaterSurfaceY(wx, wz) : 0;
+        wb.root.position.set(wx, surfY - 0.015, wz);
+        wb.root.rotation.y = yaw;
+
+        if (wb.dabbleAnim >= 0) {
+          wb.dabbleAnim += dt * 0.85;
+          if (wb.dabbleAnim >= 1) {
+            wb.dabbleAnim = -1;
+            wb.dabbleCooldown = 4.2 + Math.random() * 5.5;
+          } else {
+            const p = Math.sin(wb.dabbleAnim * Math.PI);
+            wb.bodyGroup.rotation.x = p * 0.72;
+            wb.neckPivot.rotation.x = 0.15 + p * 0.65;
+            if (Math.abs(wb.dabbleAnim - 0.45) < dt * 0.9 && onDrinkRipple) {
+              onDrinkRipple(wx, wz, 0.34);
+            }
+          }
+        } else {
+          wb.dabbleCooldown -= dt;
+          if (wb.dabbleCooldown <= 0) {
+            wb.dabbleAnim = 0;
+          }
+          wb.bodyGroup.rotation.x = Math.sin(elapsed * 2.0 + i) * 0.035;
+          wb.bodyGroup.rotation.z = Math.cos(elapsed * 1.7 + i) * 0.04;
+          wb.neckPivot.rotation.x = 0.14 + Math.sin(elapsed * 1.6 + i) * 0.08;
+          wb.headPivot.rotation.y = Math.sin(elapsed * 0.95 + i * 1.7) * 0.28;
+        }
+
+        if (onDrinkRipple) {
+          wb.rippleTimer -= dt;
+          if (wb.rippleTimer <= 0) {
+            wb.rippleTimer = 2.1 + Math.random() * 1.4;
+            onDrinkRipple(wx, wz, 0.28);
+          }
+        }
+      }
+
       // --- Update Sparkling Jumping Fish ---
       const jumpersAllowed = weather !== 'storm';
       for (let j = 0; j < jumpers.length; j++) {
@@ -891,12 +1371,12 @@ export function createWildlifeSystem(): WildlifeSystem {
           if (!jumpersAllowed) continue;
           jf.cooldown -= dt;
           if (jf.cooldown <= 0) {
-            // Pick a scenic open water spot visible from the dock
-            let sx = (Math.random() - 0.5) * 38;
-            let sz = -7 - Math.random() * 29;
-            for (let k = 0; k < 6 && groundHeightAt(sx, sz) > -0.7; k++) {
+            // Pick a scenic open water spot spread across the expanded lake
+            let sx = (Math.random() - 0.5) * 96;
+            let sz = -10 - Math.random() * 68;
+            for (let k = 0; k < 6 && groundHeightAt(sx, sz) > -0.75; k++) {
               sx *= 0.75;
-              sz = THREE.MathUtils.lerp(sz, -22, 0.35);
+              sz = THREE.MathUtils.lerp(sz, -42, 0.35);
             }
             const jumpDir = Math.random() * Math.PI * 2;
             const jumpDist = 1.6 + Math.random() * 1.4;

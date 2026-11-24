@@ -54,28 +54,30 @@ function ridgedFbm(x: number, z: number, octaves = 4): number {
  * Dock sits around (0, 2.5) facing -Z over the crystal mountain lake centered around (0, -16).
  */
 export function groundHeightAt(x: number, z: number): number {
-  // Expanded crystal alpine lake basin in front of dock
-  const lx = x / 54;
-  const lz = (z + 28) / 42;
-  const lakeDist = Math.sqrt(lx * lx + lz * lz) + (fbm(x * 0.036, z * 0.036, 3) - 0.5) * 0.22;
+  // Generously expanded crystal alpine lake basin (~2.2x surface area) in front of dock
+  const lx = x / 84;
+  const lz = (z + 44) / 60;
+  const lakeDist = Math.sqrt(lx * lx + lz * lz) + (fbm(x * 0.028, z * 0.028, 3) - 0.5) * 0.21;
 
-  const distFromCenter = Math.hypot(x, z + 18);
+  const distFromCenter = Math.hypot(x * 0.86, z + 42);
 
   let height = 0;
 
   if (lakeDist < 1.0) {
-    // Smooth bowl from 0 at shoreline down to -5.1 in deep basin
+    // Smooth bowl from 0 at shoreline down to -6.7 in central alpine abyss
     const t = Math.max(0, 1.0 - lakeDist);
-    const depth = Math.pow(t, 0.72) * 5.1;
+    const depth = Math.pow(t, 0.72) * 5.15;
+    const abyssT = THREE.MathUtils.clamp((0.58 - lakeDist) / 0.58, 0, 1);
+    const abyssExtra = Math.pow(abyssT, 1.35) * 1.55;
     const ledgeBump =
       (Math.sin(x * 0.11) * Math.cos(z * 0.1) * 0.35 + (fbm(x * 0.07, z * 0.07, 2) - 0.5) * 0.45) *
       Math.min(1, t * 2.5);
-    height = -depth + ledgeBump;
+    height = -depth - abyssExtra + ledgeBump;
   } else {
     // Sweeping lush valley plains stretching out to the foothills
-    const shoreFade = THREE.MathUtils.smoothstep(lakeDist, 1.0, 1.55);
-    const meadow = (fbm(x * 0.022 + 3.1, z * 0.022 - 1.7, 4) - 0.3) * 9.5;
-    height = shoreFade * (0.42 + Math.max(0, meadow));
+    const shoreFade = THREE.MathUtils.smoothstep(lakeDist, 1.0, 1.52);
+    const meadow = (fbm(x * 0.02 + 3.1, z * 0.02 - 1.7, 4) - 0.3) * 9.8;
+    height = shoreFade * (0.44 + Math.max(0, meadow));
   }
 
   // Keep dock approach flat and natural around x in [-6, 6], z in [2, 16]
@@ -85,14 +87,14 @@ export function groundHeightAt(x: number, z: number): number {
     height = THREE.MathUtils.lerp(0.68, height, blend);
   }
 
-  // Towering Snow-Capped Alpine Mountain Range clearly visible across the horizon
-  const mountainStart = 68;
+  // Towering Snow-Capped Alpine Mountain Range surrounding the expanded lake
+  const mountainStart = 98;
   if (distFromCenter > mountainStart) {
-    const mT = THREE.MathUtils.smoothstep(distFromCenter, mountainStart, 225);
-    const valleyOpenMask = z > 18 ? 0.55 : 1.0;
-    const primaryRidge = ridgedFbm(x * 0.0115 + 7.2, z * 0.0115 + 4.4, 5);
-    const secondaryCrags = ridgedFbm(x * 0.028 - 2.1, z * 0.028 + 1.8, 3);
-    const peakBoost = Math.pow(mT, 1.3) * (24 + primaryRidge * 66 + secondaryCrags * 14) * valleyOpenMask;
+    const mT = THREE.MathUtils.smoothstep(distFromCenter, mountainStart, 255);
+    const valleyOpenMask = z > 24 ? 0.55 : 1.0;
+    const primaryRidge = ridgedFbm(x * 0.0105 + 7.2, z * 0.0105 + 4.4, 5);
+    const secondaryCrags = ridgedFbm(x * 0.025 - 2.1, z * 0.025 + 1.8, 3);
+    const peakBoost = Math.pow(mT, 1.3) * (26 + primaryRidge * 70 + secondaryCrags * 15) * valleyOpenMask;
     height += peakBoost;
   }
 
@@ -123,7 +125,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const group = new THREE.Group();
 
   // 1. Atmospheric Sky Dome with Sun, Moon, Stars & Clouds
-  const skyGeo = new THREE.SphereGeometry(420, 40, 24);
+  const skyGeo = new THREE.SphereGeometry(500, 40, 24);
   const skyMaterial = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -233,8 +235,8 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(skyDome);
 
   // 2. Sculpted Valley, Mountains, Plains & Expanded Lakebed Terrain
-  const terrainSize = 520;
-  const segs = isSoftwareGl ? 150 : 250;
+  const terrainSize = 660;
+  const segs = isSoftwareGl ? 160 : 270;
   const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, segs, segs);
   terrainGeo.rotateX(-Math.PI / 2);
 
@@ -540,12 +542,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const treeColor = new THREE.Color();
   let placedTrees = 0;
   let attempts = 0;
-  while (placedTrees < treeCount && attempts < 8500) {
+  while (placedTrees < treeCount && attempts < 10500) {
     attempts++;
     const angle = (attempts * 2.39996) % (Math.PI * 2);
-    const radius = 34 + ((attempts * 7.83) % 152);
+    const radius = 52 + ((attempts * 8.43) % 188);
     const tx = Math.cos(angle) * radius;
-    const tz = Math.sin(angle) * radius - 26;
+    const tz = Math.sin(angle) * radius - 42;
     if (Math.abs(tx) < 7.5 && tz > -2 && tz < 17) continue;
     const ty = groundHeightAt(tx, tz);
     if (ty < 0.72 || ty > 28.5) continue;
@@ -643,11 +645,11 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   leafCrowns.receiveShadow = true;
 
   let placedLeafTrees = 0;
-  for (let i = 0; i < 2400 && placedLeafTrees < leafTreeCount; i++) {
+  for (let i = 0; i < 3000 && placedLeafTrees < leafTreeCount; i++) {
     const ang = (i * 2.39996 + 0.7) % (Math.PI * 2);
-    const rad = 36 + ((i * 6.41) % 92);
+    const rad = 52 + ((i * 7.21) % 120);
     const lx = Math.cos(ang) * rad;
-    const lz = Math.sin(ang) * rad - 26;
+    const lz = Math.sin(ang) * rad - 42;
     if (Math.abs(lx) < 8 && lz > -2 && lz < 18) continue;
     const ly = groundHeightAt(lx, lz);
     if (ly < 0.68 || ly > 12.0) continue;
@@ -696,9 +698,9 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   bushesMesh.castShadow = true;
   bushesMesh.receiveShadow = true;
   let placedBushes = 0;
-  for (let i = 0; i < 3200 && placedBushes < bushCount; i++) {
-    const bx = (hash2(i * 1.9, 14.3) - 0.5) * 165;
-    const bz = (hash2(11.7, i * 2.9) - 0.5) * 140 - 25;
+  for (let i = 0; i < 4200 && placedBushes < bushCount; i++) {
+    const bx = (hash2(i * 1.9, 14.3) - 0.5) * 230;
+    const bz = (hash2(11.7, i * 2.9) - 0.5) * 190 - 42;
     if (Math.abs(bx) < 5.2 && bz > -2 && bz < 14) continue;
     const by = groundHeightAt(bx, bz);
     if (by < 0.38 || by > 11.5) continue;
@@ -733,9 +735,9 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const flowerMesh = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
   let placedFlowers = 0;
   const flowerPalette = [0xf7d65a, 0xf2f0e4, 0xd8a8f0, 0xf29f74];
-  for (let i = 0; i < 2600 && placedFlowers < flowerCount; i++) {
-    const fx = (hash2(i * 4.3, 6.1) - 0.5) * 140;
-    const fz = (hash2(8.3, i * 5.1) - 0.5) * 120 - 22;
+  for (let i = 0; i < 3400 && placedFlowers < flowerCount; i++) {
+    const fx = (hash2(i * 4.3, 6.1) - 0.5) * 210;
+    const fz = (hash2(8.3, i * 5.1) - 0.5) * 175 - 40;
     if (Math.abs(fx) < 3.5 && fz > -1 && fz < 12) continue;
     const fy = groundHeightAt(fx, fz);
     if (fy < 0.5 || fy > 6.8) continue;
@@ -786,9 +788,9 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   grassMesh.castShadow = true;
   grassMesh.receiveShadow = true;
   let placedGrass = 0;
-  for (let i = 0; i < 7200 && placedGrass < grassCount; i++) {
-    const gx = (hash2(i * 2.3, 9.1) - 0.5) * 165;
-    const gz = (hash2(4.1, i * 3.7) - 0.5) * 145 - 24;
+  for (let i = 0; i < 9500 && placedGrass < grassCount; i++) {
+    const gx = (hash2(i * 2.3, 9.1) - 0.5) * 230;
+    const gz = (hash2(4.1, i * 3.7) - 0.5) * 195 - 40;
     if (Math.abs(gx) < 3.0 && gz > -1 && gz < 12) continue;
     const gy = groundHeightAt(gx, gz);
     if (gy < 0.36 || gy > 8.2) continue;
@@ -812,7 +814,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(grassMesh);
 
   // 4. Instanced Shoreline & Submerged Lake Boulders
-  const rockCount = 125;
+  const rockCount = 165;
   const rockGeo = new THREE.DodecahedronGeometry(1, 1);
   const rPos = rockGeo.attributes.position;
   for (let i = 0; i < rPos.count; i++) {
@@ -834,12 +836,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   rocks.castShadow = true;
   rocks.receiveShadow = true;
   let placedRocks = 0;
-  for (let i = 0; i < 480 && placedRocks < rockCount; i++) {
-    const rx = (hash2(i, 11) - 0.5) * 124;
-    const rz = (hash2(19, i) - 0.5) * 108 - 28;
+  for (let i = 0; i < 720 && placedRocks < rockCount; i++) {
+    const rx = (hash2(i, 11) - 0.5) * 195;
+    const rz = (hash2(19, i) - 0.5) * 155 - 44;
     if (Math.hypot(rx, rz - 1) < 6.0) continue;
     const ry = groundHeightAt(rx, rz);
-    if (ry < -3.8 || ry > 9.0) continue;
+    if (ry < -4.2 || ry > 9.0) continue;
 
     const s = 0.35 + hash2(rx, rz) * 1.25;
     dummy.position.set(rx, ry + s * 0.18, rz);
@@ -861,7 +863,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(rocks);
 
   // 5. Instanced Lakeside Reeds & Cattails in shallow banks
-  const reedCount = 560;
+  const reedCount = 740;
   const reedGeo = new THREE.CylinderGeometry(0.015, 0.032, 1.45, 5);
   reedGeo.translate(0, 0.72, 0);
   const reedMat = new THREE.MeshStandardMaterial({
@@ -889,9 +891,9 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const reedsMesh = new THREE.InstancedMesh(reedGeo, reedMat, reedCount);
   reedsMesh.receiveShadow = true;
   let placedReeds = 0;
-  for (let i = 0; i < 4800 && placedReeds < reedCount; i++) {
-    const rx = (hash2(i * 3.1, 7.2) - 0.5) * 116;
-    const rz = (hash2(2.7, i * 4.3) - 0.5) * 96 - 28;
+  for (let i = 0; i < 7200 && placedReeds < reedCount; i++) {
+    const rx = (hash2(i * 3.1, 7.2) - 0.5) * 190;
+    const rz = (hash2(2.7, i * 4.3) - 0.5) * 145 - 44;
     if (Math.abs(rx) < 5.0 && rz > -2) continue;
     const ry = groundHeightAt(rx, rz);
     if (ry < -0.55 || ry > 0.38) continue;

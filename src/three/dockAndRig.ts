@@ -5,6 +5,7 @@ import { BAIT_CATALOG, type BaitId } from '../types/fishing';
 
 export interface DockAndRigSystem {
   group: THREE.Group;
+  playerRigGroup: THREE.Group;
   rodRoot: THREE.Group;
   reelCrankPivot: THREE.Group;
   bobberGroup: THREE.Group;
@@ -15,6 +16,7 @@ export interface DockAndRigSystem {
   lanternLight: THREE.PointLight;
   lanternFlameMat: THREE.MeshStandardMaterial;
   setActiveBaitVisual: (baitId: BaitId) => void;
+  setPlayerRigTransform: (offset: THREE.Vector3, pitch: number, roll: number, yaw?: number) => void;
   updateRodAndLine: (params: {
     elapsed: number;
     castBackAngle: number; // 0..1 when charging
@@ -26,6 +28,9 @@ export interface DockAndRigSystem {
     reeling: boolean;
     nightFactor: number;
     windStrength: number;
+    coldSnowFactor: number;
+    lineTension: number;
+    heavyFishFactor: number;
   }) => THREE.Vector3;
   getRodTipWorldPos: (out: THREE.Vector3) => THREE.Vector3;
   dispose: () => void;
@@ -33,6 +38,11 @@ export interface DockAndRigSystem {
 
 export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSystem {
   const group = new THREE.Group();
+  const playerRigGroup = new THREE.Group();
+  const rigSeatPivot = new THREE.Group();
+  rigSeatPivot.position.set(0, 0, 2.30);
+  playerRigGroup.add(rigSeatPivot);
+  group.add(playerRigGroup);
   const disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
 
   const pierTopY = 0.72;
@@ -81,6 +91,49 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     metalness: 0.0,
   });
   disposables.push(pierWoodMat, darkTimberMat, canvasFabricMat, brassMat, corkMat, carbonMat, bootMat, denimMat);
+
+  const snowUniform = { value: 0 };
+  const snowMaterials: THREE.MeshStandardMaterial[] = [];
+
+  function enableColdFrostDusting(mat: THREE.MeshStandardMaterial, strength = 1.0, edgeBias = 0.0): void {
+    snowMaterials.push(mat);
+    mat.customProgramCacheKey = () => `cold_frost_${strength.toFixed(2)}_${edgeBias.toFixed(2)}`;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uSnowDust = snowUniform;
+      shader.uniforms.uSnowStrength = { value: strength };
+      shader.uniforms.uEdgeBias = { value: edgeBias };
+      shader.vertexShader =
+        `varying vec3 vFrostWorldPos;\nvarying vec3 vFrostWorldNormal;\n` +
+        shader.vertexShader.replace(
+          '#include <worldpos_vertex>',
+          `#include <worldpos_vertex>
+           vec4 frostWp = modelMatrix * vec4(transformed, 1.0);
+           vFrostWorldPos = frostWp.xyz;
+           vFrostWorldNormal = normalize(mat3(modelMatrix) * normal);`,
+        );
+      shader.fragmentShader =
+        `uniform float uSnowDust;\nuniform float uSnowStrength;\nuniform float uEdgeBias;\nvarying vec3 vFrostWorldPos;\nvarying vec3 vFrostWorldNormal;\n` +
+        shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+           float frostNoise = sin(vFrostWorldPos.x * 24.0 + vFrostWorldPos.z * 19.0) * cos(vFrostWorldPos.z * 27.0 - vFrostWorldPos.x * 14.0) * 0.5 + 0.5;
+           float upCatch = smoothstep(0.28 - uEdgeBias, 0.85, vFrostWorldNormal.y);
+           float rimFrost = pow(clamp(1.0 - abs(vFrostWorldNormal.y), 0.0, 1.0), 1.6) * uEdgeBias;
+           float frostMask = clamp((upCatch * 0.85 + rimFrost * 0.65) * (0.45 + frostNoise * 0.72) * uSnowDust * uSnowStrength, 0.0, 0.82);
+           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.90, 0.94, 0.98), frostMask);`,
+        ).replace(
+          '#include <roughnessmap_fragment>',
+          `#include <roughnessmap_fragment>
+           roughnessFactor = mix(roughnessFactor, 0.62, clamp(uSnowDust * 0.45, 0.0, 0.45));`,
+        );
+    };
+  }
+
+  enableColdFrostDusting(pierWoodMat, 0.78, 0.04);
+  enableColdFrostDusting(darkTimberMat, 0.68, 0.06);
+  enableColdFrostDusting(canvasFabricMat, 0.85, 0.14);
+  enableColdFrostDusting(bootMat, 0.72, 0.16);
+  enableColdFrostDusting(denimMat, 0.76, 0.22);
 
   // 1. Wooden Lakeside Pier extending from bank (z=7.2) out over water (z=-0.6)
   const dockGroup = new THREE.Group();
@@ -218,9 +271,9 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   }
   group.add(chairGroup);
 
-  // 3. Seated Fisherman Lower Body (knees & boots resting naturally on pier planks)
+  // 3. Seated Fisherman Lower Body (knees & boots resting naturally on pier planks / boat deck)
   const bodyGroup = new THREE.Group();
-  bodyGroup.position.set(0, pierTopY, 2.30);
+  bodyGroup.position.set(0, pierTopY, 0);
 
   const thighGeo = new THREE.CapsuleGeometry(0.088, 0.40, 6, 10);
   thighGeo.rotateX(Math.PI / 2);
@@ -249,7 +302,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
     bodyGroup.add(thigh, shin, boot);
   }
-  group.add(bodyGroup);
+  rigSeatPivot.add(bodyGroup);
 
   // 4. Dockside Props: Warm Brass Oil Lantern (left front piling) & Wooden Tackle Box (right of chair)
   const lanternGroup = new THREE.Group();
@@ -319,8 +372,8 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
   // 5. Realistic Anatomical First-Person Fisherman Forearms & Both Hands + Rod
   const rodRoot = new THREE.Group();
-  rodRoot.position.set(0.24, pierTopY + 0.90, 1.82);
-  group.add(rodRoot);
+  rodRoot.position.set(0.24, pierTopY + 0.90, -0.48);
+  rigSeatPivot.add(rodRoot);
 
   const sleeveMat = new THREE.MeshStandardMaterial({
     map: textures.sleeveMap,
@@ -333,6 +386,8 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     color: 0xb8967d,
     roughness: 0.9,
   });
+  enableColdFrostDusting(sleeveMat, 0.72, 0.26);
+  enableColdFrostDusting(cuffMat, 0.88, 0.30);
   const skinMat = new THREE.MeshStandardMaterial({
     map: textures.skinMap,
     bumpMap: textures.skinBumpMap,
@@ -575,7 +630,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
   // Left Forearm & Anatomical Hand (resting clearly in view on left armrest + leather/brass watch, curling onto crank when reeling)
   const leftArmPivot = new THREE.Group();
-  leftArmPivot.position.set(-0.34, pierTopY + 0.78, 2.22);
+  leftArmPivot.position.set(-0.34, pierTopY + 0.78, -0.08);
 
   const leftHandRig = createAnatomicalHand('left', [0.38, 0.46, 0.34]);
   leftHandRig.root.position.set(0.08, 0.04, -0.36);
@@ -596,7 +651,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   leftHandRig.wristGroup.add(watchGroup);
 
   leftArmPivot.add(leftHandRig.root);
-  group.add(leftArmPivot);
+  rigSeatPivot.add(leftArmPivot);
 
   // Cork Grip & Brass Reel Seat
   const gripGeo = new THREE.CylinderGeometry(0.022, 0.024, 0.34, 12);
@@ -730,6 +785,11 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
   const tmpTip = new THREE.Vector3();
   const tmpPt = new THREE.Vector3();
+  const tmpLineDir = new THREE.Vector3();
+  const tmpLineSide = new THREE.Vector3();
+  const colNormal = new THREE.Color(0xdcebf2);
+  const colWarn = new THREE.Color(0xf5b942);
+  const colDanger = new THREE.Color(0xff3b30);
 
   function setActiveBaitVisual(baitId: BaitId): void {
     const b = BAIT_CATALOG.find((item) => item.id === baitId) ?? BAIT_CATALOG[0];
@@ -745,6 +805,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
 
   return {
     group,
+    playerRigGroup,
     rodRoot,
     reelCrankPivot,
     bobberGroup,
@@ -755,6 +816,10 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     lanternLight,
     lanternFlameMat,
     setActiveBaitVisual,
+    setPlayerRigTransform: (offset, pitch, roll, yaw = 0) => {
+      playerRigGroup.position.copy(offset);
+      rigSeatPivot.rotation.set(pitch * 0.4, yaw, roll * 0.4);
+    },
     getRodTipWorldPos: (out) => {
       rodTipMarker.updateWorldMatrix(true, false);
       return rodTipMarker.getWorldPosition(out);
@@ -770,20 +835,31 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
       reeling,
       nightFactor,
       windStrength,
+      coldSnowFactor,
+      lineTension,
+      heavyFishFactor,
     }) => {
-      // Natural handheld seated posture + charging pull-back + subtle breathing
-      const breath = Math.sin(elapsed * 1.45) * 0.008;
-      rodRoot.rotation.x = 0.28 + castBackAngle * 0.95 - rodBend * 0.24 + breath;
-      rodRoot.rotation.y = rodYawOffset - 0.12;
-      rodRoot.rotation.z = Math.sin(elapsed * 0.9) * 0.012 * windStrength;
+      snowUniform.value = THREE.MathUtils.lerp(snowUniform.value, THREE.MathUtils.clamp(coldSnowFactor, 0, 1), 0.04);
+      const stress = THREE.MathUtils.clamp(Math.max(lineTension, heavyFishFactor * 0.68), 0, 1);
+      const rodQuiver =
+        reeling && stress > 0.48
+          ? Math.sin(elapsed * 46) * 0.012 * ((stress - 0.48) / 0.52) * (0.6 + heavyFishFactor * 0.8)
+          : 0;
 
-      // Progressive bend along rod blank segments
+      // Natural handheld seated posture + charging pull-back + subtle breathing + heavy strain tremor
+      const breath = Math.sin(elapsed * 1.45) * 0.008;
+      rodRoot.rotation.x = 0.28 + castBackAngle * 0.95 - rodBend * 0.24 + breath + rodQuiver * 0.45;
+      rodRoot.rotation.y = rodYawOffset - 0.12 + rodQuiver * 0.6;
+      rodRoot.rotation.z = Math.sin(elapsed * 0.9) * 0.012 * windStrength + rodQuiver;
+
+      // Progressive bend along rod blank segments + tip quiver under heavy fish load
       rodSegments.forEach((seg, idx) => {
         const weight = (idx + 1) / rodSegments.length;
         const naturalDroop = -0.025 * weight;
         const fightBend = -rodBend * 0.135 * weight;
         const castWhip = castBackAngle * 0.04 * weight;
-        seg.rotation.x = naturalDroop + fightBend + castWhip;
+        const tipShake = idx >= 4 ? Math.sin(elapsed * 62 + idx * 1.3) * 0.018 * Math.max(0, stress - 0.45) * (0.5 + heavyFishFactor) : 0;
+        seg.rotation.x = naturalDroop + fightBend + castWhip + tipShake;
       });
 
       if (reeling) {
@@ -823,22 +899,59 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
       baitMesh.visible = bobberVisible;
       fishingLine.visible = true;
 
+      // Update fishing line color & opacity under heavy load / tension stress
+      if (bobberVisible && stress > 0.35) {
+        if (stress < 0.70) {
+          const k = (stress - 0.35) / 0.35;
+          lineMat.color.copy(colNormal).lerp(colWarn, k);
+        } else {
+          const k = (stress - 0.70) / 0.30;
+          lineMat.color.copy(colWarn).lerp(colDanger, k);
+        }
+        const dangerFlash = stress > 0.75 ? 0.08 * Math.sin(elapsed * 26) : 0;
+        lineMat.opacity = THREE.MathUtils.clamp(0.78 + stress * 0.18 + dangerFlash, 0.75, 0.98);
+      } else {
+        lineMat.color.copy(colNormal);
+        lineMat.opacity = 0.78;
+      }
+
       if (bobberVisible) {
         bobberGroup.position.copy(bobberPos);
         baitMesh.position.copy(lurePos);
         baitMesh.rotation.y = elapsed * 1.8;
 
-        // First 14 points: catenary curve from rod tip to bobber
-        const sag = Math.max(0.02, 0.35 * (1 - rodBend));
+        // First 14 points: taut catenary curve from rod tip to bobber + high-frequency stress vibration
+        const sag = Math.max(0.005, 0.35 * (1 - Math.max(rodBend, stress)));
+        tmpLineDir.subVectors(bobberPos, tmpTip).normalize();
+        tmpLineSide.set(-tmpLineDir.z, 0, tmpLineDir.x);
+        if (tmpLineSide.lengthSq() < 0.001) tmpLineSide.set(1, 0, 0);
+        else tmpLineSide.normalize();
+
+        const vibAmp =
+          stress > 0.38
+            ? ((stress - 0.38) / 0.62) * 0.044 * (0.55 + heavyFishFactor * 0.85)
+            : 0;
+
         for (let i = 0; i < 14; i++) {
           const t = i / 13;
           tmpPt.lerpVectors(tmpTip, bobberPos, t);
           tmpPt.y -= Math.sin(t * Math.PI) * sag;
+
+          if (vibAmp > 0.0005 && i > 0 && i < 13) {
+            const env = Math.sin(t * Math.PI);
+            const h1 = Math.sin(elapsed * 58 + t * 14.0);
+            const h2 = Math.cos(elapsed * 94 - t * 22.0);
+            const offsetSide = (h1 * 0.72 + h2 * 0.28) * vibAmp * env;
+            const offsetVert = (h2 * 0.65 - h1 * 0.35) * vibAmp * 0.65 * env;
+            tmpPt.addScaledVector(tmpLineSide, offsetSide);
+            tmpPt.y += offsetVert;
+          }
+
           linePositions[i * 3] = tmpPt.x;
           linePositions[i * 3 + 1] = tmpPt.y;
           linePositions[i * 3 + 2] = tmpPt.z;
         }
-        // Remaining 4 points: straight underwater drop from bobber down to lure/hook
+        // Remaining 4 points: underwater drop from bobber down to lure/hook
         for (let i = 14; i < linePointsCount; i++) {
           const t = (i - 13) / (linePointsCount - 14);
           tmpPt.lerpVectors(bobberPos, lurePos, t);
