@@ -28,6 +28,7 @@ import { createDockAndRig } from './dockAndRig';
 import { createEnvironment, groundHeightAt } from './environment';
 import { createFishSystem, type ActiveFish } from './fishSystem';
 import { applyCatchToQuests, buildQuestViews, loadQuestSave, saveQuestSave, type QuestSave } from '../game/quests';
+import { createWildlife } from './wildlife';
 import { createPostFx, loadSavedQuality, saveQuality, type GraphicsQuality, type PostFx } from './postFx';
 import { createProceduralTextures } from './textures';
 import { createCrystalWater } from './water';
@@ -97,6 +98,7 @@ export class FishingSceneManager {
   private textures: ReturnType<typeof createProceduralTextures>;
   private environment: ReturnType<typeof createEnvironment>;
   private water: ReturnType<typeof createCrystalWater>;
+  private wildlife: ReturnType<typeof createWildlife>;
   private fishSystem: ReturnType<typeof createFishSystem>;
   private dockRig: ReturnType<typeof createDockAndRig>;
   private sound = new NatureSoundEngine();
@@ -304,6 +306,15 @@ export class FishingSceneManager {
     this.scene.add(this.dockRig.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
+
+    // Wildlife: deer, goats, bear, herons, ducks and pond turtles
+    this.wildlife = createWildlife({
+      groundHeightAt,
+      waterHeightAt: (x, z) => this.water.getSurfaceHeightAt(x, z),
+      treeSpots: this.environment.treeSpots,
+      isSoftwareGl: this.isSoftwareGl,
+    });
+    this.scene.add(this.wildlife.group);
 
     // Rain / Snow Particles
     const rainCount = 950;
@@ -1484,6 +1495,8 @@ export class FishingSceneManager {
       this.emitHudState(false, windSpeedKmh, conditionLabel);
     }
 
+    this.wildlife.update(dt, this.elapsed, nightFactor, this.weather);
+
     if (this.postFx) {
       const weatherSun: Record<string, number> = { clear: 1, cloudy: 0.55, mist: 0.7, rain: 0.2, storm: 0.05 };
       const sunUp = THREE.MathUtils.smoothstep(this._sunDir.y, -0.03, 0.14);
@@ -1603,6 +1616,7 @@ export class FishingSceneManager {
     this.fireflyGeo.dispose();
     this.fireflyMat.dispose();
     this.pmremEnv.dispose();
+    this.wildlife.dispose();
     this.postFx?.dispose();
     this.postFx = null;
     this.renderer.dispose();
