@@ -48,6 +48,7 @@ import { createRivalAnglers } from './rivalAnglers';
 import { createProceduralTextures } from './textures';
 import { createCrystalWater } from './water';
 import { createWildlifeSystem } from './wildlife';
+import { createPerchingBirdSystem } from './perchingBird';
 
 const STORAGE_KEY = 'serene_valley_angler_save_v1';
 const DAILY_STORAGE_KEY = 'serene_valley_daily_challenges_v1';
@@ -219,6 +220,7 @@ export class FishingSceneManager {
   private boatSystem: ReturnType<typeof createBoatSystem>;
   private poiSystem: ReturnType<typeof createPointsOfInterest>;
   private wildlife: ReturnType<typeof createWildlifeSystem>;
+  private perchingBird: ReturnType<typeof createPerchingBirdSystem>;
   private crocsAndFrogs: ReturnType<typeof createCrocodilesAndFrogs>;
   private rivalAnglers: ReturnType<typeof createRivalAnglers>;
   private sound = new NatureSoundEngine();
@@ -474,6 +476,7 @@ export class FishingSceneManager {
     this.poiSystem = createPointsOfInterest(this.textures);
     this.poiSystem.setDiscoveredIds(Object.keys(this.discoveredPois) as PoiId[]);
     this.wildlife = createWildlifeSystem();
+    this.perchingBird = createPerchingBirdSystem();
     this.crocsAndFrogs = createCrocodilesAndFrogs();
     this.rivalAnglers = createRivalAnglers();
 
@@ -484,6 +487,7 @@ export class FishingSceneManager {
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
     this.scene.add(this.wildlife.group);
+    this.scene.add(this.perchingBird.group);
     this.scene.add(this.crocsAndFrogs.group);
     this.scene.add(this.rivalAnglers.group);
 
@@ -1940,6 +1944,21 @@ export class FishingSceneManager {
       this.emitHudState(true);
     }
 
+    // Perching Lakeside Bird (periodically swoops in to land on boat gunwale or wooden pier, flutters, then flies off)
+    this.perchingBird.update({
+      dt,
+      elapsed: this.elapsed,
+      weather: this.weather,
+      nightFactor,
+      cinematicActive: shouldCinematic,
+      isOnBoat: isOnBoatNow,
+      boatRoot: this.boatSystem.boatRoot,
+      boatYaw: rigYaw,
+      boatMovingFast: this.boatSystem.isSailing() || Math.abs(totalFwd) > 0.45,
+      onBirdChirp: (pan) => this.sound.playCloseBirdChirp(pan),
+      onWingFlutter: (pan) => this.sound.playWingFlutter(pan),
+    });
+
     this.cinematicBlend = THREE.MathUtils.damp(
       this.cinematicBlend,
       shouldCinematic ? 1 : 0,
@@ -2515,6 +2534,7 @@ export class FishingSceneManager {
     this.boatSystem.dispose();
     this.poiSystem.dispose();
     this.wildlife.dispose();
+    this.perchingBird.dispose();
     this.crocsAndFrogs.dispose();
     this.rivalAnglers.dispose();
     this.textures.dispose();

@@ -773,6 +773,73 @@ export class NatureSoundEngine {
     }
   }
 
+  /** Delicate close-range songbird chirp when a bird lands or perches nearby */
+  public playCloseBirdChirp(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted || this.mix.birds < 0.05) return;
+    const now = this.ctx.currentTime;
+    const notes = Math.random() < 0.5 ? 3 : 2;
+    const baseFreq = 2650 + Math.random() * 650;
+
+    for (let i = 0; i < notes; i++) {
+      const t = now + i * 0.105;
+      const dur = 0.065 + Math.random() * 0.03;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const fStart = baseFreq * (1 + i * 0.11);
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(fStart, t);
+      osc.frequency.exponentialRampToValueAtTime(fStart * 1.24, t + dur * 0.65);
+      osc.frequency.exponentialRampToValueAtTime(fStart * 0.94, t + dur);
+
+      const amp = 0.022 * this.mix.birds;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(amp, t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+      osc.connect(gain);
+      this.routeAmbientVoice(gain, pan, 0.22);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+  }
+
+  /** Soft feathered wing-flutter burst when a bird lands, flutters, or takes off */
+  public playWingFlutter(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted || this.mix.birds < 0.05) return;
+    const now = this.ctx.currentTime;
+    const beats = 4;
+
+    for (let i = 0; i < beats; i++) {
+      const t = now + i * 0.065;
+      const dur = 0.055;
+      const bufferSize = Math.floor(this.ctx.sampleRate * dur);
+      const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let j = 0; j < bufferSize; j++) {
+        data[j] = (Math.random() * 2 - 1) * Math.sin((j / bufferSize) * Math.PI);
+      }
+
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 900 + i * 110;
+      filter.Q.value = 1.4;
+
+      const gain = this.ctx.createGain();
+      const amp = 0.042 * (1 - i * 0.14) * this.mix.birds;
+      gain.gain.setValueAtTime(amp, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+      src.connect(filter);
+      filter.connect(gain);
+      this.routeAmbientVoice(gain, pan, 0.12);
+      src.start(t);
+      oscSafeStop(src, t + dur + 0.01);
+    }
+  }
+
   public dispose(): void {
     if (this.ctx) {
       void this.ctx.close();

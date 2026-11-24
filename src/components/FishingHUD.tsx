@@ -26,6 +26,9 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Sailboat,
+  Play,
+  Pause,
 } from 'lucide-react';
 import {
   BAIT_CATALOG,
@@ -436,17 +439,84 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         }}
       />
 
-      {/* Minimal Top Corner: Single Settings Entry Point ONLY (Pure Nature View) */}
-      <div className="flex items-start justify-start p-3.5 sm:p-4">
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          title="الإعدادات والتحكم الكامل (H)"
-          className="pointer-events-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#0a1317]/82 hover:bg-[#122026]/95 border border-white/15 text-stone-100 text-xs sm:text-sm font-medium shadow-lg transition-colors"
-        >
-          <Settings className="w-4 h-4 text-emerald-300 shrink-0" />
-          <span>الإعدادات</span>
-        </button>
+      {/* Minimal Top Edge: Settings + Boat Free-Roam Icon + Radio Only (Zero View Obstruction) */}
+      <div className="flex items-start justify-between gap-2 p-3 sm:p-3.5">
+        <div className="pointer-events-auto flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            title="الإعدادات والتحكم الكامل (H)"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0a1317]/82 hover:bg-[#122026]/95 border border-white/15 text-stone-100 text-xs font-medium shadow-lg transition-colors"
+          >
+            <Settings className="w-4 h-4 text-emerald-300 shrink-0" />
+            <span>الإعدادات</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={hud.isSailing || hud.phase === 'caught'}
+            onClick={() => {
+              if (hud.isOnBoat) {
+                onSelectLocation('pier');
+              } else {
+                onBoardBoatFreeRoam();
+              }
+            }}
+            title={
+              hud.isOnBoat
+                ? 'أنت على القارب — اضغط للعودة إلى الرصيف'
+                : 'ركوب القارب والتجول الحر في البحيرة'
+            }
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium shadow-lg transition-colors whitespace-nowrap disabled:opacity-50 ${
+              hud.isOnBoat
+                ? 'bg-sky-500/25 hover:bg-sky-500/35 border-sky-400/60 text-sky-100'
+                : 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-100'
+            }`}
+          >
+            <Sailboat className={`w-4 h-4 shrink-0 ${hud.isOnBoat ? 'text-sky-200' : 'text-sky-300'}`} />
+            <span>{hud.isOnBoat ? 'العودة للرصيف' : 'تجول بالقارب'}</span>
+          </button>
+        </div>
+
+        {/* Compact Radio-Only Control at Top Edge */}
+        <div className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#0a1317]/80 border border-white/15 text-xs shadow-lg max-w-[240px] sm:max-w-[290px]">
+          <button
+            type="button"
+            onClick={handleToggleRadioPlay}
+            title={radioPlaying || radioStatus === 'loading' ? 'إيقاف الراديو' : 'تشغيل الراديو'}
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg font-medium transition-colors whitespace-nowrap shrink-0 ${
+              radioPlaying
+                ? 'bg-amber-500/25 border border-amber-400/60 text-amber-100 hover:bg-amber-500/35'
+                : radioStatus === 'loading'
+                  ? 'bg-sky-500/25 border border-sky-400/60 text-sky-100'
+                  : 'bg-white/8 hover:bg-white/15 border border-white/10 text-stone-100'
+            }`}
+          >
+            {radioPlaying || radioStatus === 'loading' ? (
+              <Pause className="w-3.5 h-3.5 shrink-0" />
+            ) : (
+              <Play className="w-3.5 h-3.5 shrink-0" />
+            )}
+            <span>
+              {radioStatus === 'loading' ? 'اتصال...' : radioPlaying ? 'إيقاف' : 'راديو'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('radio');
+              setSettingsOpen(true);
+            }}
+            title="تغيير محطة الراديو"
+            className="flex items-center gap-1.5 px-1.5 py-1 rounded-lg hover:bg-white/8 text-stone-200 min-w-0 transition-colors"
+          >
+            <Radio className={`w-3.5 h-3.5 shrink-0 ${radioPlaying ? 'text-amber-300' : 'text-stone-400'}`} />
+            <span className="truncate text-[11px]">
+              {isCustomActive ? 'بث مخصص' : (activeStation?.nameAr ?? 'الراديو الحي')}
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* Active Fishing & Exploration Feedback ONLY (No clutter when idle) */}
