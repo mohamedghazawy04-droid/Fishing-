@@ -45,7 +45,7 @@ export interface CrystalWaterSystem {
   dispose: () => void;
 }
 
-const MAX_RIPPLES = 14;
+const MAX_RIPPLES = 24;
 const SPLASH_POOL_SIZE = 160;
 
 export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {

@@ -2598,7 +2598,8 @@ export class FishingSceneManager {
       getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
       onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
       onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
-      onCrocSnap: () => this.sound.playCrocSnap(),
+      onCrocSnap: (pan = 0) => this.sound.playCrocSnap(pan),
+      onCrocAttackSlap: (pan, intensity) => this.sound.playCrocWaterSlap(pan, intensity),
       onFrogCroak: (pan) => this.sound.playFrogCroak(pan),
       onWildFishScatter: (wx, wz) => this.fishSystem.spookNear(wx, wz, 5.2),
     });

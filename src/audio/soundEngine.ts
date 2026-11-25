@@ -843,24 +843,105 @@ export class NatureSoundEngine {
     oscSafeStop(src, now + 2.45);
   }
 
-  public playCrocSnap(): void {
+  /** Light wet tail/snout slap on the water surface when a crocodile lunges or attacks */
+  public playCrocWaterSlap(pan = 0, intensity = 0.72): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
-    this.playSplash(1.4);
+    const clInt = Math.max(0.2, Math.min(1.2, intensity));
+    const safePan = Math.max(-0.9, Math.min(0.9, pan));
 
-    // Sharp jaw clap + low predatory thump
+    // 1. Soft hollow water-impact thump ("خبطة خفيفة في الماء")
+    const thumpOsc = this.ctx.createOscillator();
+    const thumpLp = this.ctx.createBiquadFilter();
+    const thumpGain = this.ctx.createGain();
+    thumpOsc.type = 'sine';
+    thumpOsc.frequency.setValueAtTime(142 + Math.random() * 22, now);
+    thumpOsc.frequency.exponentialRampToValueAtTime(52, now + 0.115);
+
+    thumpLp.type = 'lowpass';
+    thumpLp.frequency.setValueAtTime(280, now);
+
+    thumpGain.gain.setValueAtTime(0.0001, now);
+    thumpGain.gain.linearRampToValueAtTime(0.145 * clInt, now + 0.009);
+    thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.135);
+
+    thumpOsc.connect(thumpLp);
+    thumpLp.connect(thumpGain);
+    this.routeAmbientVoice(thumpGain, safePan, 0.22);
+    thumpOsc.start(now);
+    thumpOsc.stop(now + 0.15);
+
+    // 2. Crisp flat surface-slap burst
+    const slapDur = 0.11;
+    const slapBuf = this.createBrownNoiseBuffer(this.ctx, slapDur);
+    const slapSrc = this.ctx.createBufferSource();
+    slapSrc.buffer = slapBuf;
+
+    const slapBp = this.ctx.createBiquadFilter();
+    slapBp.type = 'bandpass';
+    slapBp.frequency.setValueAtTime(540 + Math.random() * 90, now);
+    slapBp.frequency.exponentialRampToValueAtTime(220, now + slapDur);
+    slapBp.Q.value = 1.15;
+
+    const slapGain = this.ctx.createGain();
+    slapGain.gain.setValueAtTime(0.0001, now);
+    slapGain.gain.linearRampToValueAtTime(0.115 * clInt, now + 0.006);
+    slapGain.gain.exponentialRampToValueAtTime(0.0001, now + slapDur);
+
+    slapSrc.connect(slapBp);
+    slapBp.connect(slapGain);
+    this.routeAmbientVoice(slapGain, safePan, 0.18);
+    slapSrc.start(now);
+    oscSafeStop(slapSrc, now + slapDur + 0.015);
+
+    // 3. Light trailing splash wash
+    const washDur = 0.26;
+    const washBuf = this.createBrownNoiseBuffer(this.ctx, washDur);
+    const washSrc = this.ctx.createBufferSource();
+    washSrc.buffer = washBuf;
+
+    const washBp = this.ctx.createBiquadFilter();
+    washBp.type = 'bandpass';
+    washBp.frequency.setValueAtTime(760, now + 0.015);
+    washBp.frequency.exponentialRampToValueAtTime(260, now + washDur);
+    washBp.Q.value = 0.75;
+
+    const washGain = this.ctx.createGain();
+    washGain.gain.setValueAtTime(0.0001, now + 0.015);
+    washGain.gain.linearRampToValueAtTime(0.068 * clInt, now + 0.04);
+    washGain.gain.exponentialRampToValueAtTime(0.0001, now + washDur);
+
+    washSrc.connect(washBp);
+    washBp.connect(washGain);
+    this.routeAmbientVoice(washGain, safePan, 0.24);
+    washSrc.start(now + 0.015);
+    oscSafeStop(washSrc, now + washDur + 0.02);
+  }
+
+  public playCrocSnap(pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    const safePan = Math.max(-0.9, Math.min(0.9, pan));
+    this.playCrocWaterSlap(safePan, 0.92);
+    this.playSplash(0.75);
+
+    // Muffled predatory jaw-snap thump
     const osc = this.ctx.createOscillator();
+    const lp = this.ctx.createBiquadFilter();
     const gain = this.ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(165, now);
-    osc.frequency.exponentialRampToValueAtTime(42, now + 0.18);
-    gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(0.24, now + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(145, now);
+    osc.frequency.exponentialRampToValueAtTime(44, now + 0.15);
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(310, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.14, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+    osc.connect(lp);
+    lp.connect(gain);
+    this.routeAmbientVoice(gain, safePan, 0.2);
     osc.start(now);
-    osc.stop(now + 0.26);
+    osc.stop(now + 0.2);
   }
 
   public playFrogCroak(pan = 0, ampMult = 1.0): void {

@@ -34,7 +34,8 @@ export interface CrocodilesAndFrogsSystem {
     getWaterSurfaceY: (x: number, z: number) => number;
     onRipple: (x: number, z: number, strength: number) => void;
     onSplash: (x: number, z: number, intensity: number) => void;
-    onCrocSnap: () => void;
+    onCrocSnap: (pan?: number) => void;
+    onCrocAttackSlap?: (pan: number, intensity: number) => void;
     onFrogCroak: (pan: number) => void;
     onWildFishScatter?: (x: number, z: number) => void;
   }) => CrocodileUpdateResult;
@@ -76,6 +77,8 @@ interface CrocInstance {
   rippleTimer: number;
   splashTimer: number;
   bowWaveTimer: number;
+  wakeStreakTimer: number;
+  attackSlapCooldown: number;
   swimPhase: number;
   smoothSpeed: number;
   turnRate: number;
@@ -89,6 +92,76 @@ interface CrocInstance {
   lungeDuration: number;
   lungeMidSplashDone: boolean;
   lungePitch: number;
+}
+
+interface CrocWakeItem {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  active: boolean;
+  x: number;
+  z: number;
+  vx: number;
+  vz: number;
+  age: number;
+  maxLife: number;
+  startScale: number;
+  endScale: number;
+  maxAlpha: number;
+  yaw: number;
+}
+
+function createCrocWakeRingTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const half = size * 0.5;
+  const grad = ctx.createRadialGradient(half, half, half * 0.18, half, half, half * 0.98);
+  grad.addColorStop(0.0, 'rgba(235, 248, 255, 0)');
+  grad.addColorStop(0.38, 'rgba(235, 248, 255, 0.22)');
+  grad.addColorStop(0.55, 'rgba(245, 252, 255, 0.72)');
+  grad.addColorStop(0.66, 'rgba(210, 238, 248, 0.14)');
+  grad.addColorStop(0.80, 'rgba(240, 250, 255, 0.52)');
+  grad.addColorStop(0.95, 'rgba(220, 244, 255, 0.08)');
+  grad.addColorStop(1.0, 'rgba(220, 244, 255, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function createCrocWakeVStreakTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, size, size);
+  const grad = ctx.createLinearGradient(0, 0, 0, size);
+  grad.addColorStop(0.0, 'rgba(240, 252, 255, 0)');
+  grad.addColorStop(0.25, 'rgba(240, 252, 255, 0.65)');
+  grad.addColorStop(0.65, 'rgba(225, 246, 255, 0.45)');
+  grad.addColorStop(1.0, 'rgba(215, 240, 255, 0)');
+  ctx.save();
+  ctx.translate(size * 0.5, size * 0.5);
+  ctx.scale(0.26, 0.96);
+  const rad = ctx.createRadialGradient(0, 0, 2, 0, 0, size * 0.5);
+  rad.addColorStop(0.0, 'rgba(245, 253, 255, 0.85)');
+  rad.addColorStop(0.45, 'rgba(230, 248, 255, 0.42)');
+  rad.addColorStop(1.0, 'rgba(215, 240, 255, 0)');
+  ctx.fillStyle = rad;
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 interface FrogInstance {
@@ -137,7 +210,7 @@ function pickCrocWanderTarget(croc: CrocInstance): void {
 
 export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
   const group = new THREE.Group();
-  const disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
+  const disposables: (THREE.BufferGeometry | THREE.Material | THREE.Texture)[] = [];
 
   // ==================== CROCODILES (4 Articulated Lake Predators) ====================
   const crocHideMat = new THREE.MeshStandardMaterial({
@@ -430,6 +503,8 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
       rippleTimer: idx * 0.35,
       splashTimer: 0.5 + idx * 0.3,
       bowWaveTimer: 0.25 + idx * 0.15,
+      wakeStreakTimer: idx * 0.08,
+      attackSlapCooldown: 0,
       swimPhase: idx * 1.9,
       smoothSpeed: 0.8,
       turnRate: 0,
@@ -447,6 +522,86 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     pickCrocWanderTarget(croc);
     return croc;
   });
+
+  // Pooled 3D Surface Wake Rings & V-Wake Foam Streaks behind Swimming/Chasing Crocodiles
+  const WAKE_POOL_SIZE = 56;
+  const wakeGeo = new THREE.PlaneGeometry(1, 1);
+  wakeGeo.rotateX(-Math.PI / 2);
+  const wakeRingTex = createCrocWakeRingTexture();
+  const wakeStreakTex = createCrocWakeVStreakTexture();
+  disposables.push(wakeGeo, wakeRingTex, wakeStreakTex);
+
+  const wakePool: CrocWakeItem[] = [];
+  for (let wi = 0; wi < WAKE_POOL_SIZE; wi++) {
+    const isRing = wi < 32;
+    const mat = new THREE.MeshBasicMaterial({
+      map: isRing ? wakeRingTex : wakeStreakTex,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const mesh = new THREE.Mesh(wakeGeo, mat);
+    mesh.visible = false;
+    mesh.renderOrder = 3;
+    group.add(mesh);
+    disposables.push(mat);
+    wakePool.push({
+      mesh,
+      mat,
+      active: false,
+      x: 0,
+      z: 0,
+      vx: 0,
+      vz: 0,
+      age: 0,
+      maxLife: 1.5,
+      startScale: 0.6,
+      endScale: 2.4,
+      maxAlpha: 0.4,
+      yaw: 0,
+    });
+  }
+  let ringCursor = 0;
+  let streakCursor = 32;
+
+  const spawnWake = (
+    kind: 'ring' | 'streak',
+    x: number,
+    z: number,
+    vx: number,
+    vz: number,
+    yaw: number,
+    startScale: number,
+    endScale: number,
+    maxLife: number,
+    maxAlpha: number,
+  ): void => {
+    const slotIdx = kind === 'ring' ? ringCursor : streakCursor;
+    if (kind === 'ring') {
+      ringCursor = (ringCursor + 1) % 32;
+    } else {
+      streakCursor = 32 + ((streakCursor - 32 + 1) % (WAKE_POOL_SIZE - 32));
+    }
+    const item = wakePool[slotIdx];
+    item.active = true;
+    item.x = x;
+    item.z = z;
+    item.vx = vx;
+    item.vz = vz;
+    item.age = 0;
+    item.maxLife = maxLife;
+    item.startScale = startScale;
+    item.endScale = endScale;
+    item.maxAlpha = maxAlpha;
+    item.yaw = yaw;
+    item.mesh.visible = true;
+    item.mesh.rotation.y = yaw;
+    item.mesh.scale.setScalar(startScale);
+    item.mat.opacity = maxAlpha;
+  };
 
   // ==================== FROGS & FLOATING LILY PADS (12 Marsh Frogs) ====================
   const padMat = new THREE.MeshStandardMaterial({
@@ -624,6 +779,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
       onRipple,
       onSplash,
       onCrocSnap,
+      onCrocAttackSlap,
       onFrogCroak,
       onWildFishScatter,
     }) => {
@@ -719,8 +875,12 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
 
       for (let ci = 0; ci < crocs.length; ci++) {
         const croc = crocs[ci];
+        const crocPan = THREE.MathUtils.clamp(croc.pos.x / 20, -0.88, 0.88);
         if (croc.wildChaseCooldown > 0) {
           croc.wildChaseCooldown = Math.max(0, croc.wildChaseCooldown - dt);
+        }
+        if (croc.attackSlapCooldown > 0) {
+          croc.attackSlapCooldown = Math.max(0, croc.attackSlapCooldown - dt);
         }
         if (croc.state === 'satiated') {
           croc.cooldownTimer -= dt;
@@ -759,8 +919,15 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
             desiredDepthY = dist < 12.5 ? 0.03 : -0.025;
           }
 
-          activeChaseBurst = dist < 13.0;
+          activeChaseBurst = dist < 14.5;
           desiredJaw = dist < 10.5 ? THREE.MathUtils.clamp((10.5 - dist) / 5.5, 0.16, 0.88) : 0.12;
+
+          // Light water surface slap as croc lunges into close strike range
+          if (dist < 4.8 && dist > 1.75 && croc.attackSlapCooldown <= 0) {
+            croc.attackSlapCooldown = 2.6;
+            onCrocAttackSlap?.(crocPan, 0.62);
+            onSplash(croc.pos.x, croc.pos.z, 0.85);
+          }
 
           if (dist <= 1.55 && hookedFishDistToDock > 3.1) {
             devoured = true;
@@ -773,8 +940,8 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
             croc.cooldownTimer = 11.5;
             croc.patrolMode = 'submerge';
             croc.modeTimer = 5.0;
-            onSplash(croc.pos.x, croc.pos.z, 2.45);
-            onCrocSnap();
+            onSplash(croc.pos.x, croc.pos.z, 2.25);
+            onCrocSnap(crocPan);
           }
         } else if (isHunting && croc.targetKind === 'rival') {
           const rTarget = rivalFishTargets.find((r) => r.rivalIndex === croc.targetRivalIndex);
@@ -784,8 +951,14 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
             const dist = Math.hypot(targetX - croc.pos.x, targetZ - croc.pos.z);
             desiredSpeed = dist > 18.0 ? 4.1 : 2.75;
             desiredDepthY = dist < 11.5 ? 0.025 : -0.035;
-            activeChaseBurst = dist < 12.5;
+            activeChaseBurst = dist < 14.0;
             desiredJaw = dist < 10.0 ? THREE.MathUtils.clamp((10.0 - dist) / 5.0, 0.18, 0.86) : 0.14;
+
+            if (dist < 4.8 && dist > 1.85 && croc.attackSlapCooldown <= 0) {
+              croc.attackSlapCooldown = 2.6;
+              onCrocAttackSlap?.(crocPan, 0.58);
+              onSplash(croc.pos.x, croc.pos.z, 0.8);
+            }
 
             if (dist <= 1.65 && rTarget.distToPlatform > 2.75) {
               devouredRivalIndices.push(rTarget.rivalIndex);
@@ -800,8 +973,8 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
               croc.cooldownTimer = 11.0;
               croc.patrolMode = 'submerge';
               croc.modeTimer = 5.0;
-              onSplash(croc.pos.x, croc.pos.z, 2.35);
-              onCrocSnap();
+              onSplash(croc.pos.x, croc.pos.z, 2.15);
+              onCrocSnap(crocPan);
             }
           } else {
             croc.state = 'patrol';
@@ -876,7 +1049,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
                 desiredJaw = THREE.MathUtils.clamp((5.8 - d) / 4.2, 0.16, 0.72);
               }
               if (d <= 1.85) {
-                // Snap lunge at wild school fish, scattering nearby school!
+                // Snap lunge at wild school fish: light water slap + splash + scatter school!
                 croc.lungeDuration = 0.72;
                 croc.lungeTimer = 0.72;
                 croc.lungeMidSplashDone = false;
@@ -887,6 +1060,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
                 croc.modeTimer = 7.0 + Math.random() * 5.0;
                 pickCrocWanderTarget(croc);
                 onSplash(croc.pos.x, croc.pos.z, 1.55);
+                onCrocAttackSlap?.(crocPan, 0.7);
                 onWildFishScatter?.(croc.pos.x, croc.pos.z);
               }
             }
@@ -1122,30 +1296,105 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           leg.pivot.rotation.set(paddleX, paddleY + tuckY, tuckZ);
         }
 
-        // Natural speed-reactive ripples & bow splashes (quiet when drifting or submerged!)
+        // Trailing aquatic wake rings & Kelvin V-wake froth behind crocodile (intensifies when chasing fish!)
         const isSubmerged = croc.bodySubmergeY < -0.18;
-        croc.rippleTimer -= dt * (0.35 + croc.smoothSpeed * 0.65);
+        const isChasingFish =
+          (isHunting && (croc.targetKind === 'player' || croc.targetKind === 'rival')) ||
+          croc.patrolMode === 'stalk_wild';
+        const rightX = Math.cos(croc.heading);
+        const rightZ = -Math.sin(croc.heading);
+        const tailSwish = Math.sin(croc.swimPhase - 1.65) * (0.28 + croc.sprintBlend * 0.16);
+        const tailX = croc.pos.x - fwdX * 1.46 + rightX * tailSwish;
+        const tailZ = croc.pos.z - fwdZ * 1.46 + rightZ * tailSwish;
+
+        croc.rippleTimer -= dt * (0.4 + croc.smoothSpeed * (isChasingFish ? 1.15 : 0.65));
         if (croc.rippleTimer <= 0 && croc.smoothSpeed > 0.22) {
-          croc.rippleTimer = activeChaseBurst ? 0.22 : 0.62;
+          croc.rippleTimer = isChasingFish ? 0.18 : 0.56;
           const rStrength = isSubmerged
-            ? 0.24
-            : THREE.MathUtils.clamp(0.28 + croc.smoothSpeed * 0.22, 0.28, 1.1);
-          onRipple(croc.pos.x - fwdX * 0.45, croc.pos.z - fwdZ * 0.45, rStrength);
+            ? 0.28
+            : isChasingFish
+              ? THREE.MathUtils.clamp(0.55 + croc.smoothSpeed * 0.24, 0.58, 1.25)
+              : THREE.MathUtils.clamp(0.28 + croc.smoothSpeed * 0.18, 0.28, 0.85);
+          onRipple(tailX, tailZ, rStrength);
+        }
+
+        if (!isSubmerged && croc.smoothSpeed > 0.38) {
+          croc.wakeStreakTimer -= dt * (isChasingFish ? 1.0 : 0.45);
+          if (croc.wakeStreakTimer <= 0) {
+            croc.wakeStreakTimer = isChasingFish ? 0.14 : 0.26;
+            const trailScale = isChasingFish ? 0.72 + croc.smoothSpeed * 0.12 : 0.55;
+            const trailEndScale = isChasingFish ? 2.65 + croc.smoothSpeed * 0.25 : 1.75;
+            const trailAlpha = isChasingFish ? 0.44 : 0.22;
+            spawnWake(
+              'ring',
+              tailX,
+              tailZ,
+              -fwdX * 0.22,
+              -fwdZ * 0.22,
+              croc.heading,
+              trailScale,
+              trailEndScale,
+              isChasingFish ? 1.85 : 1.35,
+              trailAlpha,
+            );
+
+            if (isChasingFish) {
+              // Paired left & right V-wake chevron streaks fanning outward from torso/tail
+              for (const side of [-1, 1] as const) {
+                const flareAngle = croc.heading + side * 0.42;
+                const wx = croc.pos.x - fwdX * 0.42 + rightX * side * 0.42;
+                const wz = croc.pos.z - fwdZ * 0.42 + rightZ * side * 0.42;
+                spawnWake(
+                  'streak',
+                  wx,
+                  wz,
+                  rightX * side * 0.48 - fwdX * 0.28,
+                  rightZ * side * 0.48 - fwdZ * 0.28,
+                  flareAngle,
+                  0.95,
+                  2.15,
+                  1.3,
+                  0.36,
+                );
+              }
+            }
+          }
         }
 
         if ((activeChaseBurst || croc.lungeTimer > 0.18) && !isSubmerged) {
           croc.splashTimer -= dt;
           if (croc.splashTimer <= 0) {
-            croc.splashTimer = 0.36;
+            croc.splashTimer = 0.34;
             onSplash(croc.pos.x + fwdX * 1.05, croc.pos.z + fwdZ * 1.05, 0.88);
           }
           croc.bowWaveTimer -= dt;
           if (croc.bowWaveTimer <= 0) {
-            croc.bowWaveTimer = 0.26;
+            croc.bowWaveTimer = 0.24;
             // Tail thrash splash behind stern
-            onSplash(croc.pos.x - fwdX * 1.35, croc.pos.z - fwdZ * 1.35, 0.65);
+            onSplash(tailX, tailZ, 0.68);
           }
         }
+      }
+
+      // Update pooled 3D surface wake rings & V-wake streaks
+      for (let wi = 0; wi < wakePool.length; wi++) {
+        const w = wakePool[wi];
+        if (!w.active) continue;
+        w.age += dt;
+        if (w.age >= w.maxLife) {
+          w.active = false;
+          w.mesh.visible = false;
+          w.mat.opacity = 0;
+          continue;
+        }
+        const t = w.age / w.maxLife;
+        w.x += w.vx * dt;
+        w.z += w.vz * dt;
+        const wy = getWaterSurfaceY(w.x, w.z) + 0.015;
+        w.mesh.position.set(w.x, wy, w.z);
+        const sc = THREE.MathUtils.lerp(w.startScale, w.endScale, 1 - Math.pow(1 - t, 1.8));
+        w.mesh.scale.setScalar(sc);
+        w.mat.opacity = w.maxAlpha * Math.pow(1 - t, 1.45);
       }
 
       // 2. Update Frogs & Floating Lily Pads
