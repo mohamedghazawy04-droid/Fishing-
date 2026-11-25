@@ -2,12 +2,20 @@ import * as THREE from 'three';
 import type { WeatherType } from '../types/fishing';
 import type { RivalActiveFishTarget } from './rivalAnglers';
 
+import { groundHeightAt } from './environment';
+
 export interface CrocodileUpdateResult {
   threatActive: boolean;
   distanceToFish: number;
   devoured: boolean;
   devouredRivalIndices: number[];
   chasingRivalName: string | null;
+}
+
+export interface WildFishPrey {
+  id: number;
+  position: THREE.Vector3;
+  aiState: string;
 }
 
 export interface CrocodilesAndFrogsSystem {
@@ -21,37 +29,65 @@ export interface CrocodilesAndFrogsSystem {
     hookedFishDistToDock: number;
     playerReeling: boolean;
     rivalFishTargets: RivalActiveFishTarget[];
+    wildFishes?: readonly WildFishPrey[];
+    boatPos?: THREE.Vector3 | null;
     getWaterSurfaceY: (x: number, z: number) => number;
     onRipple: (x: number, z: number, strength: number) => void;
     onSplash: (x: number, z: number, intensity: number) => void;
     onCrocSnap: () => void;
     onFrogCroak: (pan: number) => void;
+    onWildFishScatter?: (x: number, z: number) => void;
   }) => CrocodileUpdateResult;
   dispose: () => void;
 }
 
 type CrocState = 'patrol' | 'hunting' | 'satiated';
+type PatrolSubMode = 'cruise' | 'drift' | 'submerge' | 'stalk_wild';
+
+interface CrocLegRig {
+  pivot: THREE.Group;
+  side: -1 | 1;
+  isFront: boolean;
+  phaseOffset: number;
+}
 
 interface CrocInstance {
   root: THREE.Group;
+  bodyPivot: THREE.Group;
+  headPivot: THREE.Group;
   lowerJawPivot: THREE.Group;
   tailSegs: THREE.Group[];
-  legs: THREE.Mesh[];
+  legs: CrocLegRig[];
   pos: THREE.Vector3;
   heading: number;
   patrolCenter: THREE.Vector2;
   patrolRadius: number;
-  patrolAngle: number;
+  wanderTarget: THREE.Vector2;
+  wanderTimer: number;
+  patrolMode: PatrolSubMode;
+  modeTimer: number;
   state: CrocState;
   targetKind: 'none' | 'player' | 'rival';
   targetRivalIndex: number;
   targetRivalName: string | null;
+  wildTargetId: number;
+  wildChaseCooldown: number;
   cooldownTimer: number;
   rippleTimer: number;
   splashTimer: number;
+  bowWaveTimer: number;
   swimPhase: number;
+  smoothSpeed: number;
+  turnRate: number;
+  bankRoll: number;
+  headYaw: number;
+  headScanPhase: number;
+  bodySubmergeY: number;
+  sprintBlend: number;
   jawOpen: number;
   lungeTimer: number;
+  lungeDuration: number;
+  lungeMidSplashDone: boolean;
   lungePitch: number;
 }
 
@@ -70,11 +106,40 @@ interface FrogInstance {
   hopDistance: number;
 }
 
+function isSafeCrocWater(x: number, z: number): boolean {
+  if (x < -70 || x > 70 || z < -90 || z > -4.5) return false;
+  if (Math.abs(x) < 4.8 && z > -11.0) return false; // main wooden dock clearance
+  if (Math.hypot(x + 18.5, z + 3.5) < 4.8) return false; // Abu Ali platform clearance
+  if (Math.hypot(x - 19.0, z + 4.2) < 4.8) return false; // Rami platform clearance
+  return groundHeightAt(x, z) < -0.78;
+}
+
+function pickCrocWanderTarget(croc: CrocInstance): void {
+  const baseAngle = Math.atan2(croc.pos.z - croc.patrolCenter.y, croc.pos.x - croc.patrolCenter.x);
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const angOffset = (Math.random() < 0.5 ? 1 : -1) * (0.65 + Math.random() * 1.65);
+    const angle = baseAngle + angOffset;
+    const rad = croc.patrolRadius * (0.45 + Math.random() * 0.95);
+    const wx = croc.patrolCenter.x + Math.cos(angle) * rad;
+    const wz = croc.patrolCenter.y + Math.sin(angle) * rad * 0.8;
+    if (isSafeCrocWater(wx, wz)) {
+      croc.wanderTarget.set(wx, wz);
+      croc.wanderTimer = 5.5 + Math.random() * 6.5;
+      return;
+    }
+  }
+  croc.wanderTarget.set(
+    THREE.MathUtils.clamp(croc.patrolCenter.x, -42, 42),
+    THREE.MathUtils.clamp(croc.patrolCenter.y, -68, -20),
+  );
+  croc.wanderTimer = 6.0;
+}
+
 export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
   const group = new THREE.Group();
   const disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
 
-  // ==================== CROCODILES (3 Articulated Lake Predators) ====================
+  // ==================== CROCODILES (4 Articulated Lake Predators) ====================
   const crocHideMat = new THREE.MeshStandardMaterial({
     color: 0x35442b,
     roughness: 0.72,
@@ -114,12 +179,15 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
   const headGeo = new THREE.BoxGeometry(0.32, 0.14, 0.38);
   const snoutTopGeo = new THREE.BoxGeometry(0.21, 0.085, 0.56);
   const snoutTipGeo = new THREE.CylinderGeometry(0.085, 0.105, 0.085, 10);
+  const nostrilGeo = new THREE.SphereGeometry(0.022, 6, 6);
   const lowerJawGeo = new THREE.BoxGeometry(0.20, 0.065, 0.56);
   const eyeRidgeGeo = new THREE.SphereGeometry(0.046, 8, 8);
   const eyeBallGeo = new THREE.SphereGeometry(0.028, 8, 8);
   const toothGeo = new THREE.ConeGeometry(0.013, 0.042, 5);
   const scuteGeo = new THREE.ConeGeometry(0.036, 0.065, 5);
-  const legGeo = new THREE.CapsuleGeometry(0.055, 0.22, 4, 8);
+  const tailScuteGeo = new THREE.ConeGeometry(0.028, 0.082, 4);
+  const legGeo = new THREE.CapsuleGeometry(0.052, 0.22, 4, 8);
+  const footGeo = new THREE.BoxGeometry(0.11, 0.026, 0.14);
   const tail1Geo = new THREE.ConeGeometry(0.18, 0.72, 8);
   tail1Geo.rotateX(-Math.PI / 2);
   tail1Geo.translate(0, 0, -0.36);
@@ -142,82 +210,104 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     headGeo,
     snoutTopGeo,
     snoutTipGeo,
+    nostrilGeo,
     lowerJawGeo,
     eyeRidgeGeo,
     eyeBallGeo,
     toothGeo,
     scuteGeo,
+    tailScuteGeo,
     legGeo,
+    footGeo,
     tail1Geo,
     tail2Geo,
     tail3Geo,
   );
 
-  function buildCrocodile(scale: number): Omit<CrocInstance, 'pos' | 'heading' | 'patrolCenter' | 'patrolRadius' | 'patrolAngle' | 'state' | 'targetKind' | 'targetRivalIndex' | 'targetRivalName' | 'cooldownTimer' | 'rippleTimer' | 'splashTimer' | 'swimPhase' | 'jawOpen' | 'lungeTimer' | 'lungePitch'> {
+  function buildCrocodile(scale: number): {
+    root: THREE.Group;
+    bodyPivot: THREE.Group;
+    headPivot: THREE.Group;
+    lowerJawPivot: THREE.Group;
+    tailSegs: THREE.Group[];
+    legs: CrocLegRig[];
+  } {
     const root = new THREE.Group();
+    const bodyPivot = new THREE.Group();
+    root.add(bodyPivot);
 
     const torso = new THREE.Mesh(torsoGeo, crocHideMat);
     torso.castShadow = true;
     torso.receiveShadow = true;
-    root.add(torso);
+    bodyPivot.add(torso);
 
     const belly = new THREE.Mesh(bellyGeo, crocBellyMat);
     belly.position.y = -0.06;
-    root.add(belly);
+    bodyPivot.add(belly);
 
-    // Armored osteoderm ridges along back
+    // Armored osteoderm ridges along back (tapered at neck & hips)
     for (let row = 0; row < 6; row++) {
       const rz = -0.45 + row * 0.19;
+      const taper = row === 0 || row === 5 ? 0.78 : 1.0;
       for (const sx of [-0.085, 0.085]) {
         const scute = new THREE.Mesh(scuteGeo, crocScuteMat);
         scute.position.set(sx, 0.145, rz);
+        scute.scale.setScalar(taper);
         scute.castShadow = true;
-        root.add(scute);
+        bodyPivot.add(scute);
       }
     }
 
-    // Cranium & Upper Snout
+    // Articulated Neck & Head Pivot (enables independent prey-tracking & predatory head-shake)
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 0.02, 0.54);
+    bodyPivot.add(headPivot);
+
     const head = new THREE.Mesh(headGeo, crocHideMat);
-    head.position.set(0, 0.04, 0.72);
+    head.position.set(0, 0.02, 0.18);
     head.castShadow = true;
     head.receiveShadow = true;
-    root.add(head);
+    headPivot.add(head);
 
     const snoutTop = new THREE.Mesh(snoutTopGeo, crocHideMat);
-    snoutTop.position.set(0, 0.032, 1.12);
+    snoutTop.position.set(0, 0.012, 0.58);
     snoutTop.castShadow = true;
-    root.add(snoutTop);
+    headPivot.add(snoutTop);
 
     const snoutTip = new THREE.Mesh(snoutTipGeo, crocScuteMat);
-    snoutTip.position.set(0, 0.032, 1.40);
-    root.add(snoutTip);
+    snoutTip.position.set(0, 0.012, 0.86);
+    headPivot.add(snoutTip);
 
-    // Raised periscope-like eye sockets peeking above the water line
+    // Raised nostrils & periscope-like eye sockets peeking above the water line
     for (const side of [-1, 1]) {
+      const nostril = new THREE.Mesh(nostrilGeo, crocScuteMat);
+      nostril.position.set(side * 0.036, 0.056, 0.85);
+      headPivot.add(nostril);
+
       const ridge = new THREE.Mesh(eyeRidgeGeo, crocScuteMat);
-      ridge.position.set(side * 0.11, 0.115, 0.74);
+      ridge.position.set(side * 0.11, 0.095, 0.20);
       const eyeball = new THREE.Mesh(eyeBallGeo, crocEyeMat);
-      eyeball.position.set(side * 0.125, 0.122, 0.755);
+      eyeball.position.set(side * 0.125, 0.102, 0.215);
       const pupil = new THREE.Mesh(eyeBallGeo, crocPupilMat);
       pupil.scale.set(0.35, 0.85, 0.7);
-      pupil.position.set(side * 0.138, 0.122, 0.762);
-      root.add(ridge, eyeball, pupil);
+      pupil.position.set(side * 0.138, 0.102, 0.222);
+      headPivot.add(ridge, eyeball, pupil);
     }
 
     // Upper teeth
     for (let t = 0; t < 5; t++) {
-      const tz = 0.94 + t * 0.1;
+      const tz = 0.40 + t * 0.1;
       for (const side of [-1, 1]) {
         const tooth = new THREE.Mesh(toothGeo, crocToothMat);
         tooth.rotation.x = Math.PI;
-        tooth.position.set(side * 0.088, -0.015, tz);
-        root.add(tooth);
+        tooth.position.set(side * 0.088, -0.035, tz);
+        headPivot.add(tooth);
       }
     }
 
-    // Articulated Lower Jaw
+    // Articulated Lower Jaw inside headPivot
     const lowerJawPivot = new THREE.Group();
-    lowerJawPivot.position.set(0, -0.02, 0.82);
+    lowerJawPivot.position.set(0, -0.04, 0.28);
     const lowerJaw = new THREE.Mesh(lowerJawGeo, crocBellyMat);
     lowerJaw.position.set(0, -0.02, 0.28);
     lowerJaw.castShadow = true;
@@ -231,33 +321,53 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
         lowerJawPivot.add(tooth);
       }
     }
-    root.add(lowerJawPivot);
+    headPivot.add(lowerJawPivot);
 
-    // 4 Splayed Swimming Legs
-    const legs: THREE.Mesh[] = [];
-    const legOffsets: [number, number, number][] = [
-      [-0.28, -0.05, 0.36],
-      [0.28, -0.05, 0.36],
-      [-0.29, -0.06, -0.35],
-      [0.29, -0.06, -0.35],
+    // 4 Articulated Splayed Swimming Legs with webbed paddle feet
+    const legs: CrocLegRig[] = [];
+    const legSpecs: { x: number; y: number; z: number; side: -1 | 1; isFront: boolean; phase: number }[] = [
+      { x: -0.23, y: -0.04, z: 0.36, side: -1, isFront: true, phase: 0 },
+      { x: 0.23, y: -0.04, z: 0.36, side: 1, isFront: true, phase: Math.PI },
+      { x: -0.24, y: -0.05, z: -0.35, side: -1, isFront: false, phase: Math.PI + 0.2 },
+      { x: 0.24, y: -0.05, z: -0.35, side: 1, isFront: false, phase: 0.2 },
     ];
-    for (const [lx, ly, lz] of legOffsets) {
+    for (const spec of legSpecs) {
+      const legPivot = new THREE.Group();
+      legPivot.position.set(spec.x, spec.y, spec.z);
+
       const leg = new THREE.Mesh(legGeo, crocScuteMat);
-      leg.position.set(lx, ly, lz);
-      leg.rotation.z = lx < 0 ? 1.12 : -1.12;
-      leg.rotation.y = lx < 0 ? 0.45 : -0.45;
+      leg.position.set(spec.side * 0.11, -0.04, 0);
+      leg.rotation.z = spec.side * -1.16;
+      leg.rotation.y = spec.side * -0.25;
       leg.castShadow = true;
-      root.add(leg);
-      legs.push(leg);
+      legPivot.add(leg);
+
+      const foot = new THREE.Mesh(footGeo, crocScuteMat);
+      foot.position.set(spec.side * 0.21, -0.085, 0.02);
+      foot.rotation.y = spec.side * -0.35;
+      legPivot.add(foot);
+
+      bodyPivot.add(legPivot);
+      legs.push({
+        pivot: legPivot,
+        side: spec.side,
+        isFront: spec.isFront,
+        phaseOffset: spec.phase,
+      });
     }
 
-    // 3-Segment Sinuous Swimming Tail
+    // 3-Segment Sinuous Swimming Tail with serrated dorsal scute ridge
     const tail1 = new THREE.Group();
     tail1.position.set(0, 0.01, -0.58);
     const t1Mesh = new THREE.Mesh(tail1Geo, crocHideMat);
     t1Mesh.scale.set(1.0, 0.65, 1.0);
     t1Mesh.castShadow = true;
     tail1.add(t1Mesh);
+    for (let s = 0; s < 3; s++) {
+      const scute = new THREE.Mesh(tailScuteGeo, crocScuteMat);
+      scute.position.set(0, 0.11 - s * 0.018, -0.16 - s * 0.19);
+      tail1.add(scute);
+    }
 
     const tail2 = new THREE.Group();
     tail2.position.set(0, 0, -0.64);
@@ -265,6 +375,12 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     t2Mesh.scale.set(0.85, 0.72, 1.0);
     t2Mesh.castShadow = true;
     tail2.add(t2Mesh);
+    for (let s = 0; s < 3; s++) {
+      const scute = new THREE.Mesh(tailScuteGeo, crocScuteMat);
+      scute.scale.set(0.75, 0.85, 0.9);
+      scute.position.set(0, 0.075 - s * 0.014, -0.14 - s * 0.19);
+      tail2.add(scute);
+    }
 
     const tail3 = new THREE.Group();
     tail3.position.set(0, 0, -0.60);
@@ -275,47 +391,64 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
 
     tail2.add(tail3);
     tail1.add(tail2);
-    root.add(tail1);
+    bodyPivot.add(tail1);
 
     root.scale.setScalar(scale);
     group.add(root);
-    return { root, lowerJawPivot, tailSegs: [tail1, tail2, tail3], legs };
+    return { root, bodyPivot, headPivot, lowerJawPivot, tailSegs: [tail1, tail2, tail3], legs };
   }
 
   const crocSpecs = [
-    { cx: -21.0, cz: -22.5, radius: 9.5, scale: 1.15, angle: 0.4 },
-    { cx: 21.5, cz: -23.5, radius: 9.5, scale: 1.08, angle: 2.3 },
-    { cx: -4.5, cz: -36.0, radius: 12.0, scale: 1.24, angle: 4.5 },
-    { cx: 15.0, cz: -49.0, radius: 11.0, scale: 1.12, angle: 1.2 },
+    { cx: -21.0, cz: -22.5, radius: 10.5, scale: 1.15, angle: 0.4 },
+    { cx: 21.5, cz: -23.5, radius: 10.5, scale: 1.08, angle: 2.3 },
+    { cx: -4.5, cz: -36.0, radius: 13.0, scale: 1.24, angle: 4.5 },
+    { cx: 15.0, cz: -49.0, radius: 12.0, scale: 1.12, angle: 1.2 },
   ];
 
   const crocs: CrocInstance[] = crocSpecs.map((spec, idx) => {
     const built = buildCrocodile(spec.scale);
-    const px = spec.cx + Math.cos(spec.angle) * spec.radius;
-    const pz = spec.cz + Math.sin(spec.angle) * spec.radius;
-    built.root.position.set(px, -0.09, pz);
-    return {
+    const px = spec.cx + Math.cos(spec.angle) * spec.radius * 0.85;
+    const pz = spec.cz + Math.sin(spec.angle) * spec.radius * 0.85;
+    built.root.position.set(px, -0.075, pz);
+    const croc: CrocInstance = {
       ...built,
-      pos: new THREE.Vector3(px, -0.09, pz),
+      pos: new THREE.Vector3(px, -0.075, pz),
       heading: spec.angle + Math.PI * 0.5,
       patrolCenter: new THREE.Vector2(spec.cx, spec.cz),
       patrolRadius: spec.radius,
-      patrolAngle: spec.angle,
+      wanderTarget: new THREE.Vector2(spec.cx, spec.cz),
+      wanderTimer: 2.5 + idx * 1.4,
+      patrolMode: idx % 2 === 0 ? 'cruise' : 'drift',
+      modeTimer: 4.0 + idx * 1.8,
       state: 'patrol',
       targetKind: 'none',
       targetRivalIndex: -1,
       targetRivalName: null,
+      wildTargetId: -1,
+      wildChaseCooldown: 6.0 + idx * 3.5,
       cooldownTimer: 0,
       rippleTimer: idx * 0.35,
       splashTimer: 0.5 + idx * 0.3,
+      bowWaveTimer: 0.25 + idx * 0.15,
       swimPhase: idx * 1.9,
+      smoothSpeed: 0.8,
+      turnRate: 0,
+      bankRoll: 0,
+      headYaw: 0,
+      headScanPhase: idx * 1.7,
+      bodySubmergeY: -0.075,
+      sprintBlend: 0,
       jawOpen: 0,
       lungeTimer: 0,
+      lungeDuration: 0.9,
+      lungeMidSplashDone: false,
       lungePitch: 0,
     };
+    pickCrocWanderTarget(croc);
+    return croc;
   });
 
-  // ==================== FROGS & FLOATING LILY PADS (8 Marsh Frogs) ====================
+  // ==================== FROGS & FLOATING LILY PADS (12 Marsh Frogs) ====================
   const padMat = new THREE.MeshStandardMaterial({
     color: 0x3b7a38,
     roughness: 0.72,
@@ -472,6 +605,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
   });
 
   const tmpDir = new THREE.Vector3();
+  const tmpSteer = new THREE.Vector2();
 
   return {
     group,
@@ -484,11 +618,14 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
       hookedFishDistToDock,
       playerReeling,
       rivalFishTargets,
+      wildFishes,
+      boatPos,
       getWaterSurfaceY,
       onRipple,
       onSplash,
       onCrocSnap,
       onFrogCroak,
+      onWildFishScatter,
     }) => {
       // 1. Assign Available Crocodiles Across Player & Rival Angler Catches (max 1 croc per target)
       for (const c of crocs) {
@@ -524,6 +661,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           playerHunter.targetKind = 'player';
           playerHunter.targetRivalIndex = -1;
           playerHunter.targetRivalName = null;
+          playerHunter.wildTargetId = -1;
         }
       }
 
@@ -557,6 +695,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           hunter.targetKind = 'rival';
           hunter.targetRivalIndex = rTarget.rivalIndex;
           hunter.targetRivalName = rTarget.rivalName;
+          hunter.wildTargetId = -1;
           chasingRivalName = rTarget.rivalName;
         }
       }
@@ -567,6 +706,9 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           c.targetKind = 'none';
           c.targetRivalIndex = -1;
           c.targetRivalName = null;
+          c.patrolMode = 'cruise';
+          c.modeTimer = 5.0 + Math.random() * 5.0;
+          pickCrocWanderTarget(c);
         }
       }
 
@@ -575,17 +717,27 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
       let devoured = false;
       const devouredRivalIndices: number[] = [];
 
-      for (const croc of crocs) {
+      for (let ci = 0; ci < crocs.length; ci++) {
+        const croc = crocs[ci];
+        if (croc.wildChaseCooldown > 0) {
+          croc.wildChaseCooldown = Math.max(0, croc.wildChaseCooldown - dt);
+        }
         if (croc.state === 'satiated') {
           croc.cooldownTimer -= dt;
           if (croc.cooldownTimer <= 0) {
             croc.state = 'patrol';
+            croc.patrolMode = 'cruise';
+            croc.modeTimer = 6.0 + Math.random() * 6.0;
+            pickCrocWanderTarget(croc);
           }
         }
 
-        let speed = 1.15;
-        let targetX = croc.pos.x;
-        let targetZ = croc.pos.z;
+        let desiredSpeed = 1.08;
+        let targetX = croc.wanderTarget.x;
+        let targetZ = croc.wanderTarget.y;
+        let desiredDepthY = -0.075;
+        let desiredJaw = 0.0;
+        let activeChaseBurst = false;
         const isHunting = croc.state === 'hunting';
 
         if (isHunting && croc.targetKind === 'player' && hookedFishPos) {
@@ -595,27 +747,33 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           threatActive = true;
           distanceToFish = dist;
 
-          // Fair chase balance: fast intercept from very far (>22m), then fair stalking speed
-          // if player reels actively (real catch opportunity), vs aggressive surge if player hesitates!
+          // Fair chase balance: fast intercept from very far (>22m), stealthy/surging close-in
           if (dist > 22.0) {
-            speed = 4.15;
+            desiredSpeed = 4.15;
+            desiredDepthY = -0.035;
           } else if (playerReeling) {
-            speed = weather === 'storm' ? 2.45 : 2.12;
+            desiredSpeed = weather === 'storm' ? 2.48 : 2.15;
+            desiredDepthY = dist < 11.0 ? 0.025 : -0.03;
           } else {
-            speed = weather === 'storm' ? 3.7 : 3.35;
+            desiredSpeed = weather === 'storm' ? 3.72 : 3.38;
+            desiredDepthY = dist < 12.5 ? 0.03 : -0.025;
           }
 
-          const desiredJaw = dist < 10.5 ? THREE.MathUtils.clamp((10.5 - dist) / 5.5, 0.16, 0.86) : 0.12;
-          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 8.5, dt);
+          activeChaseBurst = dist < 13.0;
+          desiredJaw = dist < 10.5 ? THREE.MathUtils.clamp((10.5 - dist) / 5.5, 0.16, 0.88) : 0.12;
 
           if (dist <= 1.55 && hookedFishDistToDock > 3.1) {
             devoured = true;
-            croc.lungeTimer = 0.82;
-            croc.jawOpen = 0.92;
+            croc.lungeDuration = 0.92;
+            croc.lungeTimer = 0.92;
+            croc.lungeMidSplashDone = false;
+            croc.jawOpen = 0.94;
             croc.state = 'satiated';
             croc.targetKind = 'none';
             croc.cooldownTimer = 11.5;
-            onSplash(croc.pos.x, croc.pos.z, 2.35);
+            croc.patrolMode = 'submerge';
+            croc.modeTimer = 5.0;
+            onSplash(croc.pos.x, croc.pos.z, 2.45);
             onCrocSnap();
           }
         } else if (isHunting && croc.targetKind === 'rival') {
@@ -624,90 +782,368 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
             targetX = rTarget.pos.x;
             targetZ = rTarget.pos.z;
             const dist = Math.hypot(targetX - croc.pos.x, targetZ - croc.pos.z);
-            speed = dist > 18.0 ? 4.1 : 2.7;
-
-            const desiredJaw = dist < 10.0 ? THREE.MathUtils.clamp((10.0 - dist) / 5.0, 0.18, 0.85) : 0.14;
-            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 8.0, dt);
+            desiredSpeed = dist > 18.0 ? 4.1 : 2.75;
+            desiredDepthY = dist < 11.5 ? 0.025 : -0.035;
+            activeChaseBurst = dist < 12.5;
+            desiredJaw = dist < 10.0 ? THREE.MathUtils.clamp((10.0 - dist) / 5.0, 0.18, 0.86) : 0.14;
 
             if (dist <= 1.65 && rTarget.distToPlatform > 2.75) {
               devouredRivalIndices.push(rTarget.rivalIndex);
-              croc.lungeTimer = 0.82;
-              croc.jawOpen = 0.92;
+              croc.lungeDuration = 0.92;
+              croc.lungeTimer = 0.92;
+              croc.lungeMidSplashDone = false;
+              croc.jawOpen = 0.94;
               croc.state = 'satiated';
               croc.targetKind = 'none';
               croc.targetRivalIndex = -1;
               croc.targetRivalName = null;
               croc.cooldownTimer = 11.0;
-              onSplash(croc.pos.x, croc.pos.z, 2.3);
+              croc.patrolMode = 'submerge';
+              croc.modeTimer = 5.0;
+              onSplash(croc.pos.x, croc.pos.z, 2.35);
               onCrocSnap();
             }
           } else {
             croc.state = 'patrol';
             croc.targetKind = 'none';
+            croc.patrolMode = 'cruise';
+            croc.modeTimer = 5.0;
+            pickCrocWanderTarget(croc);
           }
+        } else if (croc.state === 'satiated') {
+          croc.wanderTimer -= dt;
+          const distW = Math.hypot(croc.wanderTarget.x - croc.pos.x, croc.wanderTarget.y - croc.pos.z);
+          if (croc.wanderTimer <= 0 || distW < 2.2) {
+            pickCrocWanderTarget(croc);
+          }
+          targetX = croc.wanderTarget.x;
+          targetZ = croc.wanderTarget.y;
+          desiredSpeed = croc.lungeTimer > 0 ? 2.4 : 1.35;
+          desiredDepthY = croc.lungeTimer > 0 ? 0.01 : -0.18;
         } else {
-          croc.patrolAngle += dt * (croc.state === 'satiated' ? 0.22 : 0.14);
-          targetX = croc.patrolCenter.x + Math.cos(croc.patrolAngle) * croc.patrolRadius;
-          targetZ = croc.patrolCenter.y + Math.sin(croc.patrolAngle) * croc.patrolRadius * 0.72;
-          if (croc.state === 'satiated') speed = 1.65;
-          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.0, 7.5, dt);
+          // Organic Multi-Phase Lake Roaming & Wild Fish Stalking
+          croc.modeTimer -= dt;
+
+          // Opportunistically spot a nearby wild school fish while cruising or drifting
+          if (
+            (croc.patrolMode === 'cruise' || croc.patrolMode === 'drift') &&
+            croc.wildChaseCooldown <= 0 &&
+            wildFishes &&
+            wildFishes.length > 0
+          ) {
+            let bestWild: WildFishPrey | null = null;
+            let bestWildDist = 13.5;
+            for (let fi = 0; fi < wildFishes.length; fi++) {
+              const wf = wildFishes[fi];
+              if (wf.aiState !== 'patrol' && wf.aiState !== 'curious') continue;
+              const d = Math.hypot(wf.position.x - croc.pos.x, wf.position.z - croc.pos.z);
+              if (d > 3.2 && d < bestWildDist && isSafeCrocWater(wf.position.x, wf.position.z)) {
+                bestWildDist = d;
+                bestWild = wf;
+              }
+            }
+            if (bestWild) {
+              croc.patrolMode = 'stalk_wild';
+              croc.wildTargetId = bestWild.id;
+              croc.modeTimer = 5.2;
+            }
+          }
+
+          if (croc.patrolMode === 'stalk_wild') {
+            const prey = wildFishes?.find(
+              (wf) => wf.id === croc.wildTargetId && (wf.aiState === 'patrol' || wf.aiState === 'curious'),
+            );
+            if (!prey || croc.modeTimer <= 0 || !isSafeCrocWater(prey.position.x, prey.position.z)) {
+              croc.patrolMode = 'cruise';
+              croc.wildTargetId = -1;
+              croc.wildChaseCooldown = 12.0 + Math.random() * 10.0;
+              croc.modeTimer = 6.0 + Math.random() * 6.0;
+              pickCrocWanderTarget(croc);
+            } else {
+              targetX = prey.position.x;
+              targetZ = prey.position.z;
+              const d = Math.hypot(targetX - croc.pos.x, targetZ - croc.pos.z);
+              if (d > 5.8) {
+                // Stealth stalking approach: low eyes-above-water silhouette
+                desiredSpeed = 1.95;
+                desiredDepthY = -0.065;
+                desiredJaw = 0.08;
+              } else {
+                // Explosive surface burst toward wild fish!
+                desiredSpeed = 3.45;
+                desiredDepthY = -0.005;
+                activeChaseBurst = true;
+                desiredJaw = THREE.MathUtils.clamp((5.8 - d) / 4.2, 0.16, 0.72);
+              }
+              if (d <= 1.85) {
+                // Snap lunge at wild school fish, scattering nearby school!
+                croc.lungeDuration = 0.72;
+                croc.lungeTimer = 0.72;
+                croc.lungeMidSplashDone = false;
+                croc.jawOpen = 0.85;
+                croc.patrolMode = 'cruise';
+                croc.wildTargetId = -1;
+                croc.wildChaseCooldown = 16.0 + Math.random() * 12.0;
+                croc.modeTimer = 7.0 + Math.random() * 5.0;
+                pickCrocWanderTarget(croc);
+                onSplash(croc.pos.x, croc.pos.z, 1.55);
+                onWildFishScatter?.(croc.pos.x, croc.pos.z);
+              }
+            }
+          } else {
+            if (croc.modeTimer <= 0) {
+              const r = Math.random();
+              if (croc.patrolMode === 'cruise') {
+                if (r < 0.48) {
+                  croc.patrolMode = 'drift';
+                  croc.modeTimer = 3.8 + Math.random() * 3.2;
+                } else if (r < 0.82) {
+                  croc.patrolMode = 'submerge';
+                  croc.modeTimer = 4.2 + Math.random() * 3.0;
+                } else {
+                  croc.modeTimer = 6.5 + Math.random() * 6.0;
+                  pickCrocWanderTarget(croc);
+                }
+              } else {
+                croc.patrolMode = 'cruise';
+                croc.modeTimer = 7.0 + Math.random() * 7.0;
+                pickCrocWanderTarget(croc);
+              }
+            }
+
+            croc.wanderTimer -= dt;
+            const distToWander = Math.hypot(croc.wanderTarget.x - croc.pos.x, croc.wanderTarget.y - croc.pos.z);
+            if (croc.wanderTimer <= 0 || distToWander < 2.4) {
+              pickCrocWanderTarget(croc);
+            }
+            targetX = croc.wanderTarget.x;
+            targetZ = croc.wanderTarget.y;
+
+            if (croc.patrolMode === 'drift') {
+              // Floating log ambush drift: almost motionless, eyes & nostrils just above surface
+              desiredSpeed = 0.16;
+              desiredDepthY = -0.098;
+            } else if (croc.patrolMode === 'submerge') {
+              // Silent subsurface glide beneath water line
+              desiredSpeed = 1.18;
+              desiredDepthY = -0.31;
+            } else {
+              // Natural cruising speed gently ebbs and flows
+              desiredSpeed = 1.02 + Math.sin(elapsed * 0.45 + ci * 1.9) * 0.24;
+              desiredDepthY = -0.072;
+            }
+          }
         }
 
+        // Smooth jaw control (lunge snap overrides below)
+        if (croc.lungeTimer <= 0) {
+          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 8.5, dt);
+        }
+
+        // Compute steering direction + obstacle/shore/boat/pairwise-croc avoidance
         tmpDir.set(targetX - croc.pos.x, 0, targetZ - croc.pos.z);
-        const stepDist = tmpDir.length();
-        if (stepDist > 0.05) {
-          tmpDir.divideScalar(stepDist);
-          const moveSpeed = Math.min(speed, stepDist / Math.max(0.01, dt));
-          croc.pos.x += tmpDir.x * moveSpeed * dt;
-          croc.pos.z += tmpDir.z * moveSpeed * dt;
-
-          const desiredHeading = Math.atan2(tmpDir.x, tmpDir.z);
-          let diff = desiredHeading - croc.heading;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
-          croc.heading += diff * Math.min(1, dt * (croc.state === 'hunting' ? 5.8 : 2.2));
+        const targetDist = tmpDir.length();
+        if (targetDist > 0.05) {
+          tmpSteer.set(tmpDir.x / targetDist, tmpDir.z / targetDist);
+        } else {
+          tmpSteer.set(Math.sin(croc.heading), Math.cos(croc.heading));
         }
 
+        // Look-ahead shoreline & dock avoidance when roaming/satiated (or gentle boundary keep-out)
+        const aheadX = croc.pos.x + Math.sin(croc.heading) * 3.4;
+        const aheadZ = croc.pos.z + Math.cos(croc.heading) * 3.4;
+        if (!isSafeCrocWater(aheadX, aheadZ)) {
+          // Steer smoothly back toward deeper central lake
+          const toDeepX = -croc.pos.x;
+          const toDeepZ = -40 - croc.pos.z;
+          const toDeepLen = Math.max(0.01, Math.hypot(toDeepX, toDeepZ));
+          tmpSteer.x += (toDeepX / toDeepLen) * 1.65;
+          tmpSteer.y += (toDeepZ / toDeepLen) * 1.65;
+          if (croc.state === 'patrol' && croc.patrolMode !== 'stalk_wild') {
+            pickCrocWanderTarget(croc);
+          }
+        }
+
+        // Avoid clipping the player's boat hull
+        if (boatPos) {
+          const bx = croc.pos.x - boatPos.x;
+          const bz = croc.pos.z - boatPos.z;
+          const bDist = Math.hypot(bx, bz);
+          if (bDist > 0.01 && bDist < 4.5) {
+            const push = ((4.5 - bDist) / 4.5) * 2.1;
+            tmpSteer.x += (bx / bDist) * push;
+            tmpSteer.y += (bz / bDist) * push;
+          }
+        }
+
+        // Pairwise separation from other crocodiles
+        for (let oj = 0; oj < crocs.length; oj++) {
+          if (oj === ci) continue;
+          const other = crocs[oj];
+          const ox = croc.pos.x - other.pos.x;
+          const oz = croc.pos.z - other.pos.z;
+          const oDist = Math.hypot(ox, oz);
+          if (oDist > 0.01 && oDist < 4.8) {
+            const push = ((4.8 - oDist) / 4.8) * 1.45;
+            tmpSteer.x += (ox / oDist) * push;
+            tmpSteer.y += (oz / oDist) * push;
+          }
+        }
+
+        const steerLen = Math.hypot(tmpSteer.x, tmpSteer.y);
+        const desiredHeading = steerLen > 0.001 ? Math.atan2(tmpSteer.x, tmpSteer.y) : croc.heading;
+        let headingDiff = desiredHeading - croc.heading;
+        while (headingDiff > Math.PI) headingDiff -= Math.PI * 2;
+        while (headingDiff < -Math.PI) headingDiff += Math.PI * 2;
+
+        // Realistic angular inertia & turn-rate limit (no sideways crab-sliding!)
+        const maxTurnRate = isHunting || croc.patrolMode === 'stalk_wild' ? 3.85 : 1.45;
+        const desiredTurnRate = THREE.MathUtils.clamp(headingDiff * 2.8, -maxTurnRate, maxTurnRate);
+        croc.turnRate = THREE.MathUtils.damp(croc.turnRate, desiredTurnRate, 6.5, dt);
+        croc.heading += croc.turnRate * dt;
+
+        // Sharp turns gently bleed excess linear speed like a real heavy swimmer
+        const turnSlowdown = 1.0 - Math.min(0.45, Math.abs(headingDiff) * 0.25);
+        const lungeSurge = croc.lungeTimer > 0 ? Math.sin((croc.lungeTimer / croc.lungeDuration) * Math.PI) * 1.9 : 0;
+        const clampedDesired = Math.min(desiredSpeed * turnSlowdown + lungeSurge, targetDist / Math.max(0.02, dt));
+
+        croc.smoothSpeed = THREE.MathUtils.damp(
+          croc.smoothSpeed,
+          clampedDesired,
+          clampedDesired > croc.smoothSpeed ? 3.6 : 2.1,
+          dt,
+        );
+
+        // Move strictly forward along heading (+ tiny 8% hydrodynamic alignment drift toward steer during tight turns)
+        const fwdX = Math.sin(croc.heading);
+        const fwdZ = Math.cos(croc.heading);
+        croc.pos.x += fwdX * croc.smoothSpeed * dt;
+        croc.pos.z += fwdZ * croc.smoothSpeed * dt;
+
+        // Lunge ballistic arc, jaw clamp, and predatory head-shake/roll thrash
         const surfY = getWaterSurfaceY(croc.pos.x, croc.pos.z);
         let lungeY = 0;
-        let targetPitch = croc.state === 'hunting' ? -0.06 : 0;
+        let headShakeYaw = 0;
+        let lungeRoll = 0;
+        let targetPitch = activeChaseBurst ? -0.055 : croc.patrolMode === 'submerge' ? 0.06 : 0;
+
         if (croc.lungeTimer > 0) {
           croc.lungeTimer = Math.max(0, croc.lungeTimer - dt);
-          const lungeProgress = 1 - croc.lungeTimer / 0.82; // 0 -> 1
-          lungeY = Math.sin(lungeProgress * Math.PI) * 0.56;
-          targetPitch = Math.sin(lungeProgress * Math.PI) * -0.34 + 0.08 * lungeProgress;
-          if (lungeProgress > 0.36) {
-            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.0, 18.0, dt);
+          const p = 1 - croc.lungeTimer / Math.max(0.1, croc.lungeDuration); // 0 -> 1
+          lungeY = Math.pow(Math.sin(p * Math.PI), 0.85) * 0.54;
+          targetPitch = Math.sin(p * Math.PI) * -0.36 + 0.1 * p;
+
+          if (p < 0.28) {
+            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.94, 18.0, dt);
+          } else {
+            // Snap jaws tightly shut and perform violent lateral prey-shake!
+            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.02, 22.0, dt);
+            const shakeEnv = Math.sin(THREE.MathUtils.clamp((p - 0.26) / 0.68, 0, 1) * Math.PI);
+            headShakeYaw = Math.sin(p * Math.PI * 5.2) * 0.36 * shakeEnv;
+            lungeRoll = Math.sin(p * Math.PI * 5.2 + 0.6) * 0.24 * shakeEnv;
+          }
+
+          if (p >= 0.45 && !croc.lungeMidSplashDone) {
+            croc.lungeMidSplashDone = true;
+            onSplash(croc.pos.x + fwdX * 0.85, croc.pos.z + fwdZ * 0.85, 1.65);
           }
         }
-        croc.lungePitch = THREE.MathUtils.damp(croc.lungePitch, targetPitch, 10, dt);
 
-        // Rise visibly high in the water during an active hunt & surface lunge so all anglers clearly see the attack
-        croc.pos.y = surfY + (croc.state === 'hunting' ? 0.025 : -0.075) + lungeY;
+        croc.bodySubmergeY = THREE.MathUtils.damp(croc.bodySubmergeY, desiredDepthY, 2.8, dt);
+        croc.lungePitch = THREE.MathUtils.damp(croc.lungePitch, targetPitch, 9.5, dt);
+
+        // Banking roll into turns + predatory snap roll + gentle water swell roll
+        const turnRoll = THREE.MathUtils.clamp(-croc.turnRate * croc.smoothSpeed * 0.065, -0.18, 0.18);
+        const swellRoll = Math.sin(elapsed * 1.4 + ci * 2.1) * 0.028;
+        croc.bankRoll = THREE.MathUtils.damp(croc.bankRoll, turnRoll + lungeRoll + swellRoll, 8.5, dt);
+
+        // Head looks into prey / into turns first, or slowly scans side-to-side when ambush-drifting
+        croc.headScanPhase += dt * (croc.patrolMode === 'drift' ? 0.9 : 0.45);
+        let desiredHeadYaw = 0;
+        if (isHunting || croc.patrolMode === 'stalk_wild') {
+          desiredHeadYaw = THREE.MathUtils.clamp(headingDiff * 0.72, -0.44, 0.44);
+        } else if (croc.patrolMode === 'drift') {
+          desiredHeadYaw = Math.sin(croc.headScanPhase) * 0.16;
+        } else {
+          desiredHeadYaw = THREE.MathUtils.clamp(croc.turnRate * 0.18 + Math.sin(croc.headScanPhase) * 0.05, -0.32, 0.32);
+        }
+        croc.headYaw = THREE.MathUtils.damp(croc.headYaw, desiredHeadYaw, 7.5, dt);
+
+        // Subtle buoyancy bobbing
+        const buoyancyBob = Math.sin(elapsed * 1.8 + ci * 1.7) * 0.012;
+        croc.pos.y = surfY + croc.bodySubmergeY + lungeY + buoyancyBob;
         croc.root.position.copy(croc.pos);
-        croc.root.rotation.set(croc.lungePitch, croc.heading, 0);
+        croc.root.rotation.set(0, croc.heading, 0);
+
+        // Speed-coupled traveling S-wave propulsion through spine & 3-part tail
+        const swimFreq = 0.9 + croc.smoothSpeed * 2.45 + (croc.lungeTimer > 0 ? 5.2 : 0);
+        croc.swimPhase += dt * swimFreq;
+        const targetSprint = croc.lungeTimer > 0 ? 1 : THREE.MathUtils.clamp((croc.smoothSpeed - 1.55) / 1.35, 0, 1);
+        croc.sprintBlend = THREE.MathUtils.damp(croc.sprintBlend, targetSprint, 4.8, dt);
+
+        const tailAmp = 0.05 + THREE.MathUtils.clamp(croc.smoothSpeed * 0.085, 0.02, 0.31) + (croc.lungeTimer > 0 ? 0.15 : 0);
+        const turnTailCurve = THREE.MathUtils.clamp(-croc.turnRate * 0.22, -0.32, 0.32);
+
+        // Body flex counter-balances the tail stroke while pitch/roll sit cleanly on bodyPivot
+        croc.bodyPivot.rotation.set(
+          croc.lungePitch + Math.cos(elapsed * 1.5 + ci) * 0.015,
+          Math.sin(croc.swimPhase + 0.5) * tailAmp * 0.16 - turnTailCurve * 0.14,
+          croc.bankRoll,
+        );
+
+        // Head holds tracking gaze (partially stabilizing against spine wiggle) + snap head-shake
+        croc.headPivot.rotation.set(
+          croc.lungeTimer > 0 ? -0.06 : croc.patrolMode === 'drift' ? -0.035 : 0,
+          croc.headYaw + headShakeYaw - croc.bodyPivot.rotation.y * 0.55,
+          headShakeYaw * 0.45,
+        );
         croc.lowerJawPivot.rotation.x = croc.jawOpen;
 
-        // Sinuous tail & webbed leg swim motion
-        croc.swimPhase += dt * (croc.state === 'hunting' || croc.lungeTimer > 0 ? 11.2 : 3.4);
-        croc.tailSegs.forEach((seg, idx) => {
-          seg.rotation.y = Math.sin(croc.swimPhase - idx * 0.85) * (0.18 + idx * 0.075);
-        });
-        croc.legs.forEach((leg, idx) => {
-          leg.rotation.x = Math.sin(croc.swimPhase + idx * Math.PI * 0.5) * 0.25;
-        });
-
-        croc.rippleTimer -= dt;
-        if (croc.rippleTimer <= 0) {
-          croc.rippleTimer = croc.state === 'hunting' ? 0.18 : 0.68;
-          onRipple(croc.pos.x, croc.pos.z, croc.state === 'hunting' ? 1.05 : 0.44);
+        // Traveling S-wave amplitudes intensify toward tail tip
+        const tailWeights = [0.72, 1.15, 1.55];
+        const tailPhases = [-0.35, -1.25, -2.2];
+        const tailTurnWeights = [0.45, 0.36, 0.25];
+        for (let ti = 0; ti < croc.tailSegs.length; ti++) {
+          croc.tailSegs[ti].rotation.y =
+            Math.sin(croc.swimPhase + tailPhases[ti]) * tailAmp * tailWeights[ti] + turnTailCurve * tailTurnWeights[ti];
         }
 
-        if (croc.state === 'hunting' || croc.lungeTimer > 0.15) {
+        // Adaptive 4-Leg Gait: alternating diagonal paddles at slow cruise -> tucked flush against flanks during high-speed tail sprint!
+        const paddleStrength = THREE.MathUtils.clamp(croc.smoothSpeed / 1.15, 0.1, 1.0) * (1 - croc.sprintBlend);
+        for (let li = 0; li < croc.legs.length; li++) {
+          const leg = croc.legs[li];
+          const stroke = Math.sin(croc.swimPhase * 0.85 + leg.phaseOffset);
+          const feather = Math.cos(croc.swimPhase * 0.85 + leg.phaseOffset);
+          const paddleY = stroke * 0.46 * paddleStrength;
+          const paddleX = feather * 0.22 * paddleStrength;
+          // Tuck backward flush along body when sprinting via tail propulsion
+          const tuckY = leg.side * (-1.02 * croc.sprintBlend);
+          const tuckZ = leg.side * (0.28 * croc.sprintBlend);
+          leg.pivot.rotation.set(paddleX, paddleY + tuckY, tuckZ);
+        }
+
+        // Natural speed-reactive ripples & bow splashes (quiet when drifting or submerged!)
+        const isSubmerged = croc.bodySubmergeY < -0.18;
+        croc.rippleTimer -= dt * (0.35 + croc.smoothSpeed * 0.65);
+        if (croc.rippleTimer <= 0 && croc.smoothSpeed > 0.22) {
+          croc.rippleTimer = activeChaseBurst ? 0.22 : 0.62;
+          const rStrength = isSubmerged
+            ? 0.24
+            : THREE.MathUtils.clamp(0.28 + croc.smoothSpeed * 0.22, 0.28, 1.1);
+          onRipple(croc.pos.x - fwdX * 0.45, croc.pos.z - fwdZ * 0.45, rStrength);
+        }
+
+        if ((activeChaseBurst || croc.lungeTimer > 0.18) && !isSubmerged) {
           croc.splashTimer -= dt;
           if (croc.splashTimer <= 0) {
-            croc.splashTimer = 0.42;
-            onSplash(croc.pos.x + Math.sin(croc.heading) * 1.0, croc.pos.z + Math.cos(croc.heading) * 1.0, 0.9);
+            croc.splashTimer = 0.36;
+            onSplash(croc.pos.x + fwdX * 1.05, croc.pos.z + fwdZ * 1.05, 0.88);
+          }
+          croc.bowWaveTimer -= dt;
+          if (croc.bowWaveTimer <= 0) {
+            croc.bowWaveTimer = 0.26;
+            // Tail thrash splash behind stern
+            onSplash(croc.pos.x - fwdX * 1.35, croc.pos.z - fwdZ * 1.35, 0.65);
           }
         }
       }

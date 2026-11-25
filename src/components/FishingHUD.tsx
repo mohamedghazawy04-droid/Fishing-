@@ -22,10 +22,6 @@ import {
   Waves,
   MapPin,
   Sparkles,
-  ChevronUp,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Sailboat,
   Play,
   Pause,
@@ -127,6 +123,125 @@ const FishIllustration: React.FC<{ species: FishSpecies; className?: string }> =
   );
 };
 
+interface VirtualControlWheelProps {
+  mode: 'boat' | 'swim';
+  onVectorChange: (forward: number, horizontal: number) => void;
+}
+
+const VirtualControlWheel: React.FC<VirtualControlWheelProps> = ({ mode, onVectorChange }) => {
+  const padRef = useRef<HTMLDivElement | null>(null);
+  const pointerIdRef = useRef<number | null>(null);
+  const latestOnVectorChangeRef = useRef(onVectorChange);
+  latestOnVectorChangeRef.current = onVectorChange;
+  const [knobOffset, setKnobOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [active, setActive] = useState(false);
+
+  const maxRadius = 38;
+
+  const updateFromClient = (clientX: number, clientY: number) => {
+    const el = padRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width * 0.5;
+    const cy = rect.top + rect.height * 0.5;
+    const rawX = clientX - cx;
+    const rawY = clientY - cy;
+    const dist = Math.hypot(rawX, rawY);
+    const clampedDist = Math.min(maxRadius, dist);
+    const angle = Math.atan2(rawY, rawX);
+    const kx = dist > 0.001 ? Math.cos(angle) * clampedDist : 0;
+    const ky = dist > 0.001 ? Math.sin(angle) * clampedDist : 0;
+
+    setKnobOffset({ x: kx, y: ky });
+
+    const normMag = clampedDist / maxRadius;
+    if (normMag < 0.1) {
+      latestOnVectorChangeRef.current(0, 0);
+      return;
+    }
+    const nx = kx / maxRadius; // +1 right, -1 left
+    const ny = -ky / maxRadius; // +1 up (forward), -1 down (backward)
+    latestOnVectorChangeRef.current(ny, nx);
+  };
+
+  const resetStick = () => {
+    pointerIdRef.current = null;
+    setActive(false);
+    setKnobOffset({ x: 0, y: 0 });
+    latestOnVectorChangeRef.current(0, 0);
+  };
+
+  useEffect(() => {
+    return () => {
+      latestOnVectorChangeRef.current(0, 0);
+    };
+  }, []);
+
+  const isSwim = mode === 'swim';
+
+  return (
+    <div
+      dir="ltr"
+      className="fixed bottom-5 left-4 sm:bottom-6 sm:left-6 z-20 pointer-events-auto flex flex-col items-center gap-1.5 select-none touch-none"
+    >
+      <div
+        ref={padRef}
+        role="application"
+        aria-label={isSwim ? 'عجلة التحكم بالسباحة' : 'عجلة التحكم بالقارب'}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          pointerIdRef.current = e.pointerId;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setActive(true);
+          updateFromClient(e.clientX, e.clientY);
+        }}
+        onPointerMove={(e) => {
+          if (pointerIdRef.current !== e.pointerId) return;
+          e.preventDefault();
+          updateFromClient(e.clientX, e.clientY);
+        }}
+        onPointerUp={(e) => {
+          if (pointerIdRef.current !== e.pointerId) return;
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+          }
+          resetStick();
+        }}
+        onPointerCancel={resetStick}
+        className={`relative w-28 h-28 sm:w-32 sm:h-32 rounded-full border backdrop-blur-md shadow-2xl flex items-center justify-center transition-colors ${
+          active
+            ? isSwim
+              ? 'bg-cyan-950/65 border-cyan-300/75'
+              : 'bg-sky-950/65 border-sky-300/75'
+            : 'bg-[#081217]/72 border-white/20 hover:border-white/35'
+        }`}
+      >
+        {/* Subtle crosshairs & outer guidance ring */}
+        <div className="pointer-events-none absolute inset-3 rounded-full border border-white/10" />
+        <div className="pointer-events-none absolute w-px h-20 bg-white/10" />
+        <div className="pointer-events-none absolute h-px w-20 bg-white/10" />
+
+        {/* Thumb knob */}
+        <div
+          style={{ transform: `translate3d(${knobOffset.x}px, ${knobOffset.y}px, 0)` }}
+          className={`pointer-events-none w-11 h-11 sm:w-12 sm:h-12 rounded-full border-2 shadow-lg flex items-center justify-center ${
+            isSwim
+              ? 'bg-cyan-400/35 border-cyan-200/85 text-cyan-100'
+              : 'bg-sky-400/35 border-sky-200/85 text-sky-100'
+          }`}
+        >
+          {isSwim ? <Waves className="w-5 h-5" /> : <Navigation className="w-5 h-5" />}
+        </div>
+      </div>
+
+      <span className="px-2 py-0.5 rounded-md bg-[#081217]/75 border border-white/10 text-[10px] font-medium text-stone-200">
+        {isSwim ? 'تحريك السباحة' : 'توجيه القارب'}
+      </span>
+    </div>
+  );
+};
+
 interface FishingHUDProps {
   hud: FishingHudState;
   onPrimaryPress: () => void;
@@ -153,6 +268,8 @@ interface FishingHUDProps {
   onSelectLocation: (spotId: LakeSpotId) => void;
   onBoardBoatFreeRoam: () => void;
   onBoatSteer: (forward: number, turn: number) => void;
+  onToggleSwim: () => void;
+  onSwimSteer: (forward: number, strafe: number) => void;
   onSailToPoi: (poiId: PoiId) => void;
   onLookAtPoi: (poiId: PoiId) => void;
   onCancelRivalCutaway: () => void;
@@ -195,6 +312,8 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   onSelectLocation,
   onBoardBoatFreeRoam,
   onBoatSteer,
+  onToggleSwim,
+  onSwimSteer,
   onSailToPoi,
   onLookAtPoi,
   onCancelRivalCutaway,
@@ -454,9 +573,9 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         }}
       />
 
-      {/* Minimal Top Edge: Settings + Boat Free-Roam Icon + Radio Only (Zero View Obstruction) */}
+      {/* Minimal Top Edge: Settings + Boat Free-Roam + Lake Swimming + Radio Only */}
       <div className="flex items-start justify-between gap-2 p-3 sm:p-3.5">
-        <div className="pointer-events-auto flex items-center gap-2 shrink-0">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
@@ -471,25 +590,54 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
             type="button"
             disabled={hud.isSailing || hud.phase === 'caught'}
             onClick={() => {
-              if (hud.isOnBoat) {
+              if (hud.isOnBoat && !hud.isSwimming) {
                 onSelectLocation('pier');
               } else {
                 onBoardBoatFreeRoam();
               }
             }}
             title={
-              hud.isOnBoat
-                ? 'أنت على القارب — اضغط للعودة إلى الرصيف'
-                : 'ركوب القارب والتجول الحر في البحيرة'
+              hud.isSwimming
+                ? 'ركوب القارب مباشرة'
+                : hud.isOnBoat
+                  ? 'أنت على القارب — اضغط للعودة إلى الرصيف'
+                  : 'ركوب القارب والتجول الحر في البحيرة'
             }
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium shadow-lg transition-colors whitespace-nowrap disabled:opacity-50 ${
-              hud.isOnBoat
+              hud.isOnBoat && !hud.isSwimming
                 ? 'bg-sky-500/25 hover:bg-sky-500/35 border-sky-400/60 text-sky-100'
                 : 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-100'
             }`}
           >
-            <Sailboat className={`w-4 h-4 shrink-0 ${hud.isOnBoat ? 'text-sky-200' : 'text-sky-300'}`} />
-            <span>{hud.isOnBoat ? 'العودة للرصيف' : 'تجول بالقارب'}</span>
+            <Sailboat className={`w-4 h-4 shrink-0 ${hud.isOnBoat && !hud.isSwimming ? 'text-sky-200' : 'text-sky-300'}`} />
+            <span>{hud.isOnBoat && !hud.isSwimming ? 'العودة للرصيف' : 'تجول بالقارب'}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={hud.phase === 'caught'}
+            onClick={onToggleSwim}
+            title={
+              hud.isSwimming
+                ? hud.isOnBoat
+                  ? 'إنهاء السباحة والعودة للقارب'
+                  : 'إنهاء السباحة والعودة للرصيف'
+                : 'النزول للسباحة في البحيرة (متاح من الرصيف أو القارب)'
+            }
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium shadow-lg transition-colors whitespace-nowrap disabled:opacity-50 ${
+              hud.isSwimming
+                ? 'bg-cyan-500/28 hover:bg-cyan-500/40 border-cyan-400/65 text-cyan-100'
+                : 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-100'
+            }`}
+          >
+            <Waves className={`w-4 h-4 shrink-0 ${hud.isSwimming ? 'text-cyan-200' : 'text-cyan-300'}`} />
+            <span>
+              {hud.isSwimming
+                ? hud.isOnBoat
+                  ? 'العودة للقارب'
+                  : 'العودة للرصيف'
+                : 'سباحة في البحيرة'}
+            </span>
           </button>
         </div>
 
@@ -879,78 +1027,55 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         )}
       </div>
 
-      {/* Minimal Bottom Fishing Action Strip (Cast/Reel + Compact Boat Helm only while steering on boat) */}
+      {/* Left-Side Virtual Finger Wheel for Boat Steering & Lake Swimming */}
+      {(hud.isOnBoat || hud.isSwimming) &&
+        hud.phase === 'idle' &&
+        !hud.playerBasketCutawayActive &&
+        !hud.rivalCutawayActive &&
+        !settingsOpen && (
+          <VirtualControlWheel
+            mode={hud.isSwimming ? 'swim' : 'boat'}
+            onVectorChange={(forward, horizontal) => {
+              if (hud.isSwimming) {
+                onSwimSteer(forward, horizontal);
+              } else {
+                onBoatSteer(forward, -horizontal);
+              }
+            }}
+          />
+        )}
+
+      {/* Minimal Bottom Action Strip (Cast/Reel when fishing, or Swim Exit prompt when swimming) */}
       <div className="pointer-events-none flex items-center justify-center gap-2.5 pb-4 px-3">
         <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-[#0a1317]/82 border border-white/15 shadow-xl">
-          <button
-            type="button"
-            onPointerDown={onPrimaryPress}
-            onPointerUp={onPrimaryRelease}
-            onPointerLeave={() => {
-              if (hud.phase === 'charging' || hud.phase === 'reeling') onPrimaryRelease();
-            }}
-            disabled={hud.isSailing || hud.phase === 'casting' || hud.phase === 'caught'}
-            className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
-              hud.phase === 'biting'
-                ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
-                : hud.phase === 'reeling'
-                  ? 'bg-sky-600 hover:bg-sky-500 text-white'
-                  : 'bg-emerald-600 hover:bg-emerald-500 disabled:bg-stone-700 disabled:text-stone-400 text-white'
-            }`}
-          >
-            {primaryLabel}
-          </button>
-
-          {hud.isOnBoat && hud.phase === 'idle' && (
-            <div
-              className="flex items-center gap-1 pr-2 border-r border-white/15"
-              title="قيادة القارب (يمكنك استخدام مفاتيح W/A/S/D)"
+          {hud.isSwimming ? (
+            <button
+              type="button"
+              onClick={onToggleSwim}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors whitespace-nowrap"
             >
-              <button
-                type="button"
-                aria-label="تقدم بالقارب"
-                onPointerDown={() => onBoatSteer(1, 0)}
-                onPointerUp={() => onBoatSteer(0, 0)}
-                onPointerLeave={() => onBoatSteer(0, 0)}
-                onPointerCancel={() => onBoatSteer(0, 0)}
-                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
-              >
-                <ChevronUp className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                aria-label="انعطاف يمين"
-                onPointerDown={() => onBoatSteer(0, -1)}
-                onPointerUp={() => onBoatSteer(0, 0)}
-                onPointerLeave={() => onBoatSteer(0, 0)}
-                onPointerCancel={() => onBoatSteer(0, 0)}
-                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                aria-label="انعطاف يسار"
-                onPointerDown={() => onBoatSteer(0, 1)}
-                onPointerUp={() => onBoatSteer(0, 0)}
-                onPointerLeave={() => onBoatSteer(0, 0)}
-                onPointerCancel={() => onBoatSteer(0, 0)}
-                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                aria-label="تراجع بالقارب"
-                onPointerDown={() => onBoatSteer(-1, 0)}
-                onPointerUp={() => onBoatSteer(0, 0)}
-                onPointerLeave={() => onBoatSteer(0, 0)}
-                onPointerCancel={() => onBoatSteer(0, 0)}
-                className="p-2 rounded-lg bg-white/8 hover:bg-sky-500/30 active:bg-sky-500/45 text-stone-100 border border-white/10 transition-colors"
-              >
-                <ChevronDown className="w-4 h-4" />
-              </button>
-            </div>
+              <Waves className="w-4 h-4 shrink-0" />
+              <span>{hud.isOnBoat ? 'خروج من الماء إلى القارب' : 'خروج من الماء إلى الرصيف'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onPointerDown={onPrimaryPress}
+              onPointerUp={onPrimaryRelease}
+              onPointerLeave={() => {
+                if (hud.phase === 'charging' || hud.phase === 'reeling') onPrimaryRelease();
+              }}
+              disabled={hud.isSailing || hud.phase === 'casting' || hud.phase === 'caught'}
+              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+                hud.phase === 'biting'
+                  ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
+                  : hud.phase === 'reeling'
+                    ? 'bg-sky-600 hover:bg-sky-500 text-white'
+                    : 'bg-emerald-600 hover:bg-emerald-500 disabled:bg-stone-700 disabled:text-stone-400 text-white'
+              }`}
+            >
+              {primaryLabel}
+            </button>
           )}
         </div>
       </div>

@@ -79,6 +79,7 @@ const INITIAL_HUD: FishingHudState = {
   currentLocationId: 'pier',
   isOnBoat: false,
   isSailing: false,
+  isSwimming: false,
   waterDepthUnderPlayer: 1.4,
   pois: [],
   poiDiscoveredNotice: null,
@@ -153,6 +154,8 @@ export default function App() {
           onSelectLocation={(spotId) => managerRef.current?.selectLakeLocation(spotId)}
           onBoardBoatFreeRoam={() => managerRef.current?.boardBoatFreeRoam()}
           onBoatSteer={(fwd, turn) => managerRef.current?.setBoatSteer(fwd, turn)}
+          onToggleSwim={() => managerRef.current?.toggleSwimming()}
+          onSwimSteer={(fwd, strafe) => managerRef.current?.setSwimSteer(fwd, strafe)}
           onSailToPoi={(poiId) => managerRef.current?.sailToPoi(poiId)}
           onLookAtPoi={(poiId) => managerRef.current?.lookAtPoi(poiId)}
           onCancelRivalCutaway={() => managerRef.current?.cancelRivalCutaway()}

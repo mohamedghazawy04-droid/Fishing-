@@ -313,6 +313,7 @@ export interface FishingHudState {
   currentLocationId: LakeSpotId | 'free_roam';
   isOnBoat: boolean;
   isSailing: boolean;
+  isSwimming: boolean;
   waterDepthUnderPlayer: number;
   pois: PoiHudItem[];
   poiDiscoveredNotice: PoiDiscoveryNotice | null;

@@ -412,6 +412,15 @@ export class FishingSceneManager {
   private uiSteerForward = 0;
   private uiSteerTurn = 0;
   private prevBoatYaw = 0.18;
+  private isSwimming = false;
+  private swimOriginWasBoat = false;
+  private swimPos = new THREE.Vector3(0, 0, -2.6);
+  private swimVel = new THREE.Vector2(0, 0);
+  private swimBobPhase = 0;
+  private swimRippleTimer = 0;
+  private swimSplashTimer = 0;
+  private swimMoveForward = 0;
+  private swimMoveStrafe = 0;
 
   private onHudUpdate: (state: FishingHudState) => void;
   private lastHudEmit = 0;
@@ -848,13 +857,15 @@ export class FishingSceneManager {
     this.lastPointerY = e.clientY;
 
     this.clearHoldTimer();
-    this.holdTimer = window.setTimeout(() => {
-      if (this.pointerDown && !this.pointerMoved && !this.disposed) {
-        this.holdTriggered = true;
-        this.isDragging = false;
-        this.handlePrimaryActionPress();
-      }
-    }, 175);
+    if (!this.isSwimming) {
+      this.holdTimer = window.setTimeout(() => {
+        if (this.pointerDown && !this.pointerMoved && !this.disposed) {
+          this.holdTriggered = true;
+          this.isDragging = false;
+          this.handlePrimaryActionPress();
+        }
+      }, 175);
+    }
   };
 
   private onPointerMove = (e: PointerEvent): void => {
@@ -880,6 +891,9 @@ export class FishingSceneManager {
     if (this.phase === 'caught') {
       this.catchInspectAngle += dx * 0.012;
       this.catchInspectTilt = THREE.MathUtils.clamp(this.catchInspectTilt + dy * 0.006, -0.45, 0.45);
+    } else if (this.isSwimming) {
+      this.targetYaw -= dx * 0.0045;
+      this.targetPitch = THREE.MathUtils.clamp(this.targetPitch - dy * 0.0040, -1.05, 0.95);
     } else {
       const rigYaw = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
       const nextYaw = this.targetYaw - dx * 0.0045;
@@ -959,6 +973,11 @@ export class FishingSceneManager {
   public handlePrimaryActionPress(): void {
     this.sound.unlock();
     this.markUserActivity(true);
+    if (this.isSwimming) {
+      this.statusMessage = 'أنت في وضع السباحة — استمتع بالمنظر أو اضغط زر العودة للصيد';
+      this.emitHudState(true);
+      return;
+    }
     if (this.boatSystem.isSailing()) {
       this.statusMessage = 'انتظر قليلاً حتى يرسو القارب في الموقع المحدد...';
       this.emitHudState(true);
@@ -1112,8 +1131,111 @@ export class FishingSceneManager {
 
   public lookReset(): void {
     this.markUserActivity(true);
-    this.targetYaw = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
-    this.targetPitch = -0.20;
+    this.targetYaw = this.isSwimming
+      ? 0
+      : this.boatSystem.isOnBoat()
+        ? this.boatSystem.getBoatYaw()
+        : 0;
+    this.targetPitch = this.isSwimming ? -0.05 : -0.20;
+  }
+
+  public toggleSwimming(): void {
+    this.sound.unlock();
+    this.markUserActivity(true);
+
+    if (this.phase === 'caught') {
+      this.statusMessage = 'احفظ أو أطلق السمكة أولاً قبل النزول إلى الماء';
+      this.emitHudState(true);
+      return;
+    }
+
+    if (this.isSwimming) {
+      this.exitSwimming();
+      return;
+    }
+
+    if (this.phase !== 'idle') {
+      this.resetToIdle('تم سحب الخيط قبل النزول للسباحة...');
+    }
+    this.playerCutawayTimer = 0;
+    this.playerCutawaySpeciesName = null;
+    this.rivalCutawayTimer = 0;
+    this.rivalCutawaySpeciesName = null;
+    this.uiSteerForward = 0;
+    this.uiSteerTurn = 0;
+    this.boatSystem.setSteerInput(0, 0);
+
+    const onBoatNow = this.boatSystem.isOnBoat();
+    this.swimOriginWasBoat = onBoatNow;
+
+    if (onBoatNow) {
+      this.boatSystem.getBoatPosition(this._boatWorldPos);
+      const yaw = this.boatSystem.getBoatYaw();
+      let sx = this._boatWorldPos.x - Math.cos(yaw) * 1.55;
+      let sz = this._boatWorldPos.z + Math.sin(yaw) * 1.55;
+      if (groundHeightAt(sx, sz) > -0.35) {
+        sx = this._boatWorldPos.x + Math.cos(yaw) * 1.55;
+        sz = this._boatWorldPos.z - Math.sin(yaw) * 1.55;
+      }
+      if (groundHeightAt(sx, sz) > -0.35) {
+        sx = THREE.MathUtils.lerp(this._boatWorldPos.x, 0, 0.25);
+        sz = THREE.MathUtils.lerp(this._boatWorldPos.z, -40, 0.25);
+      }
+      this.swimPos.set(sx, 0, sz);
+      this.targetYaw = yaw;
+      this.currentYaw = yaw;
+    } else {
+      this.swimPos.set(0, 0, -2.55);
+      this.targetYaw = 0;
+      this.currentYaw = 0;
+    }
+
+    this.targetPitch = -0.04;
+    this.currentPitch = -0.04;
+    this.swimVel.set(0, 0);
+    this.swimMoveForward = 0;
+    this.swimMoveStrafe = 0;
+    this.swimBobPhase = 0;
+    this.isSwimming = true;
+    this.dockRig.playerRigGroup.visible = false;
+
+    this.water.spawnSplash(this.swimPos.x, this.swimPos.z, 1.55);
+    this.water.addRipple(this.swimPos.x, this.swimPos.z, 1.25);
+    this.sound.playSplash(0.8);
+    this.statusMessage = 'أنت تسبح الآن في البحيرة! تحرك بعجلة الإصبع يسار الشاشة أو W/A/S/D والتفت بالسحب';
+    this.emitHudState(true);
+  }
+
+  private exitSwimming(): void {
+    this.isSwimming = false;
+    this.swimMoveForward = 0;
+    this.swimMoveStrafe = 0;
+    this.swimVel.set(0, 0);
+    this.dockRig.playerRigGroup.visible = true;
+
+    if (this.swimOriginWasBoat || this.boatSystem.isOnBoat()) {
+      const yaw = this.boatSystem.getBoatYaw();
+      this.prevBoatYaw = yaw;
+      this.targetYaw = yaw;
+      this.currentYaw = yaw;
+      this.targetPitch = -0.18;
+      this.sound.playSplash(0.45);
+      this.statusMessage = 'عدت إلى متن القارب بنجاح';
+    } else {
+      this.targetYaw = 0;
+      this.currentYaw = 0;
+      this.targetPitch = -0.20;
+      this.sound.playSplash(0.35);
+      this.statusMessage = 'عدت إلى الرصيف الخشبي';
+    }
+    this.emitHudState(true);
+  }
+
+  public setSwimSteer(forward: number, strafe: number): void {
+    this.sound.unlock();
+    this.markUserActivity(true);
+    this.swimMoveForward = THREE.MathUtils.clamp(forward, -1, 1);
+    this.swimMoveStrafe = THREE.MathUtils.clamp(strafe, -1, 1);
   }
 
   public boardBoatFreeRoam(): void {
@@ -1124,6 +1246,12 @@ export class FishingSceneManager {
       this.emitHudState(true);
       return;
     }
+    if (this.isSwimming) {
+      this.isSwimming = false;
+      this.swimMoveForward = 0;
+      this.swimMoveStrafe = 0;
+      this.dockRig.playerRigGroup.visible = true;
+    }
     if (this.phase !== 'idle') {
       this.resetToIdle('تم سحب الخيط للانطلاق بالقارب...');
     }
@@ -1132,13 +1260,14 @@ export class FishingSceneManager {
     this.targetYaw = this.prevBoatYaw;
     this.currentYaw = this.prevBoatYaw;
     this.sound.playSplash(0.65);
-    this.statusMessage = 'أنت الآن على متن القارب — حرّك بـ W/A/S/D أو أزرار الدفة لاستكشاف معالم البحيرة!';
+    this.statusMessage = 'أنت الآن على متن القارب — حرّك بعجلة الإصبع يسار الشاشة أو W/A/S/D لاستكشاف البحيرة!';
     this.emitHudState(true);
   }
 
   public setBoatSteer(forward: number, turn: number): void {
     this.sound.unlock();
     this.markUserActivity(true);
+    if (this.isSwimming) return;
     if ((Math.abs(forward) > 0.05 || Math.abs(turn) > 0.05) && !this.boatSystem.isOnBoat()) {
       this.boardBoatFreeRoam();
     }
@@ -1154,6 +1283,12 @@ export class FishingSceneManager {
       this.statusMessage = 'احفظ أو أطلق السمكة أولاً قبل تحريك القارب';
       this.emitHudState(true);
       return;
+    }
+    if (this.isSwimming) {
+      this.isSwimming = false;
+      this.swimMoveForward = 0;
+      this.swimMoveStrafe = 0;
+      this.dockRig.playerRigGroup.visible = true;
     }
     if (this.phase !== 'idle') {
       this.resetToIdle('تم سحب الخيط للتحرك نحو المعلم...');
@@ -1171,8 +1306,8 @@ export class FishingSceneManager {
     const info = this.poiSystem.getPoiInfos().find((p) => p.definition.id === poiId);
     if (!info) return;
     this.markUserActivity(true);
-    const px = this.boatSystem.isOnBoat() ? this._boatWorldPos.x : 0;
-    const pz = this.boatSystem.isOnBoat() ? this._boatWorldPos.z : 2.3;
+    const px = this.isSwimming ? this.swimPos.x : this.boatSystem.isOnBoat() ? this._boatWorldPos.x : 0;
+    const pz = this.isSwimming ? this.swimPos.z : this.boatSystem.isOnBoat() ? this._boatWorldPos.z : 2.3;
     const desiredYaw = Math.atan2(-(info.worldX - px), -(info.worldZ - pz));
     this.targetYaw = desiredYaw;
     this.targetPitch = -0.06;
@@ -1216,6 +1351,12 @@ export class FishingSceneManager {
       this.statusMessage = 'احفظ أو أطلق السمكة المصطادة أولاً قبل تحريك القارب';
       this.emitHudState(true);
       return;
+    }
+    if (this.isSwimming) {
+      this.isSwimming = false;
+      this.swimMoveForward = 0;
+      this.swimMoveStrafe = 0;
+      this.dockRig.playerRigGroup.visible = true;
     }
     if (this.phase !== 'idle') {
       this.resetToIdle(`تم سحب الخيط للتحرك نحو ${spot.nameAr}...`);
@@ -2007,7 +2148,7 @@ export class FishingSceneManager {
       this._waterNightPayload,
     );
 
-    const isOnBoatAudio = this.boatSystem.isOnBoat();
+    const isOnBoatAudio = this.boatSystem.isOnBoat() && !this.isSwimming;
     this.boatSystem.getBoatPosition(this._boatWorldPos);
     let rawBoatSpeed = 0;
     if (isOnBoatAudio && this._hasPrevBoatAudioPos && dt > 0.0001) {
@@ -2017,21 +2158,23 @@ export class FishingSceneManager {
     }
     this._prevBoatAudioPos.copy(this._boatWorldPos);
     this._hasPrevBoatAudioPos = true;
+    const swimSpeedNorm = this.isSwimming ? THREE.MathUtils.clamp(this.swimVel.length() / 3.6, 0, 0.72) : 0;
     this.smoothBoatSpeedNorm = THREE.MathUtils.damp(
       this.smoothBoatSpeedNorm,
-      THREE.MathUtils.clamp(rawBoatSpeed / 5.5, 0, 1),
+      this.isSwimming ? swimSpeedNorm : THREE.MathUtils.clamp(rawBoatSpeed / 5.5, 0, 1),
       4.5,
       dt,
     );
 
-    const playerX = isOnBoatAudio ? this._boatWorldPos.x : 0;
-    const playerZ = isOnBoatAudio ? this._boatWorldPos.z : 2.3;
+    const playerX = this.isSwimming ? this.swimPos.x : isOnBoatAudio ? this._boatWorldPos.x : 0;
+    const playerZ = this.isSwimming ? this.swimPos.z : isOnBoatAudio ? this._boatWorldPos.z : 2.3;
     const depthHere = Math.max(0.5, -groundHeightAt(playerX, playerZ));
     // Open center lake around (0, -44) -> shoreProximity = 0; wooden pier / shoreline -> shoreProximity = 1
     const distFromCenter = Math.hypot(playerX / 62, (playerZ + 44) / 40);
-    const shoreProx = isOnBoatAudio
-      ? THREE.MathUtils.clamp(0.15 + Math.max(0, distFromCenter - 0.35) * 1.15 - (depthHere - 2.0) * 0.05, 0.08, 0.88)
-      : 1.0;
+    const shoreProx =
+      isOnBoatAudio || this.isSwimming
+        ? THREE.MathUtils.clamp(0.15 + Math.max(0, distFromCenter - 0.35) * 1.15 - (depthHere - 2.0) * 0.05, 0.08, 0.88)
+        : 1.0;
 
     let nearCaveOrRock = 0;
     for (const info of this.poiSystem.getPoiInfos()) {
@@ -2043,7 +2186,7 @@ export class FishingSceneManager {
       }
     }
 
-    this._audioLocation.isOnBoat = isOnBoatAudio;
+    this._audioLocation.isOnBoat = isOnBoatAudio || this.isSwimming;
     this._audioLocation.isSailing = this.boatSystem.isSailing();
     this._audioLocation.boatSpeedNorm = this.smoothBoatSpeedNorm;
     this._audioLocation.waterDepthMeters = depthHere;
@@ -2072,29 +2215,37 @@ export class FishingSceneManager {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.elapsed += dt;
 
-    // Keyboard look (Arrows always look; WASD steers boat when on boat & idle, or looks when on pier)
+    // Keyboard look & steering (Boat helm OR Swimming locomotion OR Pier look)
     const onBoat = this.boatSystem.isOnBoat();
     const rigYawNow = onBoat ? this.boatSystem.getBoatYaw() : 0;
-    const canSteerBoat = onBoat && this.phase === 'idle';
+    const canSteerBoat = onBoat && !this.isSwimming && this.phase === 'idle';
     const lookSpeed = 1.45 * dt;
 
     let yawDeltaInput = 0;
-    if (this.keyState['ArrowLeft'] || (!canSteerBoat && this.keyState['KeyA'])) yawDeltaInput += lookSpeed;
-    if (this.keyState['ArrowRight'] || (!canSteerBoat && this.keyState['KeyD'])) yawDeltaInput -= lookSpeed;
+    if (this.keyState['ArrowLeft'] || (!canSteerBoat && !this.isSwimming && this.keyState['KeyA'])) {
+      yawDeltaInput += lookSpeed;
+    }
+    if (this.keyState['ArrowRight'] || (!canSteerBoat && !this.isSwimming && this.keyState['KeyD'])) {
+      yawDeltaInput -= lookSpeed;
+    }
     if (yawDeltaInput !== 0) {
-      const nextYaw = this.targetYaw + yawDeltaInput;
-      const rel = Math.atan2(Math.sin(nextYaw - rigYawNow), Math.cos(nextYaw - rigYawNow));
-      this.targetYaw = rigYawNow + THREE.MathUtils.clamp(rel, -2.55, 2.55);
+      if (this.isSwimming) {
+        this.targetYaw += yawDeltaInput;
+      } else {
+        const nextYaw = this.targetYaw + yawDeltaInput;
+        const rel = Math.atan2(Math.sin(nextYaw - rigYawNow), Math.cos(nextYaw - rigYawNow));
+        this.targetYaw = rigYawNow + THREE.MathUtils.clamp(rel, -2.55, 2.55);
+      }
     }
 
-    if (this.keyState['ArrowUp'] || (!canSteerBoat && this.keyState['KeyW'])) {
+    if (this.keyState['ArrowUp'] || (!canSteerBoat && !this.isSwimming && this.keyState['KeyW'])) {
       this.targetPitch = THREE.MathUtils.clamp(this.targetPitch + lookSpeed, -1.25, 0.85);
     }
-    if (this.keyState['ArrowDown'] || (!canSteerBoat && this.keyState['KeyS'])) {
+    if (this.keyState['ArrowDown'] || (!canSteerBoat && !this.isSwimming && this.keyState['KeyS'])) {
       this.targetPitch = THREE.MathUtils.clamp(this.targetPitch - lookSpeed, -1.25, 0.85);
     }
 
-    // Free-roam boat steering (W/S/A/D when on boat & idle + UI Helm buttons)
+    // Free-roam boat steering (W/S/A/D + left finger wheel when on boat & not swimming)
     let kbForward = 0;
     let kbTurn = 0;
     if (canSteerBoat) {
@@ -2103,8 +2254,8 @@ export class FishingSceneManager {
       if (this.keyState['KeyA']) kbTurn += 1;
       if (this.keyState['KeyD']) kbTurn -= 1;
     }
-    const totalFwd = this.phase === 'idle' ? THREE.MathUtils.clamp(kbForward + this.uiSteerForward, -1, 1) : 0;
-    const totalTurn = this.phase === 'idle' ? THREE.MathUtils.clamp(kbTurn + this.uiSteerTurn, -1, 1) : 0;
+    const totalFwd = !this.isSwimming && this.phase === 'idle' ? THREE.MathUtils.clamp(kbForward + this.uiSteerForward, -1, 1) : 0;
+    const totalTurn = !this.isSwimming && this.phase === 'idle' ? THREE.MathUtils.clamp(kbTurn + this.uiSteerTurn, -1, 1) : 0;
     this.boatSystem.setSteerInput(totalFwd, totalTurn);
 
     const { nightFactor, windSpeedKmh, conditionLabel } = this.updateAtmosphere(dt);
@@ -2124,15 +2275,88 @@ export class FishingSceneManager {
       onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
     });
 
-    // Update Lake Points of Interest (POIs) & Check Boat Exploration Discovery
+    // Update Swimming Locomotion & Camera View
+    if (this.isSwimming) {
+      let kbSwimFwd = 0;
+      let kbSwimStrafe = 0;
+      if (this.keyState['KeyW']) kbSwimFwd += 1;
+      if (this.keyState['KeyS']) kbSwimFwd -= 1;
+      if (this.keyState['KeyD']) kbSwimStrafe += 1;
+      if (this.keyState['KeyA']) kbSwimStrafe -= 1;
+
+      const sFwd = THREE.MathUtils.clamp(kbSwimFwd + this.swimMoveForward, -1, 1);
+      const sStrafe = THREE.MathUtils.clamp(kbSwimStrafe + this.swimMoveStrafe, -1, 1);
+
+      // Gentle smooth heading steer when pushing thumbstick left/right so single-thumb swimming turns gracefully
+      if (Math.abs(this.swimMoveStrafe) > 0.14) {
+        this.targetYaw -= this.swimMoveStrafe * dt * 0.82;
+      }
+
+      const lookFwdX = -Math.sin(this.currentYaw);
+      const lookFwdZ = -Math.cos(this.currentYaw);
+      const lookRightX = Math.cos(this.currentYaw);
+      const lookRightZ = -Math.sin(this.currentYaw);
+
+      let wishX = lookFwdX * sFwd + lookRightX * sStrafe * 0.85;
+      let wishZ = lookFwdZ * sFwd + lookRightZ * sStrafe * 0.85;
+      const wishLen = Math.hypot(wishX, wishZ);
+      if (wishLen > 1) {
+        wishX /= wishLen;
+        wishZ /= wishLen;
+      }
+      const swimMaxSpeed = 3.85;
+      this.swimVel.x = THREE.MathUtils.damp(this.swimVel.x, wishX * swimMaxSpeed, 4.5, dt);
+      this.swimVel.y = THREE.MathUtils.damp(this.swimVel.y, wishZ * swimMaxSpeed, 4.5, dt);
+
+      const nextX = this.swimPos.x + this.swimVel.x * dt;
+      const nextZ = this.swimPos.z + this.swimVel.y * dt;
+
+      const isSwimmable = (px: number, pz: number): boolean => {
+        if (Math.abs(px) < 1.55 && pz > -0.75 && pz < 7.3) return false; // Wooden pier pilings & deck
+        if (Math.hypot(px + 18.5, pz + 3.5) < 1.8) return false; // Abu Ali platform
+        if (Math.hypot(px - 19.0, pz + 4.2) < 1.8) return false; // Rami platform
+        if (Math.hypot(px - this._boatWorldPos.x, pz - this._boatWorldPos.z) < 1.55) return false; // Boat hull
+        return groundHeightAt(px, pz) < -0.28;
+      };
+
+      if (isSwimmable(nextX, nextZ)) {
+        this.swimPos.x = nextX;
+        this.swimPos.z = nextZ;
+      } else if (isSwimmable(nextX, this.swimPos.z)) {
+        this.swimPos.x = nextX;
+        this.swimVel.y *= 0.2;
+      } else if (isSwimmable(this.swimPos.x, nextZ)) {
+        this.swimPos.z = nextZ;
+        this.swimVel.x *= 0.2;
+      } else {
+        this.swimVel.multiplyScalar(0.35);
+      }
+
+      const swimSpeed = this.swimVel.length();
+      this.swimBobPhase += dt * (2.3 + swimSpeed * 1.4);
+      this.swimRippleTimer -= dt * (0.45 + swimSpeed * 0.85);
+      if (this.swimRippleTimer <= 0) {
+        this.swimRippleTimer = swimSpeed > 0.6 ? 0.34 : 0.9;
+        this.water.addRipple(this.swimPos.x, this.swimPos.z, 0.26 + Math.min(0.65, swimSpeed * 0.16));
+      }
+      if (swimSpeed > 1.7) {
+        this.swimSplashTimer -= dt;
+        if (this.swimSplashTimer <= 0) {
+          this.swimSplashTimer = 0.52;
+          this.water.spawnSplash(this.swimPos.x + lookFwdX * 0.5, this.swimPos.z + lookFwdZ * 0.5, 0.36);
+        }
+      }
+    }
+
+    // Update Lake Points of Interest (POIs) & Check Boat / Swimming Exploration Discovery
     this.boatSystem.getBoatPosition(this._boatWorldPos);
     const poiResult = this.poiSystem.update({
       dt,
       elapsed: this.elapsed,
       nightFactor,
       coldSnowFactor: this.coldIntensity,
-      boatPos: this._boatWorldPos,
-      isOnBoat: this.boatSystem.isOnBoat(),
+      boatPos: this.isSwimming ? this.swimPos : this._boatWorldPos,
+      isOnBoat: this.boatSystem.isOnBoat() || this.isSwimming,
       onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
     });
 
@@ -2147,7 +2371,8 @@ export class FishingSceneManager {
         saveDiscoveredPois(this.discoveredPois);
         this.applyXpGain(def.xpReward);
         this.sound.playDiscoveryChime();
-        this.water.spawnSplash(this._boatWorldPos.x, this._boatWorldPos.z, 1.3);
+        const fxPos = this.isSwimming ? this.swimPos : this._boatWorldPos;
+        this.water.spawnSplash(fxPos.x, fxPos.z, 1.3);
         this.poiDiscoveredNotice = {
           id: def.id,
           titleAr: def.nameAr,
@@ -2188,9 +2413,11 @@ export class FishingSceneManager {
     const isOnBoatNow = this.boatSystem.isOnBoat();
     const rigYaw = isOnBoatNow ? this.boatSystem.getBoatYaw() : 0;
     if (isOnBoatNow) {
-      const yawDelta = Math.atan2(Math.sin(rigYaw - this.prevBoatYaw), Math.cos(rigYaw - this.prevBoatYaw));
-      this.targetYaw += yawDelta;
-      this.currentYaw += yawDelta;
+      if (!this.isSwimming) {
+        const yawDelta = Math.atan2(Math.sin(rigYaw - this.prevBoatYaw), Math.cos(rigYaw - this.prevBoatYaw));
+        this.targetYaw += yawDelta;
+        this.currentYaw += yawDelta;
+      }
       this.boatSystem.getPlayerRigOffset(this._playerAnchorOffset);
     } else {
       this._playerAnchorOffset.set(0, 0, 0);
@@ -2200,16 +2427,22 @@ export class FishingSceneManager {
     const { pitch: boatPitch, roll: boatRoll } = this.boatSystem.getBoatPitchRoll();
     this.dockRig.setPlayerRigTransform(this._playerAnchorOffset, boatPitch, boatRoll, rigYaw);
 
-    // Damped seated camera orientation + tiny natural breathing sway (tracks pier OR boat)
+    // Damped camera orientation + position (Swimming eye-level OR Seated pier/boat)
     this.currentYaw = THREE.MathUtils.damp(this.currentYaw, this.targetYaw, 10, dt);
     this.currentPitch = THREE.MathUtils.damp(this.currentPitch, this.targetPitch, 10, dt);
 
-    const headBob = Math.sin(this.elapsed * 1.45) * 0.005;
-    this._seatedPos.set(
-      this._playerAnchorOffset.x - Math.sin(rigYaw) * 0.02,
-      1.76 + headBob + this._playerAnchorOffset.y,
-      2.30 + this._playerAnchorOffset.z - Math.cos(rigYaw) * 0.02,
-    );
+    if (this.isSwimming) {
+      const swimSurfY = this.water.getSurfaceHeightAt(this.swimPos.x, this.swimPos.z);
+      const strokeBob = Math.sin(this.swimBobPhase) * (0.025 + Math.min(0.035, this.swimVel.length() * 0.01));
+      this._seatedPos.set(this.swimPos.x, swimSurfY + 0.36 + strokeBob, this.swimPos.z);
+    } else {
+      const headBob = Math.sin(this.elapsed * 1.45) * 0.005;
+      this._seatedPos.set(
+        this._playerAnchorOffset.x - Math.sin(rigYaw) * 0.02,
+        1.76 + headBob + this._playerAnchorOffset.y,
+        2.30 + this._playerAnchorOffset.z - Math.cos(rigYaw) * 0.02,
+      );
+    }
     this._camLookDir.set(
       -Math.sin(this.currentYaw) * Math.cos(this.currentPitch),
       Math.sin(this.currentPitch),
@@ -2589,11 +2822,14 @@ export class FishingSceneManager {
       hookedFishDistToDock: hookedDist,
       playerReeling: this.reelHeld,
       rivalFishTargets: rivalTargets,
+      wildFishes: this.fishSystem.fishes,
+      boatPos: this._boatWorldPos,
       getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
       onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
       onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
       onCrocSnap: () => this.sound.playCrocSnap(),
       onFrogCroak: (pan) => this.sound.playFrogCroak(pan),
+      onWildFishScatter: (wx, wz) => this.fishSystem.spookNear(wx, wz, 5.2),
     });
 
     for (const rIdx of crocResult.devouredRivalIndices) {
@@ -2812,8 +3048,16 @@ export class FishingSceneManager {
         : null;
 
     this.getPlayerLandingAnchor(this._landingPoint);
-    const playerDepthX = this.boatSystem.isOnBoat() ? this._boatWorldPos.x : 0;
-    const playerDepthZ = this.boatSystem.isOnBoat() ? this._boatWorldPos.z : 2.3;
+    const playerDepthX = this.isSwimming
+      ? this.swimPos.x
+      : this.boatSystem.isOnBoat()
+        ? this._boatWorldPos.x
+        : 0;
+    const playerDepthZ = this.isSwimming
+      ? this.swimPos.z
+      : this.boatSystem.isOnBoat()
+        ? this._boatWorldPos.z
+        : 2.3;
     const waterDepthUnderPlayer = Math.max(0.5, Number((-groundHeightAt(playerDepthX, playerDepthZ)).toFixed(1)));
 
     const poisHud: PoiHudItem[] = this.poiSystem.getPoiInfos().map((info) => {
@@ -2893,6 +3137,7 @@ export class FishingSceneManager {
       currentLocationId: this.boatSystem.getCurrentLocationId(),
       isOnBoat: this.boatSystem.isOnBoat(),
       isSailing: this.boatSystem.isSailing(),
+      isSwimming: this.isSwimming,
       waterDepthUnderPlayer,
       pois: poisHud,
       poiDiscoveredNotice: this.poiDiscoveredNotice,

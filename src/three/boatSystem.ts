@@ -361,7 +361,7 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
   // Helm Bench (at z = +0.69, top surface y = 0.24) + Front Casting Thwart (z = -0.82)
   const benchGeo = new THREE.BoxGeometry(1.16, 0.06, 0.38);
   const benchPadGeo = new THREE.BoxGeometry(1.06, 0.045, 0.32);
-  const frontThwartGeo = new THREE.BoxGeometry(1.04, 0.055, 0.26);
+  const frontThwartGeo = new THREE.BoxGeometry(1.04, 0.055, 0.38);
   disposables.push(benchGeo, benchPadGeo, frontThwartGeo);
 
   const sternBench = new THREE.Mesh(benchGeo, trimMat);
@@ -376,7 +376,7 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
   sternCushion.visible = false; // Unlocked at Tier 3+
 
   const frontThwart = new THREE.Mesh(frontThwartGeo, trimMat);
-  frontThwart.position.set(0, 0.20, -0.88);
+  frontThwart.position.set(0, 0.20, -0.90);
   frontThwart.castShadow = true;
   frontThwart.receiveShadow = true;
   boatRoot.add(sternBench, sternCushion, frontThwart);
