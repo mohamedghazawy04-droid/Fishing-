@@ -415,6 +415,15 @@ export function createFishSystem(): FishSystem {
   const tmpToTarget = new THREE.Vector3();
   const tmpDesired = new THREE.Vector3();
 
+
+  // Positions the fish so its MOUTH (not its centre) sits on the hook
+  const mouthTarget = (fish: ActiveFish, lure: THREE.Vector3): void => {
+    const dx = lure.x - fish.position.x;
+    const dz = lure.z - fish.position.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const off = fish.lengthScale * 0.5;
+    fish.targetPos.set(lure.x - (dx / d) * off, Math.min(lure.y - 0.02, -0.4), lure.z - (dz / d) * off);
+  };
   function pickPatrolPoint(fish: ActiveFish): void {
     const zone = fish.species.preferredZones[Math.floor(Math.random() * fish.species.preferredZones.length)];
     const center = getZoneTargetCenter(zone);
@@ -573,8 +582,14 @@ export function createFishSystem(): FishSystem {
           continue;
         }
 
-        // Hidden beneath water surface until hooked & surfaced as a surprise!
-        fish.mesh.visible = false;
+        // Fish stay unseen while patrolling, but become visible underwater when they come to inspect,
+        // nibble or bite the bait, so the player can watch them grab the hook.
+        const nearLure =
+          lureInWater &&
+          lurePos !== null &&
+          (fish.aiState === 'curious' || fish.aiState === 'nibbling' || fish.aiState === 'biting') &&
+          fish.position.distanceTo(lurePos) < 4.5;
+        fish.mesh.visible = nearLure;
 
         if (!lureInWater && (fish.aiState === 'curious' || fish.aiState === 'nibbling' || fish.aiState === 'biting')) {
           fish.aiState = 'patrol';
@@ -624,10 +639,10 @@ export function createFishSystem(): FishSystem {
           }
         } else if (fish.aiState === 'curious' && lurePos) {
           maxSpeed *= 1.15;
-          fish.targetPos.copy(lurePos);
+          mouthTarget(fish, lurePos);
           fish.stateTimer -= dt;
           const dist = fish.position.distanceTo(lurePos);
-          if (dist < 0.65) {
+          if (dist < 0.65 + fish.lengthScale * 0.5) {
             fish.aiState = 'nibbling';
             fish.stateTimer = 0.65 + Math.random() * 0.55;
             onNibble(lurePos.x, lurePos.z);
@@ -637,7 +652,7 @@ export function createFishSystem(): FishSystem {
           }
         } else if (fish.aiState === 'nibbling' && lurePos) {
           maxSpeed = 0.26;
-          fish.targetPos.copy(lurePos);
+          mouthTarget(fish, lurePos);
           fish.stateTimer -= dt;
           if (fish.stateTimer <= 0) {
             fish.nibbleCount++;
@@ -668,7 +683,7 @@ export function createFishSystem(): FishSystem {
           }
         } else if (fish.aiState === 'biting' && lurePos) {
           maxSpeed = 0.35;
-          fish.targetPos.set(lurePos.x, lurePos.y - 0.15, lurePos.z);
+          mouthTarget(fish, lurePos);
           fish.stateTimer -= dt;
           if (fish.stateTimer <= 0) {
             fish.aiState = 'spooked';
@@ -704,8 +719,14 @@ export function createFishSystem(): FishSystem {
         fish.mesh.rotation.order = 'YXZ';
         const speed = fish.velocity.length();
         let yawRate = 0;
-        if (speed > 0.05) {
-          const targetHeading = Math.atan2(fish.velocity.x, fish.velocity.z);
+        const inspecting =
+          lurePos !== null &&
+          (fish.aiState === 'curious' || fish.aiState === 'nibbling' || fish.aiState === 'biting');
+        if (speed > 0.05 || inspecting) {
+          const targetHeading =
+            inspecting && lurePos
+              ? Math.atan2(lurePos.x - fish.position.x, lurePos.z - fish.position.z)
+              : Math.atan2(fish.velocity.x, fish.velocity.z);
           let diff = targetHeading - fish.heading;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
@@ -714,7 +735,9 @@ export function createFishSystem(): FishSystem {
           const step = THREE.MathUtils.clamp(diff * Math.min(1, dt * 3.0), -maxStep, maxStep);
           fish.heading += step;
           yawRate = dt > 0 ? step / dt : 0;
-          const pitchTarget = THREE.MathUtils.clamp(-fish.velocity.y * 0.5, -0.3, 0.3);
+          let pitchTarget = THREE.MathUtils.clamp(-fish.velocity.y * 0.5, -0.3, 0.3);
+          if (fish.aiState === 'nibbling') pitchTarget += 0.18 + Math.sin(elapsed * 17 + fish.id) * 0.12; // head-down pecking at the bait
+          if (fish.aiState === 'biting') pitchTarget += 0.1 + Math.sin(elapsed * 9 + fish.id) * 0.08;
           fish.mesh.rotation.x = THREE.MathUtils.lerp(fish.mesh.rotation.x, pitchTarget, Math.min(1, dt * 3));
         }
         const bankTarget = THREE.MathUtils.clamp(-yawRate * 0.2, -0.38, 0.38);

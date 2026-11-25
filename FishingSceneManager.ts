@@ -28,6 +28,7 @@ import { createDockAndRig } from './dockAndRig';
 import { createEnvironment, groundHeightAt } from './environment';
 import { createFishSystem, type ActiveFish } from './fishSystem';
 import { applyCatchToQuests, buildQuestViews, loadQuestSave, saveQuestSave, type QuestSave } from '../game/quests';
+import { createBaskets } from './baskets';
 import { createWildlife } from './wildlife';
 import { createPostFx, loadSavedQuality, saveQuality, type GraphicsQuality, type PostFx } from './postFx';
 import { createProceduralTextures } from './textures';
@@ -99,6 +100,7 @@ export class FishingSceneManager {
   private environment: ReturnType<typeof createEnvironment>;
   private water: ReturnType<typeof createCrystalWater>;
   private wildlife: ReturnType<typeof createWildlife>;
+  private baskets: ReturnType<typeof createBaskets>;
   private fishSystem: ReturnType<typeof createFishSystem>;
   private dockRig: ReturnType<typeof createDockAndRig>;
   private sound = new NatureSoundEngine();
@@ -191,6 +193,7 @@ export class FishingSceneManager {
   private newlyUnlockedNotice: string | null = null;
   private unlockNoticeTimer = 0;
   private progression: PlayerProgression;
+  private hookNearDock = false;
   private postFx: PostFx | null = null;
   private graphicsQuality: GraphicsQuality = loadSavedQuality();
   private questSave: QuestSave = loadQuestSave();
@@ -304,6 +307,10 @@ export class FishingSceneManager {
 
     this.scene.add(this.environment.group);
     this.scene.add(this.dockRig.group);
+
+    // Wicker baskets on the pier where kept fish are placed (common left, rare & legendary right)
+    this.baskets = createBaskets(0.72);
+    this.scene.add(this.baskets.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
 
@@ -751,6 +758,18 @@ export class FishingSceneManager {
     this.catchHistory = [record, ...this.catchHistory];
     this.activeCatch = null;
     this.applyQuestProgress(record);
+    if (this.hookedFish && !releaseFish) {
+      this.baskets.addFish(
+        this.hookedFish.mesh,
+        this.hookedFish.bodyMat,
+        this.hookedFish.lengthScale,
+        record.species.rarity,
+        this.hookedFish.mesh.position.clone(),
+      );
+      this.sound.playSplash(0.3);
+      this.statusMessage = `وُضعت ${record.species.nameAr} في السلة`;
+    }
+    this.hookNearDock = false;
     if (this.hookedFish) {
       this.hookedFish.mesh.scale.setScalar(this.hookedFish.lengthScale);
       this.hookedFish.mesh.rotation.set(0, this.hookedFish.heading, 0);
@@ -814,6 +833,7 @@ export class FishingSceneManager {
   }
 
   private resetToIdle(message: string): void {
+    this.hookNearDock = false;
     this.phase = 'idle';
     this.castPower = 0;
     this.lineTension = 0;
@@ -1341,11 +1361,13 @@ export class FishingSceneManager {
         this.lineTension = Math.max(0.12, this.lineTension - dt * 0.55);
       }
 
-      // Keep fish hidden underwater until reeled close to the dock for a surprise reveal
-      const wasRevealed = f.mesh.visible;
+      // Fish stay underwater (and visible) until reeled close to the dock
+      // The hooked fish is now visible underwater the whole fight; it only breaks the surface near the dock
+      const wasNear = this.hookNearDock;
       const shouldReveal = distToDock <= 7.0;
-      f.mesh.visible = shouldReveal;
-      if (shouldReveal && !wasRevealed) {
+      this.hookNearDock = shouldReveal;
+      f.mesh.visible = true;
+      if (shouldReveal && !wasNear) {
         this.sound.playSplash(1.0);
         this.water.spawnSplash(f.position.x, f.position.z, 1.35);
       }
@@ -1495,6 +1517,7 @@ export class FishingSceneManager {
       this.emitHudState(false, windSpeedKmh, conditionLabel);
     }
 
+    this.baskets.update(dt, this.elapsed);
     this.wildlife.update(dt, this.elapsed, nightFactor, this.weather);
 
     if (this.postFx) {
@@ -1616,6 +1639,7 @@ export class FishingSceneManager {
     this.fireflyGeo.dispose();
     this.fireflyMat.dispose();
     this.pmremEnv.dispose();
+    this.baskets.dispose();
     this.wildlife.dispose();
     this.postFx?.dispose();
     this.postFx = null;

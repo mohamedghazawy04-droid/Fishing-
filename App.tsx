@@ -120,6 +120,13 @@ export default function App() {
           onResolveCatch={(rel) => managerRef.current?.resolveActiveCatch(rel)}
         />
       )}
+      <div
+        dir="ltr"
+        className="pointer-events-none select-none fixed top-0.5 left-3 z-30 text-[10px] leading-3 tracking-[0.14em] text-white/40"
+        style={{ textShadow: '0 1px 3px rgba(0,0,0,0.55)' }}
+      >
+        inspired by eman elshemy
+      </div>
     </main>
   );
 }
