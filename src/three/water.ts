@@ -9,6 +9,20 @@ export interface RippleEvent {
   strength: number;
 }
 
+export interface WaterNightReflectionUniforms {
+  nightFactor: number;
+  moonDir: THREE.Vector3;
+  moonColor: THREE.Color;
+  moonSize: number;
+  moonReflBoost: number;
+  starReflStrength: number;
+  auroraStrength: number;
+  auroraColorA: THREE.Color;
+  auroraColorB: THREE.Color;
+  waterDeepNightTint: THREE.Color;
+  cloudCover: number;
+}
+
 export interface CrystalWaterSystem {
   group: THREE.Group;
   waterMesh: THREE.Mesh;
@@ -26,6 +40,7 @@ export interface CrystalWaterSystem {
     windSpeedKmh: number,
     fogColor: THREE.Color,
     fogDensity: number,
+    nightRefl: WaterNightReflectionUniforms,
   ) => void;
   dispose: () => void;
 }
@@ -76,11 +91,23 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
       uWindNorm: { value: 0.2 },
       uWindDir: { value: windDir },
       uSunDir: { value: new THREE.Vector3(0.3, 0.5, -0.8).normalize() },
+      uMoonDir: { value: new THREE.Vector3(-0.22, 0.44, -0.87).normalize() },
+      uMoonColor: { value: new THREE.Color(0xdcecff) },
+      uMoonSize: { value: 1.0 },
+      uMoonReflBoost: { value: 1.15 },
+      uNightFactor: { value: 0.0 },
+      uStarReflStrength: { value: 1.15 },
+      uAuroraStrength: { value: 0.25 },
+      uAuroraColorA: { value: new THREE.Color(0x3ef0b4) },
+      uAuroraColorB: { value: new THREE.Color(0x52a8ff) },
+      uWaterNightTint: { value: new THREE.Color(0x082338) },
+      uCloudCover: { value: 0.25 },
       uSkyTop: { value: new THREE.Color(0x2a66a8) },
       uSkyHorizon: { value: new THREE.Color(0xb8dcf0) },
       uSunColor: { value: new THREE.Color(0xfff1cc) },
       uShallowColor: { value: new THREE.Color(0x2d9c92) },
       uDeepColor: { value: new THREE.Color(0x0b4b5c) },
+      uAbyssColor: { value: new THREE.Color(0x052638) },
       uFogColor: { value: new THREE.Color(0xb8dcf0) },
       uFogDensity: { value: 0.0014 },
       uRipples: { value: rippleArray },
@@ -145,11 +172,23 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
       uniform float uWindNorm;
       uniform vec2 uWindDir;
       uniform vec3 uSunDir;
+      uniform vec3 uMoonDir;
+      uniform vec3 uMoonColor;
+      uniform float uMoonSize;
+      uniform float uMoonReflBoost;
+      uniform float uNightFactor;
+      uniform float uStarReflStrength;
+      uniform float uAuroraStrength;
+      uniform vec3 uAuroraColorA;
+      uniform vec3 uAuroraColorB;
+      uniform vec3 uWaterNightTint;
+      uniform float uCloudCover;
       uniform vec3 uSkyTop;
       uniform vec3 uSkyHorizon;
       uniform vec3 uSunColor;
       uniform vec3 uShallowColor;
       uniform vec3 uDeepColor;
+      uniform vec3 uAbyssColor;
       uniform vec3 uFogColor;
       uniform float uFogDensity;
       uniform vec4 uRipples[${MAX_RIPPLES}];
@@ -157,6 +196,21 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
       varying vec3 vWorldPos;
       varying float vDepth;
       varying float vWaveCrest;
+
+      float wHash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      float wNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(wHash(i), wHash(i + vec2(1.0, 0.0)), u.x),
+          mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), u.x),
+          u.y
+        );
+      }
 
       void main() {
         if (vDepth <= 0.01) discard;
@@ -203,18 +257,95 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
         vec3 R = reflect(-V, N);
         vec3 skyRefl = mix(uSkyHorizon, uSkyTop, clamp(pow(max(R.y, 0.0), 0.6), 0.0, 1.0));
 
-        // Sun / Moon specular sparkle
+        // Night Aurora & Nebula Reflection across waves
+        if (uNightFactor > 0.02 && uAuroraStrength > 0.01 && R.y > 0.01) {
+          vec2 arUv = R.xz / (max(R.y, 0.05) + 0.34);
+          float wA = sin(arUv.x * 2.4 + t * 0.14 + sin(arUv.y * 1.8 - t * 0.08) * 1.4);
+          float curtain = smoothstep(0.15, 0.92, wA * 0.5 + 0.5);
+          float streak = wNoise(vec2(arUv.x * 3.1 + t * 0.04, arUv.y * 1.2 - t * 0.06));
+          float bandEnv = smoothstep(0.02, 0.24, R.y) * smoothstep(0.92, 0.20, R.y);
+          float arMask = curtain * smoothstep(0.32, 0.78, streak) * bandEnv * uAuroraStrength * uNightFactor * (1.0 - uCloudCover * 0.72);
+          vec3 arCol = mix(uAuroraColorA, uAuroraColorB, smoothstep(0.14, 0.55, R.y));
+          skyRefl += arCol * arMask * 0.85;
+        }
+
+        // Daytime Sun specular sparkle (fades naturally below horizon at night)
         vec3 L = normalize(uSunDir);
         vec3 H = normalize(L + V);
-        float spec = pow(max(dot(N, H), 0.0), mix(180.0, 95.0, uWindNorm)) * (1.25 + uWindNorm * 0.55);
+        float daySpecMask = smoothstep(-0.08, 0.14, uSunDir.y);
+        float sunSpec = pow(max(dot(N, H), 0.0), mix(180.0, 95.0, uWindNorm)) * (1.25 + uWindNorm * 0.55) * daySpecMask;
 
-        // Subtle underwater solar caustics shimmer in clear shallow/mid depths
+        // Nighttime Moonlight Glitter Ribbon + Reflected Moon Orb & Corona
+        vec3 moonReflContribution = vec3(0.0);
+        vec3 starReflContribution = vec3(0.0);
+        if (uNightFactor > 0.01) {
+          float clearSkyVis = 1.0 - clamp(uCloudCover * 0.78, 0.0, 0.85);
+          vec3 Lm = normalize(uMoonDir);
+          vec3 Hm = normalize(Lm + V);
+          // Classic dancing moonlight path across wave facets
+          float moonSpecExp = mix(210.0, 58.0, uWindNorm);
+          float moonGlitter = pow(max(dot(N, Hm), 0.0), moonSpecExp) * (1.35 + uWindNorm * 0.75);
+          // Secondary wider satin sheen along the moonbeam trail
+          float moonSheen = pow(max(dot(N, Hm), 0.0), 28.0) * 0.16 * (1.0 + uMoonSize * 0.25);
+
+          // Direct mirror reflection of moon disc & halo when looking along reflection ray R
+          float moonReflDot = max(dot(normalize(R), Lm), 0.0);
+          float discThresh = 0.9968 - clamp(uMoonSize - 1.0, -0.25, 0.5) * 0.0018;
+          float moonDiscRefl = smoothstep(discThresh - 0.0015, discThresh + 0.0008, moonReflDot) * (1.0 - uWindNorm * 0.55);
+          float moonHaloRefl = (pow(moonReflDot, 18.0) * 0.22 + pow(moonReflDot, 85.0) * 0.45);
+
+          moonReflContribution =
+            uMoonColor *
+            (moonGlitter + moonSheen + moonDiscRefl * 0.95 + moonHaloRefl) *
+            uNightFactor *
+            uMoonReflBoost *
+            clearSkyVis *
+            (0.45 + 0.55 * fresnel);
+
+          // Twinkling Starlight Reflections dancing across dark lake ripples
+          if (R.y > 0.015 && uStarReflStrength > 0.05) {
+            float starVis = uNightFactor * clearSkyVis * uStarReflStrength * smoothstep(0.015, 0.18, R.y) * (0.35 + 0.65 * fresnel);
+            vec2 rUv1 = R.xz / (R.y + 0.32) * 86.0;
+            vec2 rCell1 = floor(rUv1);
+            vec2 rGv1 = fract(rUv1) - 0.5;
+            float rRnd1 = wHash(rCell1);
+            float starCutoff1 = mix(0.962, 0.918, clamp((uStarReflStrength - 0.7) * 0.85, 0.0, 1.0));
+            if (rRnd1 > starCutoff1) {
+              // Stretch slightly along wave slope for authentic liquid shimmer
+              vec2 stretchedGv = vec2(rGv1.x * (1.0 + uWindNorm * 0.6), rGv1.y * 0.78);
+              float dS = length(stretchedGv);
+              float twink = 0.52 + 0.48 * sin(t * (2.6 + fract(rRnd1 * 19.0) * 3.0) + rRnd1 * 50.0 + N.x * 12.0);
+              float starSpark = smoothstep(0.26, 0.02, dS) * twink;
+              vec3 sCol = mix(vec3(0.84, 0.92, 1.0), uMoonColor, 0.28);
+              starReflContribution += sCol * starSpark * starVis * 0.95;
+            }
+
+            // Fine shimmering micro-star glints
+            vec2 rUv2 = R.xz / (R.y + 0.26) * 142.0 + vec2(9.2, 4.8);
+            vec2 rCell2 = floor(rUv2);
+            vec2 rGv2 = fract(rUv2) - 0.5;
+            float rRnd2 = wHash(rCell2);
+            float starCutoff2 = mix(0.968, 0.928, clamp((uStarReflStrength - 0.8) * 0.8, 0.0, 1.0));
+            if (rRnd2 > starCutoff2) {
+              float dS2 = length(rGv2);
+              float twink2 = 0.45 + 0.55 * cos(t * 3.6 + rRnd2 * 70.0 - N.z * 14.0);
+              float starSpark2 = smoothstep(0.22, 0.02, dS2) * twink2;
+              starReflContribution += mix(vec3(0.88, 0.95, 1.0), uAuroraColorB, 0.25) * starSpark2 * starVis * 0.62;
+            }
+          }
+        }
+
+        // Subtle underwater solar caustics shimmer in shallow/mid depths
         float causticPattern = sin(p.x * 2.6 + ph1 * 0.8) * cos(p.y * 2.4 - ph2 * 0.7);
-        float caustics = smoothstep(0.35, 0.95, causticPattern * 0.5 + 0.5) * (1.0 - smoothstep(0.5, 3.6, vDepth)) * 0.14;
+        float caustics = smoothstep(0.35, 0.95, causticPattern * 0.5 + 0.5) * (1.0 - smoothstep(0.6, 5.8, vDepth)) * 0.14 * daySpecMask;
 
-        // Crystal-clear alpine tint
-        float depthFactor = smoothstep(0.1, 6.2, vDepth);
-        vec3 waterTint = mix(uShallowColor, uDeepColor, depthFactor) + uSunColor * caustics;
+        // Deeper 0..12m alpine water color absorption gradient
+        float depthFactor = smoothstep(0.15, 6.8, vDepth);
+        float abyssFactor = smoothstep(5.2, 11.6, vDepth);
+        vec3 baseWaterTint = mix(uShallowColor, uDeepColor, depthFactor);
+        baseWaterTint = mix(baseWaterTint, uAbyssColor, abyssFactor * 0.88);
+        baseWaterTint = mix(baseWaterTint, uWaterNightTint, uNightFactor * (0.45 + 0.42 * depthFactor));
+        vec3 waterTint = baseWaterTint + uSunColor * caustics;
 
         // Shoreline foam + wind-driven whitecap crest foam when wind speed is strong
         float shoreFoam = smoothstep(0.26, 0.02, vDepth) * (0.24 + uWindNorm * 0.35);
@@ -222,18 +353,21 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
         float whitecapFoam = smoothstep(0.52, 0.92, vWaveCrest * 1.35 * (0.65 + crestNoise * 0.5)) * smoothstep(0.35, 1.0, uWindNorm) * 0.45;
         float totalFoam = clamp(shoreFoam + whitecapFoam, 0.0, 0.85);
 
-        vec3 col = mix(waterTint, skyRefl, clamp(fresnel * 0.88 + 0.1, 0.0, 0.94));
-        col += uSunColor * spec;
-        col += vec3(0.90, 0.97, 0.99) * (rippleHighlight + totalFoam);
+        vec3 col = mix(waterTint, skyRefl, clamp(fresnel * 0.88 + 0.10 + uNightFactor * 0.06, 0.0, 0.95));
+        col += uSunColor * sunSpec;
+        col += moonReflContribution + starReflContribution;
+        vec3 foamTint = mix(vec3(0.90, 0.97, 0.99), uMoonColor * 0.72 + vec3(0.18), uNightFactor * 0.75);
+        col += foamTint * (rippleHighlight + totalFoam);
 
         // Exponential distance fog matching scene.fog
         float viewDist = length(cameraPosition - vWorldPos);
         float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * viewDist * viewDist);
         col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
 
-        // Crystal clarity in calm winds, richer surface opacity in choppy/foamy winds
-        float alpha = mix(0.14 + depthFactor * 0.24, 0.82, fresnel);
-        alpha = clamp(alpha + totalFoam * 0.48 + rippleHighlight * 0.28, 0.10, 0.94);
+        // Crystal clarity in shallows, richer deep-water absorption over 7-12m abyss
+        float baseAlpha = 0.14 + depthFactor * 0.24 + abyssFactor * 0.22;
+        float alpha = mix(baseAlpha, 0.86, fresnel);
+        alpha = clamp(alpha + totalFoam * 0.48 + rippleHighlight * 0.28 + length(moonReflContribution) * 0.12, 0.10, 0.96);
 
         gl_FragColor = vec4(col, alpha);
       }
@@ -337,7 +471,7 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
     const wx = Math.sin(i * 12.7) * 46;
     const wz = Math.cos(i * 7.9) * 38 - 28;
     const gy = groundHeightAt(wx, wz);
-    if (gy > -0.45 || gy < -2.9) continue;
+    if (gy > -0.45 || gy < -5.2) continue;
 
     const s = 0.6 + ((i * 37) % 10) * 0.08;
     dummy.position.set(wx, gy - 0.05, wz);
@@ -393,7 +527,7 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
 
       return (swell * smoothWaveAmp + rippleLift) * shoreDamp;
     },
-    update: (dt, elapsed, sunDir, skyTop, skyHorizon, sunColor, weather, windSpeedKmh, fogColor, fogDensity) => {
+    update: (dt, elapsed, sunDir, skyTop, skyHorizon, sunColor, weather, windSpeedKmh, fogColor, fogDensity, nightRefl) => {
       currentTime = elapsed;
 
       // Map Wind Speed (0..45 km/h) directly to wave amplitude, speed & whitecap chop
@@ -438,6 +572,17 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
       waterMaterial.uniforms.uWaveAmp.value = smoothWaveAmp;
       waterMaterial.uniforms.uWindNorm.value = smoothWindNorm;
       waterMaterial.uniforms.uSunDir.value.copy(sunDir);
+      waterMaterial.uniforms.uMoonDir.value.copy(nightRefl.moonDir);
+      waterMaterial.uniforms.uMoonColor.value.copy(nightRefl.moonColor);
+      waterMaterial.uniforms.uMoonSize.value = nightRefl.moonSize;
+      waterMaterial.uniforms.uMoonReflBoost.value = nightRefl.moonReflBoost;
+      waterMaterial.uniforms.uNightFactor.value = nightRefl.nightFactor;
+      waterMaterial.uniforms.uStarReflStrength.value = nightRefl.starReflStrength;
+      waterMaterial.uniforms.uAuroraStrength.value = nightRefl.auroraStrength;
+      waterMaterial.uniforms.uAuroraColorA.value.copy(nightRefl.auroraColorA);
+      waterMaterial.uniforms.uAuroraColorB.value.copy(nightRefl.auroraColorB);
+      waterMaterial.uniforms.uWaterNightTint.value.copy(nightRefl.waterDeepNightTint);
+      waterMaterial.uniforms.uCloudCover.value = nightRefl.cloudCover;
       waterMaterial.uniforms.uSkyTop.value.copy(skyTop);
       waterMaterial.uniforms.uSkyHorizon.value.copy(skyHorizon);
       waterMaterial.uniforms.uSunColor.value.copy(sunColor);

@@ -29,6 +29,7 @@ import {
   Sailboat,
   Play,
   Pause,
+  Moon,
 } from 'lucide-react';
 import {
   BAIT_CATALOG,
@@ -38,6 +39,7 @@ import {
   LAKE_ANCHOR_SPOTS,
   LAKE_ZONE_LABELS,
   LIVE_RADIO_STATIONS,
+  NIGHT_REFLECTION_MOODS,
   SEASON_CATALOG,
   SKILL_CATALOG,
   TIME_PRESETS,
@@ -52,6 +54,7 @@ import {
   type HookId,
   type LakeSpotId,
   type LiveRadioStation,
+  type NightReflectionMoodId,
   type PoiId,
   type SeasonId,
   type SkillKey,
@@ -134,6 +137,7 @@ interface FishingHUDProps {
   onSelectTimePreset: (id: TimePresetId, hour: number) => void;
   onSetTimeHour: (hour: number) => void;
   onToggleAutoTime: (enabled: boolean) => void;
+  onSelectNightMood: (mood: NightReflectionMoodId) => void;
   onSelectWeather: (w: WeatherType) => void;
   onToggleAutoWeather: (enabled: boolean) => void;
   onSetWindSpeed: (kmh: number) => void;
@@ -151,6 +155,8 @@ interface FishingHUDProps {
   onBoatSteer: (forward: number, turn: number) => void;
   onSailToPoi: (poiId: PoiId) => void;
   onLookAtPoi: (poiId: PoiId) => void;
+  onCancelRivalCutaway: () => void;
+  onCancelPlayerCutaway: () => void;
   onResolveCatch: (release: boolean) => void;
 }
 
@@ -173,6 +179,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   onSelectTimePreset,
   onSetTimeHour,
   onToggleAutoTime,
+  onSelectNightMood,
   onSelectWeather,
   onToggleAutoWeather,
   onSetWindSpeed,
@@ -190,6 +197,8 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   onBoatSteer,
   onSailToPoi,
   onLookAtPoi,
+  onCancelRivalCutaway,
+  onCancelPlayerCutaway,
   onResolveCatch,
 }) => {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -247,6 +256,12 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
       audioRef.current.volume = radioVolume;
     }
   }, [radioVolume]);
+
+  useEffect(() => {
+    if (!radioError) return;
+    const t = window.setTimeout(() => setRadioError(null), 3000);
+    return () => window.clearTimeout(t);
+  }, [radioError]);
 
   useEffect(() => {
     const audioEl = audioRef.current;
@@ -519,95 +534,131 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         </div>
       </div>
 
-      {/* Active Fishing & Exploration Feedback ONLY (No clutter when idle) */}
-      <div className="pointer-events-none flex flex-col items-center justify-center gap-2.5 px-4">
+      {/* Compact Top Notifications Stack (small, top-anchored, auto-disappears in 3s) */}
+      <div className="fixed top-14 left-1/2 -translate-x-1/2 z-30 pointer-events-none flex flex-col items-center gap-1 w-auto max-w-[92vw]">
         {hud.poiDiscoveredNotice && (
-          <div className="max-w-md w-full bg-[#12221a]/95 border border-amber-400/60 rounded-xl px-4 py-3 shadow-2xl text-right">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <div className="flex items-center gap-2 text-amber-200 font-bold text-sm">
-                <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
-                <span>اكتشاف معلم جديد!</span>
-              </div>
-              <span className="font-mono-nums text-xs font-semibold text-emerald-300">
+          <div className="max-w-xs sm:max-w-sm bg-[#12221a]/92 border border-amber-400/55 rounded-lg px-3 py-1.5 shadow-lg text-right">
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="flex items-center gap-1 text-amber-200 font-bold truncate">
+                <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
+                {hud.poiDiscoveredNotice.titleAr}
+              </span>
+              <span className="font-mono-nums text-[10px] font-semibold text-emerald-300 shrink-0">
                 +{hud.poiDiscoveredNotice.xpReward} XP
               </span>
             </div>
-            <div className="font-display font-bold text-stone-50 text-sm mb-0.5">
-              {hud.poiDiscoveredNotice.titleAr}
-            </div>
-            <p className="text-xs text-stone-200 leading-relaxed">{hud.poiDiscoveredNotice.storyAr}</p>
+            <p className="text-[10px] text-stone-200 leading-snug line-clamp-2 mt-0.5">
+              {hud.poiDiscoveredNotice.storyAr}
+            </p>
           </div>
         )}
 
         {hud.isOnBoat && hud.nearbyPoiName && !hud.poiDiscoveredNotice && (
-          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-[#0d1d24]/90 border border-amber-400/40 text-amber-100 text-xs shadow-lg">
-            <Compass className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-            <span>معلم قريب: {hud.nearbyPoiName} — اقترب بالقارب لاكتشافه</span>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d24]/88 border border-amber-400/35 text-amber-100 text-[11px] shadow-md">
+            <Compass className="w-3 h-3 text-amber-300 shrink-0" />
+            <span>معلم قريب: {hud.nearbyPoiName}</span>
           </div>
         )}
 
         {hud.isSailing && (
-          <div className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-[#0d1d26]/92 border border-sky-400/45 text-sky-100 text-xs font-medium shadow-lg">
-            <Waves className="w-3.5 h-3.5 text-sky-300 shrink-0" />
-            <span>جاري الإبحار بالقارب نحو الموقع المختار... العمق الحالي {hud.waterDepthUnderPlayer}م</span>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d26]/90 border border-sky-400/40 text-sky-100 text-[11px] font-medium shadow-md">
+            <Waves className="w-3 h-3 text-sky-300 shrink-0" />
+            <span>جاري الإبحار... العمق {hud.waterDepthUnderPlayer}م</span>
           </div>
         )}
 
-        {hud.cinematicActive && (
-          <div className="pointer-events-auto flex items-center gap-3 px-4 py-1.5 rounded-lg bg-[#0d171c]/88 border border-emerald-400/35 text-stone-100 text-xs shadow-lg">
-            <Film className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
-            <span>وضع اللقطة السينمائية — حرّك الشاشة أو اضغط للعودة</span>
+        {hud.playerBasketCutawayActive && (
+          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#101c16]/90 border border-emerald-400/45 text-stone-100 text-[11px] shadow-md">
+            <Film className="w-3 h-3 text-emerald-300 shrink-0" />
+            <span>
+              وضع الصيد في السبت
+              {hud.playerBasketCutawaySpeciesName ? `: ${hud.playerBasketCutawaySpeciesName}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={onCancelPlayerCutaway}
+              className="px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-semibold transition-colors shrink-0"
+            >
+              عودة للصيد
+            </button>
+          </div>
+        )}
+
+        {hud.rivalCutawayActive && !hud.playerBasketCutawayActive && (
+          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#18120c]/90 border border-amber-400/45 text-stone-100 text-[11px] shadow-md">
+            <Film className="w-3 h-3 text-amber-300 shrink-0" />
+            <span>
+              أبو علي يضع صيداً في السبت
+              {hud.rivalCutawaySpeciesName ? `: ${hud.rivalCutawaySpeciesName}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={onCancelRivalCutaway}
+              className="px-1.5 py-0.5 rounded bg-amber-500/85 hover:bg-amber-400 text-stone-950 text-[10px] font-semibold transition-colors shrink-0"
+            >
+              عودة للصيد
+            </button>
+          </div>
+        )}
+
+        {hud.cinematicActive && !hud.playerBasketCutawayActive && !hud.rivalCutawayActive && (
+          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#0d171c]/88 border border-emerald-400/35 text-stone-100 text-[11px] shadow-md">
+            <Film className="w-3 h-3 text-emerald-300 shrink-0" />
+            <span>وضع اللقطة السينمائية</span>
             <button
               type="button"
               onClick={onToggleCinematic}
-              className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium transition-colors shrink-0"
+              className="px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium transition-colors shrink-0"
             >
-              إنهاء اللقطة
+              إنهاء
             </button>
           </div>
         )}
 
         {hud.challengeCompletedNotice && (
-          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#1d220e]/95 border border-amber-400/50 text-amber-100 text-xs sm:text-sm font-medium shadow-lg">
-            <Target className="w-4 h-4 text-amber-300 shrink-0" />
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1d220e]/92 border border-amber-400/45 text-amber-100 text-[11px] font-medium shadow-md">
+            <Target className="w-3 h-3 text-amber-300 shrink-0" />
             <span>{hud.challengeCompletedNotice}</span>
           </div>
         )}
 
         {hud.newlyUnlockedNotice && (
-          <div className="px-4 py-2 rounded-lg bg-[#112622]/95 border border-emerald-400/40 text-emerald-100 text-xs sm:text-sm font-medium shadow-lg">
+          <div className="px-2.5 py-1 rounded-lg bg-[#112622]/92 border border-emerald-400/40 text-emerald-100 text-[11px] font-medium shadow-md">
             {hud.newlyUnlockedNotice}
           </div>
         )}
 
         {radioError && (!settingsOpen || activeTab !== 'radio') && (
-          <div className="px-4 py-2 rounded-lg bg-[#2b1414]/95 border border-rose-400/40 text-rose-100 text-xs sm:text-sm font-medium shadow-lg">
+          <div className="px-2.5 py-1 rounded-lg bg-[#2b1414]/92 border border-rose-400/40 text-rose-100 text-[11px] font-medium shadow-md">
             {radioError}
           </div>
         )}
 
         {hud.lineSnappedNotice && (
-          <div className="px-4 py-2 rounded-lg bg-[#2b1414]/95 border border-rose-400/40 text-rose-100 text-xs sm:text-sm font-medium shadow-lg">
+          <div className="px-2.5 py-1 rounded-lg bg-[#2b1414]/92 border border-rose-400/40 text-rose-100 text-[11px] font-medium shadow-md">
             {hud.lineSnappedNotice}
           </div>
         )}
 
         {hud.recordBrokenNotice && (
-          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#241d0a]/95 border border-amber-400/60 text-amber-100 text-xs sm:text-sm font-semibold shadow-lg">
-            <Trophy className="w-4 h-4 text-amber-300 shrink-0" />
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#241d0a]/92 border border-amber-400/55 text-amber-100 text-[11px] font-semibold shadow-md">
+            <Trophy className="w-3 h-3 text-amber-300 shrink-0" />
             <span>{hud.recordBrokenNotice}</span>
           </div>
         )}
 
         {hud.rivalNotice && (
-          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#22190f]/95 border border-amber-400/45 text-amber-100 text-xs sm:text-sm font-medium shadow-lg">
-            <Swords className="w-4 h-4 text-amber-300 shrink-0" />
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#22190f]/92 border border-amber-400/45 text-amber-100 text-[11px] font-medium shadow-md">
+            <Swords className="w-3 h-3 text-amber-300 shrink-0" />
             <span>{hud.rivalNotice}</span>
           </div>
         )}
+      </div>
 
+      {/* Active Fishing Feedback (positioned gently toward lower-center so lake view stays open) */}
+      <div className="pointer-events-none flex flex-col items-center justify-end gap-2 px-4 mt-auto mb-2">
         {hud.phase === 'charging' && (
-          <div className="w-60 bg-[#0d171c]/90 border border-white/15 rounded-lg p-2.5 shadow-lg">
+          <div className="w-56 bg-[#0d171c]/90 border border-white/15 rounded-lg p-2.5 shadow-lg">
             <div className="flex items-center justify-between text-xs text-stone-200 mb-1.5">
               <span>قوة الرمي</span>
               <span className="font-mono-nums">{Math.round(hud.castPower * 100)}%</span>
@@ -813,7 +864,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                   onClick={() => onResolveCatch(false)}
                   className="flex-1 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors"
                 >
-                  حفظ في السجل
+                  وضع في السبت والحفظ
                 </button>
                 <button
                   type="button"
@@ -1135,19 +1186,20 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                         <span className="text-emerald-300">{LAKE_ZONE_LABELS[hud.currentCastZone]}</span>
                       )}
                     </div>
-                    <div className="grid grid-cols-2 gap-1.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                       {[
-                        { label: 'سطحي 0.6م', val: 0.6 },
-                        { label: 'متوسط 1.5م', val: 1.5 },
-                        { label: 'عميق 2.6م', val: 2.6 },
-                        { label: 'أعماق 4.4م', val: 4.4 },
+                        { label: 'سطحي 0.7م', val: 0.7 },
+                        { label: 'متوسط 2.2م', val: 2.2 },
+                        { label: 'عميق 4.5م', val: 4.5 },
+                        { label: 'أعماق 7.2م', val: 7.2 },
+                        { label: 'هاوية 9.6م', val: 9.6 },
                       ].map((d) => (
                         <button
                           key={d.val}
                           type="button"
                           onClick={() => onSelectDepth(d.val)}
                           className={`py-2 px-2 rounded-md border text-center transition-colors whitespace-nowrap ${
-                            Math.abs(hud.lineDepthMeters - d.val) < 0.45
+                            Math.abs(hud.lineDepthMeters - d.val) < 0.65
                               ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
                               : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
                           }`}
@@ -1559,133 +1611,189 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                 </div>
               )}
 
-              {/* Tab 4: Dynamic Weather, Seasons & Time of Day */}
+              {/* Tab 4: Dynamic Weather, Seasons, Time of Day & Night Reflections */}
               {activeTab === 'atmosphere' && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                  <div className="space-y-3">
-                    <div>
-                      <div className="text-stone-400 mb-1.5 flex items-center justify-between gap-2">
-                        <span>الموسم</span>
-                        <span className="text-stone-300 truncate">{hud.fishingConditionLabel}</span>
+                <div className="space-y-4 text-xs">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-stone-400 mb-1.5 flex items-center justify-between gap-2">
+                          <span>الموسم</span>
+                          <span className="text-stone-300 truncate">{hud.fishingConditionLabel}</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {SEASON_CATALOG.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => onSelectSeason(s.id)}
+                              title={s.descriptionAr}
+                              className={`py-1.5 px-2 rounded-md border transition-colors whitespace-nowrap ${
+                                hud.season === s.id
+                                  ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
+                                  : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
+                              }`}
+                            >
+                              {s.nameAr}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {SEASON_CATALOG.map((s) => (
+
+                      <div>
+                        <div className="text-stone-400 mb-1 flex items-center justify-between gap-2">
+                          <span>
+                            سرعة الرياح والأمواج ({hud.windSpeedKmh} كم/س ·{' '}
+                            {hud.windSpeedKmh >= 24 ? 'أمواج عالية' : hud.windSpeedKmh >= 10 ? 'متموجة' : 'هادئة'})
+                          </span>
                           <button
-                            key={s.id}
                             type="button"
-                            onClick={() => onSelectSeason(s.id)}
-                            title={s.descriptionAr}
-                            className={`py-1.5 px-2 rounded-md border transition-colors whitespace-nowrap ${
-                              hud.season === s.id
-                                ? 'bg-emerald-600/30 border-emerald-400 text-emerald-100'
+                            onClick={() => onToggleAutoWind(!hud.autoWind)}
+                            className={`text-[11px] underline shrink-0 ${
+                              hud.autoWind ? 'text-emerald-300' : 'text-stone-400'
+                            }`}
+                          >
+                            {hud.autoWind ? 'تلقائية' : 'يدوية'}
+                          </button>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={45}
+                          step={1}
+                          value={hud.windSpeedKmh}
+                          onChange={(e) => onSetWindSpeed(parseInt(e.target.value, 10))}
+                          aria-label="سرعة الرياح"
+                          className="w-full accent-sky-400 cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-stone-400 mb-1.5 flex items-center justify-between">
+                        <span>حالة الطقس</span>
+                        <button
+                          type="button"
+                          onClick={() => onToggleAutoWeather(!hud.autoWeather)}
+                          className={`text-[11px] underline ${
+                            hud.autoWeather ? 'text-emerald-300' : 'text-stone-400'
+                          }`}
+                        >
+                          {hud.autoWeather ? 'تغير تلقائي: مفعّل' : 'تغير تلقائي: متوقف'}
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {WEATHER_OPTIONS.map((w) => (
+                          <button
+                            key={w.id}
+                            type="button"
+                            onClick={() => onSelectWeather(w.id)}
+                            className={`px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
+                              hud.weather === w.id
+                                ? 'bg-sky-600/30 border-sky-400 text-sky-100'
                                 : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
                             }`}
                           >
-                            {s.nameAr}
+                            {w.label}
                           </button>
                         ))}
                       </div>
                     </div>
 
                     <div>
-                      <div className="text-stone-400 mb-1 flex items-center justify-between gap-2">
-                        <span>
-                          سرعة الرياح والأمواج ({hud.windSpeedKmh} كم/س ·{' '}
-                          {hud.windSpeedKmh >= 24 ? 'أمواج عالية' : hud.windSpeedKmh >= 10 ? 'متموجة' : 'هادئة'})
-                        </span>
+                      <div className="text-stone-400 mb-1.5 flex items-center justify-between">
+                        <span>الوقت ({formatHourToClock(hud.timeOfDay)})</span>
                         <button
                           type="button"
-                          onClick={() => onToggleAutoWind(!hud.autoWind)}
-                          className={`text-[11px] underline shrink-0 ${
-                            hud.autoWind ? 'text-emerald-300' : 'text-stone-400'
+                          onClick={() => onToggleAutoTime(!hud.autoTimeCycle)}
+                          className={`text-[11px] underline ${
+                            hud.autoTimeCycle ? 'text-emerald-300' : 'text-stone-400'
                           }`}
                         >
-                          {hud.autoWind ? 'تلقائية' : 'يدوية'}
+                          {hud.autoTimeCycle ? 'دورة تلقائية: مفعّلة' : 'دورة تلقائية: متوقفة'}
                         </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {TIME_PRESETS.map((tp) => (
+                          <button
+                            key={tp.id}
+                            type="button"
+                            onClick={() => onSelectTimePreset(tp.id, tp.hour)}
+                            className={`px-2 py-1 rounded border text-[11px] transition-colors whitespace-nowrap ${
+                              hud.timePreset === tp.id
+                                ? 'bg-amber-500/25 border-amber-400 text-amber-100'
+                                : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
+                            }`}
+                          >
+                            {tp.label}
+                          </button>
+                        ))}
                       </div>
                       <input
                         type="range"
                         min={0}
-                        max={45}
-                        step={1}
-                        value={hud.windSpeedKmh}
-                        onChange={(e) => onSetWindSpeed(parseInt(e.target.value, 10))}
-                        aria-label="سرعة الرياح"
-                        className="w-full accent-sky-400 cursor-pointer"
+                        max={23.9}
+                        step={0.1}
+                        value={hud.timeOfDay}
+                        onChange={(e) => onSetTimeHour(parseFloat(e.target.value))}
+                        aria-label="الوقت"
+                        className="w-full accent-amber-400 cursor-pointer"
                       />
                     </div>
                   </div>
 
-                  <div>
-                    <div className="text-stone-400 mb-1.5 flex items-center justify-between">
-                      <span>حالة الطقس</span>
-                      <button
-                        type="button"
-                        onClick={() => onToggleAutoWeather(!hud.autoWeather)}
-                        className={`text-[11px] underline ${
-                          hud.autoWeather ? 'text-emerald-300' : 'text-stone-400'
-                        }`}
-                      >
-                        {hud.autoWeather ? 'تغير تلقائي: مفعّل' : 'تغير تلقائي: متوقف'}
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {WEATHER_OPTIONS.map((w) => (
+                  {/* Night Moonlight, Stars & Aurora Reflections Mood Selector */}
+                  <div className="pt-3 border-t border-white/10">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-1.5 text-stone-200 font-semibold">
+                        <Moon className="w-4 h-4 text-sky-300 shrink-0" />
+                        <span>انعكاسات القمر والنجوم الليلية</span>
+                        <span className="text-[11px] font-normal text-stone-400">
+                          · تبدّل مزاج إضاءة السماء وانعكاس القمر والنجوم والشفق على البحيرة
+                        </span>
+                      </div>
+                      {hud.timePreset !== 'night' && (
                         <button
-                          key={w.id}
                           type="button"
-                          onClick={() => onSelectWeather(w.id)}
-                          className={`px-2.5 py-1.5 rounded-md border transition-colors whitespace-nowrap ${
-                            hud.weather === w.id
-                              ? 'bg-sky-600/30 border-sky-400 text-sky-100'
-                              : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
-                          }`}
+                          onClick={() => onSelectTimePreset('night', 23.0)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-500/25 hover:bg-indigo-500/35 border border-indigo-400/50 text-indigo-100 text-[11px] font-medium transition-colors"
                         >
-                          {w.label}
+                          <Sparkles className="w-3 h-3 text-indigo-300" />
+                          <span>معاينة الليل (23:00)</span>
                         </button>
-                      ))}
+                      )}
                     </div>
-                  </div>
 
-                  <div>
-                    <div className="text-stone-400 mb-1.5 flex items-center justify-between">
-                      <span>الوقت ({formatHourToClock(hud.timeOfDay)})</span>
-                      <button
-                        type="button"
-                        onClick={() => onToggleAutoTime(!hud.autoTimeCycle)}
-                        className={`text-[11px] underline ${
-                          hud.autoTimeCycle ? 'text-emerald-300' : 'text-stone-400'
-                        }`}
-                      >
-                        {hud.autoTimeCycle ? 'دورة تلقائية: مفعّلة' : 'دورة تلقائية: متوقفة'}
-                      </button>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {NIGHT_REFLECTION_MOODS.map((mood) => {
+                        const active = hud.nightReflectionMood === mood.id;
+                        return (
+                          <button
+                            key={mood.id}
+                            type="button"
+                            onClick={() => onSelectNightMood(mood.id)}
+                            title={mood.subtitleAr}
+                            className={`p-2.5 rounded-lg border text-right transition-colors flex flex-col justify-between gap-1 ${
+                              active
+                                ? 'bg-indigo-500/25 border-indigo-400 text-indigo-50'
+                                : 'bg-white/5 border-white/10 text-stone-200 hover:bg-white/10'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 w-full">
+                              <span className="font-semibold flex items-center gap-1.5 truncate">
+                                <span
+                                  className="inline-block w-2.5 h-2.5 rounded-full shrink-0 border border-white/30"
+                                  style={{ backgroundColor: hexColor(mood.moonColor) }}
+                                />
+                                <span className="truncate">{mood.nameAr}</span>
+                              </span>
+                              {active && <Check className="w-3.5 h-3.5 text-indigo-300 shrink-0" />}
+                            </div>
+                            <p className="text-[10px] text-stone-400 leading-snug line-clamp-2">{mood.subtitleAr}</p>
+                          </button>
+                        );
+                      })}
                     </div>
-                    <div className="flex flex-wrap gap-1 mb-1.5">
-                      {TIME_PRESETS.map((tp) => (
-                        <button
-                          key={tp.id}
-                          type="button"
-                          onClick={() => onSelectTimePreset(tp.id, tp.hour)}
-                          className={`px-2 py-1 rounded border text-[11px] transition-colors whitespace-nowrap ${
-                            hud.timePreset === tp.id
-                              ? 'bg-amber-500/25 border-amber-400 text-amber-100'
-                              : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
-                          }`}
-                        >
-                          {tp.label}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={23.9}
-                      step={0.1}
-                      value={hud.timeOfDay}
-                      onChange={(e) => onSetTimeHour(parseFloat(e.target.value))}
-                      aria-label="الوقت"
-                      className="w-full accent-amber-400 cursor-pointer"
-                    />
                   </div>
                 </div>
               )}

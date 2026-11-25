@@ -21,6 +21,7 @@ const INITIAL_HUD: FishingHudState = {
   timeOfDay: 8.8,
   timePreset: 'morning',
   autoTimeCycle: true,
+  nightReflectionMood: 'auto',
   season: 'spring',
   weather: 'clear',
   autoWeather: true,
@@ -67,6 +68,10 @@ const INITIAL_HUD: FishingHudState = {
   rivalName: null,
   rivalContestBalance: 0.56,
   rivalNotice: null,
+  rivalCutawayActive: false,
+  rivalCutawaySpeciesName: null,
+  playerBasketCutawayActive: false,
+  playerBasketCutawaySpeciesName: null,
   speciesRecords: {},
   recordBrokenNotice: null,
   isHeavyHookedFish: false,
@@ -74,7 +79,7 @@ const INITIAL_HUD: FishingHudState = {
   currentLocationId: 'pier',
   isOnBoat: false,
   isSailing: false,
-  waterDepthUnderPlayer: 1.1,
+  waterDepthUnderPlayer: 1.4,
   pois: [],
   poiDiscoveredNotice: null,
   nearbyPoiName: null,
@@ -132,6 +137,7 @@ export default function App() {
           onSelectTimePreset={(id, hr) => managerRef.current?.setTimePreset(id, hr)}
           onSetTimeHour={(hr) => managerRef.current?.setTimeHour(hr)}
           onToggleAutoTime={(en) => managerRef.current?.setAutoTimeCycle(en)}
+          onSelectNightMood={(m) => managerRef.current?.setNightReflectionMood(m)}
           onSelectWeather={(w) => managerRef.current?.setWeather(w)}
           onToggleAutoWeather={(en) => managerRef.current?.setAutoWeather(en)}
           onSetWindSpeed={(kmh) => managerRef.current?.setWindSpeed(kmh)}
@@ -149,6 +155,8 @@ export default function App() {
           onBoatSteer={(fwd, turn) => managerRef.current?.setBoatSteer(fwd, turn)}
           onSailToPoi={(poiId) => managerRef.current?.sailToPoi(poiId)}
           onLookAtPoi={(poiId) => managerRef.current?.lookAtPoi(poiId)}
+          onCancelRivalCutaway={() => managerRef.current?.cancelRivalCutaway()}
+          onCancelPlayerCutaway={() => managerRef.current?.cancelPlayerCutaway()}
           onResolveCatch={(rel) => managerRef.current?.resolveActiveCatch(rel)}
         />
       )}

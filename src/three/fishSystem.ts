@@ -97,7 +97,7 @@ function hexToRgbStr(hex: number, alpha = 1): string {
  * Generates an organic scale & species-markings CanvasTexture for LatheGeometry UV mapping.
  * In our rotated LatheGeometry: U wraps around circumference (top/side/belly), V runs tail -> nose.
  */
-function createSpeciesScaleTexture(species: FishSpecies): THREE.CanvasTexture {
+export function createSpeciesScaleTexture(species: FishSpecies): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 256;
@@ -276,10 +276,10 @@ function applySubmergedFishShader(mat: THREE.MeshStandardMaterial, withSwim: boo
         '#include <color_fragment>',
         `#include <color_fragment>
          float submergedMask = smoothstep(-0.04, -0.18, vFishWorldY);
-         float depthHaze = smoothstep(-0.12, -2.55, vFishWorldY);
-         vec3 waterTint = vec3(0.08, 0.29, 0.36);
-         diffuseColor.rgb = mix(diffuseColor.rgb, waterTint, submergedMask * (0.36 + depthHaze * 0.42));
-         diffuseColor.a *= mix(1.0, mix(0.74, 0.28, depthHaze), submergedMask);`,
+         float depthHaze = smoothstep(-0.15, -5.8, vFishWorldY);
+         vec3 waterTint = vec3(0.05, 0.22, 0.31);
+         diffuseColor.rgb = mix(diffuseColor.rgb, waterTint, submergedMask * (0.36 + depthHaze * 0.48));
+         diffuseColor.a *= mix(1.0, mix(0.76, 0.22, depthHaze), submergedMask);`,
       );
   };
 }
@@ -615,7 +615,7 @@ export function createFishSystem(): FishSystem {
           f.stateTimer = 6.0;
           f.mesh.scale.setScalar(f.lengthScale);
           f.mesh.rotation.set(0, f.heading, 0);
-          f.position.set((Math.random() - 0.5) * 48, -2.5, -48 - Math.random() * 14);
+          f.position.set((Math.random() - 0.5) * 48, -4.2, -48 - Math.random() * 14);
           f.mesh.position.copy(f.position);
           f.mesh.visible = true;
           pickPatrolPoint(f);

@@ -1,5 +1,14 @@
 import type { AmbienceMix, WeatherType } from '../types/fishing';
 
+export interface AudioLocationContext {
+  isOnBoat: boolean;
+  isSailing: boolean;
+  boatSpeedNorm: number; // 0..1
+  waterDepthMeters: number;
+  shoreProximity: number; // 0 (open center lake) .. 1 (wooden pier / shoreline)
+  nearCaveOrRock: number; // 0..1 proximity to cave / rocky cliffs
+}
+
 export class NatureSoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -8,6 +17,9 @@ export class NatureSoundEngine {
   // Ambient continuous layers
   private waterGain: GainNode | null = null;
   private waterFilter: BiquadFilterNode | null = null;
+  private boatWaveGain: GainNode | null = null;
+  private boatWaveFilter: BiquadFilterNode | null = null;
+  private boatWakeGain: GainNode | null = null;
   private windLowGain: GainNode | null = null;
   private windLowFilter: BiquadFilterNode | null = null;
   private treeRustleLeftGain: GainNode | null = null;
@@ -32,6 +44,8 @@ export class NatureSoundEngine {
   private lastFrogPreviewAt = 0;
   private lastHawkTime = 0;
   private lastBubbleTime = 0;
+  private lastHullWaveTime = 0;
+  private nextHullWaveInterval = 1.8;
   private lastReelClickTime = 0;
 
   public unlock(): void {
@@ -105,6 +119,39 @@ export class NatureSoundEngine {
       waterSrc.start();
       this.waterGain = waterGain;
       this.waterFilter = waterFilter;
+
+      // 1b. Deep Crashing Wave & Boat Hull Swell Layer (أقوى على متن القارب وفي الأعماق)
+      const boatWaveSrc = ctx.createBufferSource();
+      boatWaveSrc.buffer = brownBuffer;
+      boatWaveSrc.loop = true;
+      const boatWaveFilter = ctx.createBiquadFilter();
+      boatWaveFilter.type = 'lowpass';
+      boatWaveFilter.frequency.value = 210;
+      boatWaveFilter.Q.value = 1.25;
+      const boatWaveGain = ctx.createGain();
+      boatWaveGain.gain.value = 0;
+      boatWaveSrc.connect(boatWaveFilter);
+      boatWaveFilter.connect(boatWaveGain);
+      boatWaveGain.connect(master);
+      boatWaveSrc.start(0, 1.3);
+      this.boatWaveGain = boatWaveGain;
+      this.boatWaveFilter = boatWaveFilter;
+
+      // 1c. Boat Wake & Bow Foam Splash Hiss (رذاذ مقدمة القارب أثناء الإبحار)
+      const wakeSrc = ctx.createBufferSource();
+      wakeSrc.buffer = pinkBuffer;
+      wakeSrc.loop = true;
+      const wakeFilter = ctx.createBiquadFilter();
+      wakeFilter.type = 'bandpass';
+      wakeFilter.frequency.value = 880;
+      wakeFilter.Q.value = 0.7;
+      const boatWakeGain = ctx.createGain();
+      boatWakeGain.gain.value = 0;
+      wakeSrc.connect(wakeFilter);
+      wakeFilter.connect(boatWakeGain);
+      boatWakeGain.connect(master);
+      wakeSrc.start(0, 0.7);
+      this.boatWakeGain = boatWakeGain;
 
       // 2. Gentle Valley Breeze (low-frequency mountain air)
       const windSrc = ctx.createBufferSource();
@@ -253,29 +300,67 @@ export class NatureSoundEngine {
     return { ...this.mix };
   }
 
-  public updateAmbience(weather: WeatherType, hour: number, elapsed: number, windSpeedKmh = 8): void {
+  public updateAmbience(
+    weather: WeatherType,
+    hour: number,
+    elapsed: number,
+    windSpeedKmh = 8,
+    location: AudioLocationContext = {
+      isOnBoat: false,
+      isSailing: false,
+      boatSpeedNorm: 0,
+      waterDepthMeters: 1.4,
+      shoreProximity: 1,
+      nearCaveOrRock: 0,
+    },
+  ): void {
     if (!this.initialized || !this.ctx) return;
     const now = this.ctx.currentTime;
 
     const windNorm = Math.max(0, Math.min(1.2, windSpeedKmh / 35));
+    const shore = Math.max(0, Math.min(1, location.shoreProximity));
+    const openWater = 1 - shore;
+    const depthNorm = Math.max(0, Math.min(1, (location.waterDepthMeters - 1.2) / 10.5));
+    const boatMove = Math.max(0, Math.min(1, location.boatSpeedNorm));
+
     const gustL = 0.65 + 0.35 * Math.sin(elapsed * 0.28 + Math.sin(elapsed * 0.11));
     const gustR = 0.65 + 0.35 * Math.sin(elapsed * 0.24 + 1.4 + Math.cos(elapsed * 0.13));
 
-    // Water lapping rises gently with wind waves & swells organically
-    const waveSwell = 0.72 + 0.28 * Math.sin(elapsed * 0.72);
-    const waterBase = (0.12 + windNorm * 0.15 + (weather === 'storm' ? 0.06 : 0)) * waveSwell;
+    // Crashing & lapping waves intensify significantly when aboard the boat & in open/deep lake waters
+    const boatBoost = location.isOnBoat ? 1.65 + openWater * 0.45 + boatMove * 0.35 : 1.0;
+    const waveCycleFreq = location.isOnBoat ? 0.92 : 0.66;
+    const waveSwell = (location.isOnBoat ? 0.62 : 0.74) + (location.isOnBoat ? 0.38 : 0.26) * Math.sin(elapsed * waveCycleFreq);
+    const waterBase = (0.11 + windNorm * 0.15 + (weather === 'storm' ? 0.06 : 0)) * waveSwell * boatBoost;
     const waterTarget = waterBase * this.mix.water;
-    const waterFreq = 260 + windNorm * 240 + Math.sin(elapsed * 0.72) * 65;
+    const waterFreq = (location.isOnBoat ? 320 : 250) + windNorm * 230 + openWater * 75 + Math.sin(elapsed * waveCycleFreq) * 85;
 
-    // Valley wind + left/right tree foliage rustle
-    const windLowTarget = (0.045 + windNorm * 0.22 + (weather === 'storm' ? 0.07 : 0)) * this.mix.trees;
-    const rustleBase = (0.014 + windNorm * 0.085) * this.mix.trees;
+    // Deep hull wave surge & bow wake hiss (audible only on boat / deep open water)
+    const hullSwell = 0.55 + 0.45 * Math.sin(elapsed * 1.15 + 0.8);
+    const boatWaveTarget = location.isOnBoat
+      ? (0.11 + depthNorm * 0.12 + windNorm * 0.12 + boatMove * 0.09) * hullSwell * this.mix.water
+      : 0.02 * openWater * this.mix.water;
+    const boatWaveFreq = 165 + windNorm * 140 + boatMove * 180 + Math.sin(elapsed * 1.15) * 55;
+    const wakeTarget = location.isOnBoat ? boatMove * (0.075 + windNorm * 0.03) * this.mix.water : 0;
+
+    // Shoreline trees & forest foliage rustle (strongest on pier & near shoreline, softer on open lake)
+    const shoreTreeScale = 0.36 + 0.74 * shore;
+    const openWindBoost = 1.0 + 0.36 * openWater;
+    const windLowTarget = (0.045 + windNorm * 0.21 + (weather === 'storm' ? 0.07 : 0)) * openWindBoost * this.mix.trees;
+    const rustleBase = (0.015 + windNorm * 0.088) * shoreTreeScale * this.mix.trees;
     const rustleFreq = 920 + windNorm * 880;
+
+    // Valley/Cave acoustic reflection depth
+    const echoTarget = 0.24 + Math.max(location.nearCaveOrRock * 0.22, openWater * 0.14);
+    this.valleyEchoSend?.gain.setTargetAtTime(echoTarget, now, 0.5);
 
     const rainTarget = weather === 'storm' ? 0.24 : weather === 'rain' ? 0.15 : 0;
 
-    this.waterGain?.gain.setTargetAtTime(waterTarget, now, 0.35);
-    this.waterFilter?.frequency.setTargetAtTime(waterFreq, now, 0.35);
+    this.waterGain?.gain.setTargetAtTime(waterTarget, now, 0.3);
+    this.waterFilter?.frequency.setTargetAtTime(waterFreq, now, 0.3);
+
+    this.boatWaveGain?.gain.setTargetAtTime(boatWaveTarget, now, 0.28);
+    this.boatWaveFilter?.frequency.setTargetAtTime(boatWaveFreq, now, 0.28);
+    this.boatWakeGain?.gain.setTargetAtTime(wakeTarget, now, 0.25);
 
     this.windLowGain?.gain.setTargetAtTime(windLowTarget, now, 0.45);
     this.windLowFilter?.frequency.setTargetAtTime(240 + windNorm * 420, now, 0.45);
@@ -288,56 +373,65 @@ export class NatureSoundEngine {
     this.rainGain?.gain.setTargetAtTime(rainTarget, now, 0.6);
 
     if (!this.muted) {
-      // Intermittent delicate brook/water babble droplets (خرير وقطرات ماء خفيفة)
-      if (this.mix.water > 0.05 && elapsed - this.lastBubbleTime > 0.55 + Math.random() * 1.15) {
-        this.lastBubbleTime = elapsed;
-        this.playWaterBabbleBubble();
+      // Pier / shallow shoreline water babble vs Rhythmic Boat Hull Wave Slaps
+      if (location.isOnBoat && this.mix.water > 0.05 && elapsed - this.lastHullWaveTime > this.nextHullWaveInterval) {
+        this.lastHullWaveTime = elapsed;
+        this.nextHullWaveInterval = Math.max(0.65, (2.2 - boatMove * 1.15 - windNorm * 0.65) * (0.8 + Math.random() * 0.45));
+        this.playBoatHullWaveSlap(0.55 + openWater * 0.35 + boatMove * 0.45, (Math.random() - 0.5) * 1.1);
       }
 
-      // Intermittent soothing mountain birds during daytime / dawn / dusk; soft owl & crickets at night
+      if (this.mix.water > 0.05 && elapsed - this.lastBubbleTime > (0.55 + Math.random() * 1.15) * (1.5 - shore * 0.65)) {
+        this.lastBubbleTime = elapsed;
+        this.playWaterBabbleBubble(0.55 + shore * 0.65);
+      }
+
+      // Intermittent soothing mountain birds (stronger near shore trees; distant hawk echoes on open lake)
+      const birdProximityGain = 0.42 + 0.68 * shore;
       if (this.mix.birds > 0.05 && elapsed - this.lastBirdTime > this.nextBirdInterval) {
         this.lastBirdTime = elapsed;
         const quietFactor = weather === 'storm' ? 2.6 : weather === 'rain' ? 1.8 : 1.0;
-        this.nextBirdInterval = (3.4 + Math.random() * 4.8) * quietFactor;
+        const shoreFreqMult = 1.38 - shore * 0.38;
+        this.nextBirdInterval = (3.4 + Math.random() * 4.8) * quietFactor * shoreFreqMult;
 
         if (hour >= 4.8 && hour <= 19.6) {
           if (weather !== 'storm') {
             const roll = Math.random();
             if (roll < 0.38) {
-              this.playFluteThrush();
+              this.playFluteThrush(birdProximityGain);
             } else if (roll < 0.72) {
-              this.playAlpineFinch();
+              this.playAlpineFinch(birdProximityGain);
             } else {
-              this.playMountainDove();
+              this.playMountainDove(birdProximityGain);
             }
           }
         } else if (weather !== 'storm' && weather !== 'rain') {
           if (Math.random() < 0.35) {
-            this.playNightOwl();
+            this.playNightOwl(0.7 + shore * 0.3);
           } else {
-            this.playCricketChirp();
+            this.playCricketChirp(birdProximityGain);
           }
         }
       }
 
-      // Occasional distant soaring mountain eagle/hawk echoing off the peaks
+      // Soaring distant mountain eagle/hawk echoing over open lake & cliffs
       if (
         this.mix.birds > 0.05 &&
         hour >= 6.5 &&
         hour <= 18.2 &&
         weather !== 'storm' &&
-        elapsed - this.lastHawkTime > 16 + Math.random() * 14
+        elapsed - this.lastHawkTime > (16 + Math.random() * 14) * (1.15 - openWater * 0.3)
       ) {
         this.lastHawkTime = elapsed;
-        this.playDistantHawkCall();
+        this.playDistantHawkCall(0.85 + openWater * 0.4);
       }
 
-      // Ambient shoreline & lily-pad frog croaks (natively active at dawn, dusk, night & calm weather)
+      // Shoreline & lily-pad frog croaks (louder on pier / shore reeds, softer out in deep open water)
       if (this.mix.frogs > 0.05 && weather !== 'storm' && elapsed - this.lastFrogTime > this.nextFrogInterval) {
         this.lastFrogTime = elapsed;
         const nightOrRainBoost = hour < 7.2 || hour > 17.5 || weather === 'rain' || weather === 'mist' ? 0.72 : 1.05;
-        this.nextFrogInterval = (4.5 + Math.random() * 5.2) * nightOrRainBoost;
-        this.playFrogCroak((Math.random() - 0.5) * 1.35);
+        const distWaitMult = 1.65 - shore * 0.65;
+        this.nextFrogInterval = (4.5 + Math.random() * 5.2) * nightOrRainBoost * distWaitMult;
+        this.playFrogCroak((Math.random() - 0.5) * 1.35, 0.32 + 0.72 * shore);
       }
     }
   }
@@ -355,8 +449,36 @@ export class NatureSoundEngine {
     }
   }
 
+  /** Rhythmic wave slap & gentle hull thump audible on the boat */
+  private playBoatHullWaveSlap(strength = 0.8, pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted || this.mix.water < 0.05) return;
+    const now = this.ctx.currentTime;
+    const dur = 0.36;
+    const buf = this.createBrownNoiseBuffer(this.ctx, dur);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(240 + Math.random() * 120, now);
+    filter.frequency.exponentialRampToValueAtTime(115, now + dur);
+    filter.Q.value = 1.3;
+
+    const gain = this.ctx.createGain();
+    const amp = 0.14 * strength * this.mix.water;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(amp, now + 0.045);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    src.connect(filter);
+    filter.connect(gain);
+    this.routeAmbientVoice(gain, pan, 0.18);
+    src.start(now);
+    oscSafeStop(src, now + dur + 0.02);
+  }
+
   /** Delicate babbling brook / lapping water trickle */
-  private playWaterBabbleBubble(): void {
+  private playWaterBabbleBubble(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
@@ -368,7 +490,7 @@ export class NatureSoundEngine {
     osc.frequency.setValueAtTime(f0, now);
     osc.frequency.exponentialRampToValueAtTime(f0 * (1.55 + Math.random() * 0.45), now + dur);
 
-    const amp = 0.012 * this.mix.water * (0.6 + Math.random() * 0.6);
+    const amp = 0.012 * ampMult * this.mix.water * (0.6 + Math.random() * 0.6);
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.linearRampToValueAtTime(amp, now + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
@@ -380,7 +502,7 @@ export class NatureSoundEngine {
   }
 
   /** Soothing flute-like mountain thrush / nightingale melody */
-  private playFluteThrush(): void {
+  private playFluteThrush(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const pan = (Math.random() - 0.5) * 1.45;
@@ -398,7 +520,7 @@ export class NatureSoundEngine {
       osc.frequency.setValueAtTime(f0 * 0.96, t);
       osc.frequency.exponentialRampToValueAtTime(f0 * (i === notes - 1 ? 0.88 : 1.04), t + dur);
 
-      const amp = 0.024 * this.mix.birds;
+      const amp = 0.024 * ampMult * this.mix.birds;
       gain.gain.setValueAtTime(0.0001, t);
       gain.gain.linearRampToValueAtTime(amp, t + 0.045);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
@@ -412,7 +534,7 @@ export class NatureSoundEngine {
   }
 
   /** Soft gentle alpine finch trill */
-  private playAlpineFinch(): void {
+  private playAlpineFinch(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const pan = (Math.random() - 0.5) * 1.5;
@@ -439,7 +561,7 @@ export class NatureSoundEngine {
       mod.connect(modGain);
       modGain.connect(osc.frequency);
 
-      const amp = 0.022 * this.mix.birds;
+      const amp = 0.022 * ampMult * this.mix.birds;
       gain.gain.setValueAtTime(0.0001, start);
       gain.gain.linearRampToValueAtTime(amp, start + 0.024);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
@@ -454,7 +576,7 @@ export class NatureSoundEngine {
   }
 
   /** Warm, deeply relaxing distant mountain wood-dove coo */
-  private playMountainDove(): void {
+  private playMountainDove(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const pan = (Math.random() - 0.5) * 1.3;
@@ -472,7 +594,7 @@ export class NatureSoundEngine {
       osc.frequency.setValueAtTime(p.f1, start);
       osc.frequency.exponentialRampToValueAtTime(p.f2, start + p.dur);
 
-      const amp = 0.026 * this.mix.birds;
+      const amp = 0.026 * ampMult * this.mix.birds;
       gain.gain.setValueAtTime(0.0001, start);
       gain.gain.linearRampToValueAtTime(amp, start + 0.08);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + p.dur);
@@ -484,7 +606,7 @@ export class NatureSoundEngine {
     }
   }
 
-  private playDistantHawkCall(): void {
+  private playDistantHawkCall(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const pan = (Math.random() - 0.5) * 1.2;
@@ -500,7 +622,7 @@ export class NatureSoundEngine {
     filter.frequency.value = 1380;
     filter.Q.value = 3.5;
 
-    const amp = 0.014 * this.mix.birds;
+    const amp = 0.014 * ampMult * this.mix.birds;
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.linearRampToValueAtTime(amp, now + 0.08);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.65);
@@ -512,7 +634,7 @@ export class NatureSoundEngine {
     osc.stop(now + 0.68);
   }
 
-  private playNightOwl(): void {
+  private playNightOwl(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const pan = (Math.random() - 0.5) * 1.3;
@@ -529,7 +651,7 @@ export class NatureSoundEngine {
       osc.frequency.setValueAtTime(h.freq, start);
       osc.frequency.exponentialRampToValueAtTime(h.freq * 0.92, start + h.dur);
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(0.022 * this.mix.birds, start + 0.07);
+      gain.gain.linearRampToValueAtTime(0.022 * ampMult * this.mix.birds, start + 0.07);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + h.dur);
       osc.connect(gain);
       this.routeAmbientVoice(gain, pan, 0.75);
@@ -538,7 +660,7 @@ export class NatureSoundEngine {
     }
   }
 
-  private playCricketChirp(): void {
+  private playCricketChirp(ampMult = 1.0): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const pan = (Math.random() - 0.5) * 1.4;
@@ -549,7 +671,7 @@ export class NatureSoundEngine {
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(4050, start);
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(0.011 * this.mix.birds, start + 0.015);
+      gain.gain.linearRampToValueAtTime(0.011 * ampMult * this.mix.birds, start + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.048);
       osc.connect(gain);
       this.routeAmbientVoice(gain, pan, 0.25);
@@ -741,7 +863,7 @@ export class NatureSoundEngine {
     osc.stop(now + 0.26);
   }
 
-  public playFrogCroak(pan = 0): void {
+  public playFrogCroak(pan = 0, ampMult = 1.0): void {
     if (!this.ctx || !this.masterGain || this.muted || this.mix.frogs < 0.05) return;
     const now = this.ctx.currentTime;
     const pulses = Math.random() < 0.45 ? 3 : 2;
@@ -760,7 +882,7 @@ export class NatureSoundEngine {
       filter.frequency.value = 520 + pulse * 35;
       filter.Q.value = 3.0;
 
-      const amp = 0.085 * this.mix.frogs;
+      const amp = 0.085 * ampMult * this.mix.frogs;
       gain.gain.setValueAtTime(0.0001, t);
       gain.gain.linearRampToValueAtTime(amp, t + 0.022);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.125);
@@ -838,6 +960,50 @@ export class NatureSoundEngine {
       src.start(t);
       oscSafeStop(src, t + dur + 0.01);
     }
+  }
+
+  /** Delicate individual water-drop plink hitting wood or lake surface */
+  public playWaterDrip(pan = 0, intensity = 1.0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    const f0 = 780 + Math.random() * 520;
+    const dur = 0.055;
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f0, now);
+    osc.frequency.exponentialRampToValueAtTime(f0 * 1.95, now + dur);
+
+    const amp = Math.min(0.06, 0.022 * intensity);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(amp, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    osc.connect(gain);
+    this.routeAmbientVoice(gain, pan, 0.14);
+    osc.start(now);
+    osc.stop(now + dur + 0.015);
+  }
+
+  /** Soft woven keepnet cage thud + wet splash when placing a caught fish into the cage */
+  public playKeepnetDrop(pan = -0.3): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    this.playSplash(0.42);
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(210, now + 0.04);
+    osc.frequency.exponentialRampToValueAtTime(88, now + 0.19);
+    gain.gain.setValueAtTime(0.0001, now + 0.04);
+    gain.gain.linearRampToValueAtTime(0.11, now + 0.055);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.21);
+    osc.connect(gain);
+    this.routeAmbientVoice(gain, pan, 0.18);
+    osc.start(now + 0.04);
+    osc.stop(now + 0.23);
   }
 
   public dispose(): void {

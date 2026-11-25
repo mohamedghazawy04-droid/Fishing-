@@ -51,6 +51,8 @@ interface CrocInstance {
   splashTimer: number;
   swimPhase: number;
   jawOpen: number;
+  lungeTimer: number;
+  lungePitch: number;
 }
 
 interface FrogInstance {
@@ -151,7 +153,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     tail3Geo,
   );
 
-  function buildCrocodile(scale: number): Omit<CrocInstance, 'pos' | 'heading' | 'patrolCenter' | 'patrolRadius' | 'patrolAngle' | 'state' | 'targetKind' | 'targetRivalIndex' | 'targetRivalName' | 'cooldownTimer' | 'rippleTimer' | 'splashTimer' | 'swimPhase' | 'jawOpen'> {
+  function buildCrocodile(scale: number): Omit<CrocInstance, 'pos' | 'heading' | 'patrolCenter' | 'patrolRadius' | 'patrolAngle' | 'state' | 'targetKind' | 'targetRivalIndex' | 'targetRivalName' | 'cooldownTimer' | 'rippleTimer' | 'splashTimer' | 'swimPhase' | 'jawOpen' | 'lungeTimer' | 'lungePitch'> {
     const root = new THREE.Group();
 
     const torso = new THREE.Mesh(torsoGeo, crocHideMat);
@@ -281,10 +283,10 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
   }
 
   const crocSpecs = [
-    { cx: -25.0, cz: -27.0, radius: 10.5, scale: 1.12, angle: 0.4 },
-    { cx: 25.5, cz: -28.0, radius: 10.5, scale: 1.04, angle: 2.3 },
-    { cx: -5.0, cz: -45.0, radius: 13.0, scale: 1.22, angle: 4.5 },
-    { cx: 18.0, cz: -60.0, radius: 11.5, scale: 1.10, angle: 1.2 },
+    { cx: -21.0, cz: -22.5, radius: 9.5, scale: 1.15, angle: 0.4 },
+    { cx: 21.5, cz: -23.5, radius: 9.5, scale: 1.08, angle: 2.3 },
+    { cx: -4.5, cz: -36.0, radius: 12.0, scale: 1.24, angle: 4.5 },
+    { cx: 15.0, cz: -49.0, radius: 11.0, scale: 1.12, angle: 1.2 },
   ];
 
   const crocs: CrocInstance[] = crocSpecs.map((spec, idx) => {
@@ -308,6 +310,8 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
       splashTimer: 0.5 + idx * 0.3,
       swimPhase: idx * 1.9,
       jawOpen: 0,
+      lungeTimer: 0,
+      lungePitch: 0,
     };
   });
 
@@ -540,7 +544,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           for (const c of crocs) {
             if (usedCrocs.has(c) || c.state === 'satiated') continue;
             const d = Math.hypot(rTarget.pos.x - c.pos.x, rTarget.pos.z - c.pos.z);
-            if (d < 34.0 && d < bestDist) {
+            if (d < 56.0 && d < bestDist) {
               bestDist = d;
               hunter = c;
             }
@@ -579,7 +583,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           }
         }
 
-        let speed = 1.1;
+        let speed = 1.15;
         let targetX = croc.pos.x;
         let targetZ = croc.pos.z;
         const isHunting = croc.state === 'hunting';
@@ -594,23 +598,24 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           // Fair chase balance: fast intercept from very far (>22m), then fair stalking speed
           // if player reels actively (real catch opportunity), vs aggressive surge if player hesitates!
           if (dist > 22.0) {
-            speed = 4.05;
+            speed = 4.15;
           } else if (playerReeling) {
             speed = weather === 'storm' ? 2.45 : 2.12;
           } else {
             speed = weather === 'storm' ? 3.7 : 3.35;
           }
 
-          const desiredJaw = dist < 9.5 ? THREE.MathUtils.clamp((9.5 - dist) / 5.5, 0.14, 0.62) : 0.1;
-          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 8.0, dt);
+          const desiredJaw = dist < 10.5 ? THREE.MathUtils.clamp((10.5 - dist) / 5.5, 0.16, 0.86) : 0.12;
+          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 8.5, dt);
 
-          if (dist <= 1.35 && hookedFishDistToDock > 3.1) {
+          if (dist <= 1.55 && hookedFishDistToDock > 3.1) {
             devoured = true;
-            croc.jawOpen = 0.0;
+            croc.lungeTimer = 0.82;
+            croc.jawOpen = 0.92;
             croc.state = 'satiated';
             croc.targetKind = 'none';
             croc.cooldownTimer = 11.5;
-            onSplash(croc.pos.x, croc.pos.z, 1.95);
+            onSplash(croc.pos.x, croc.pos.z, 2.35);
             onCrocSnap();
           }
         } else if (isHunting && croc.targetKind === 'rival') {
@@ -619,20 +624,21 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
             targetX = rTarget.pos.x;
             targetZ = rTarget.pos.z;
             const dist = Math.hypot(targetX - croc.pos.x, targetZ - croc.pos.z);
-            speed = dist > 18.0 ? 3.8 : 2.35;
+            speed = dist > 18.0 ? 4.1 : 2.7;
 
-            const desiredJaw = dist < 8.5 ? THREE.MathUtils.clamp((8.5 - dist) / 5.0, 0.14, 0.6) : 0.09;
-            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 7.5, dt);
+            const desiredJaw = dist < 10.0 ? THREE.MathUtils.clamp((10.0 - dist) / 5.0, 0.18, 0.85) : 0.14;
+            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, desiredJaw, 8.0, dt);
 
-            if (dist <= 1.35 && rTarget.distToPlatform > 2.85) {
+            if (dist <= 1.65 && rTarget.distToPlatform > 2.75) {
               devouredRivalIndices.push(rTarget.rivalIndex);
-              croc.jawOpen = 0.0;
+              croc.lungeTimer = 0.82;
+              croc.jawOpen = 0.92;
               croc.state = 'satiated';
               croc.targetKind = 'none';
               croc.targetRivalIndex = -1;
               croc.targetRivalName = null;
               croc.cooldownTimer = 11.0;
-              onSplash(croc.pos.x, croc.pos.z, 1.85);
+              onSplash(croc.pos.x, croc.pos.z, 2.3);
               onCrocSnap();
             }
           } else {
@@ -644,7 +650,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           targetX = croc.patrolCenter.x + Math.cos(croc.patrolAngle) * croc.patrolRadius;
           targetZ = croc.patrolCenter.y + Math.sin(croc.patrolAngle) * croc.patrolRadius * 0.72;
           if (croc.state === 'satiated') speed = 1.65;
-          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.0, 6.0, dt);
+          croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.0, 7.5, dt);
         }
 
         tmpDir.set(targetX - croc.pos.x, 0, targetZ - croc.pos.z);
@@ -659,20 +665,33 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           let diff = desiredHeading - croc.heading;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
-          croc.heading += diff * Math.min(1, dt * (croc.state === 'hunting' ? 5.2 : 2.2));
+          croc.heading += diff * Math.min(1, dt * (croc.state === 'hunting' ? 5.8 : 2.2));
         }
 
         const surfY = getWaterSurfaceY(croc.pos.x, croc.pos.z);
-        // Rise visibly higher in the water during an active hunt so all anglers can spot the threat
-        croc.pos.y = surfY - (croc.state === 'hunting' ? 0.028 : 0.085);
+        let lungeY = 0;
+        let targetPitch = croc.state === 'hunting' ? -0.06 : 0;
+        if (croc.lungeTimer > 0) {
+          croc.lungeTimer = Math.max(0, croc.lungeTimer - dt);
+          const lungeProgress = 1 - croc.lungeTimer / 0.82; // 0 -> 1
+          lungeY = Math.sin(lungeProgress * Math.PI) * 0.56;
+          targetPitch = Math.sin(lungeProgress * Math.PI) * -0.34 + 0.08 * lungeProgress;
+          if (lungeProgress > 0.36) {
+            croc.jawOpen = THREE.MathUtils.damp(croc.jawOpen, 0.0, 18.0, dt);
+          }
+        }
+        croc.lungePitch = THREE.MathUtils.damp(croc.lungePitch, targetPitch, 10, dt);
+
+        // Rise visibly high in the water during an active hunt & surface lunge so all anglers clearly see the attack
+        croc.pos.y = surfY + (croc.state === 'hunting' ? 0.025 : -0.075) + lungeY;
         croc.root.position.copy(croc.pos);
-        croc.root.rotation.y = croc.heading;
+        croc.root.rotation.set(croc.lungePitch, croc.heading, 0);
         croc.lowerJawPivot.rotation.x = croc.jawOpen;
 
         // Sinuous tail & webbed leg swim motion
-        croc.swimPhase += dt * (croc.state === 'hunting' ? 9.8 : 3.4);
+        croc.swimPhase += dt * (croc.state === 'hunting' || croc.lungeTimer > 0 ? 11.2 : 3.4);
         croc.tailSegs.forEach((seg, idx) => {
-          seg.rotation.y = Math.sin(croc.swimPhase - idx * 0.85) * (0.16 + idx * 0.07);
+          seg.rotation.y = Math.sin(croc.swimPhase - idx * 0.85) * (0.18 + idx * 0.075);
         });
         croc.legs.forEach((leg, idx) => {
           leg.rotation.x = Math.sin(croc.swimPhase + idx * Math.PI * 0.5) * 0.25;
@@ -680,15 +699,15 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
 
         croc.rippleTimer -= dt;
         if (croc.rippleTimer <= 0) {
-          croc.rippleTimer = croc.state === 'hunting' ? 0.22 : 0.68;
-          onRipple(croc.pos.x, croc.pos.z, croc.state === 'hunting' ? 0.92 : 0.44);
+          croc.rippleTimer = croc.state === 'hunting' ? 0.18 : 0.68;
+          onRipple(croc.pos.x, croc.pos.z, croc.state === 'hunting' ? 1.05 : 0.44);
         }
 
-        if (croc.state === 'hunting') {
+        if (croc.state === 'hunting' || croc.lungeTimer > 0.15) {
           croc.splashTimer -= dt;
           if (croc.splashTimer <= 0) {
-            croc.splashTimer = 0.55;
-            onSplash(croc.pos.x + Math.sin(croc.heading) * 0.9, croc.pos.z + Math.cos(croc.heading) * 0.9, 0.72);
+            croc.splashTimer = 0.42;
+            onSplash(croc.pos.x + Math.sin(croc.heading) * 1.0, croc.pos.z + Math.cos(croc.heading) * 1.0, 0.9);
           }
         }
       }

@@ -4,6 +4,31 @@ export type SeasonId = 'spring' | 'summer' | 'autumn' | 'winter';
 
 export type TimePresetId = 'dawn' | 'morning' | 'noon' | 'sunset' | 'dusk' | 'night';
 
+export type NightReflectionMoodId =
+  | 'auto'
+  | 'silver_mirror'
+  | 'aurora_emerald'
+  | 'golden_harvest'
+  | 'crimson_eclipse'
+  | 'starlight_nebula';
+
+export interface NightReflectionMoodDefinition {
+  id: NightReflectionMoodId;
+  nameAr: string;
+  subtitleAr: string;
+  moonColor: number;
+  skyTopNight: number;
+  skyHorizonNight: number;
+  waterDeepNight: number;
+  auroraColorA: number;
+  auroraColorB: number;
+  auroraStrength: number;
+  starDensity: number;
+  starReflBoost: number;
+  moonReflBoost: number;
+  moonSize: number;
+}
+
 export type LakeZoneId = 'dock_shade' | 'shore_reeds' | 'rocky_ledge' | 'deep_basin' | 'alpine_abyss';
 
 export type LakeSpotId = 'pier' | 'rocky_ledge' | 'deep_basin' | 'alpine_abyss' | 'abyss_heart';
@@ -247,6 +272,7 @@ export interface FishingHudState {
   timeOfDay: number; // 0..24 hours
   timePreset: TimePresetId;
   autoTimeCycle: boolean;
+  nightReflectionMood: NightReflectionMoodId;
   season: SeasonId;
   weather: WeatherType;
   autoWeather: boolean;
@@ -276,6 +302,10 @@ export interface FishingHudState {
   rivalName: string | null;
   rivalContestBalance: number; // 0..1 (1 = player winning, 0 = rival steals fish)
   rivalNotice: string | null;
+  rivalCutawayActive: boolean;
+  rivalCutawaySpeciesName: string | null;
+  playerBasketCutawayActive: boolean;
+  playerBasketCutawaySpeciesName: string | null;
   speciesRecords: Record<string, SpeciesRecordEntry>;
   recordBrokenNotice: string | null;
   isHeavyHookedFish: boolean;
@@ -405,10 +435,10 @@ export const BOAT_CATALOG: BoatDefinition[] = [
     subtitleAr: 'قارب تقليدي خفيف يرسو بجانب الرصيف للإبحار قرب الحافة الصخرية',
     upgradeCostXp: 0,
     maxSpotOrder: 1,
-    maxReachDepthMeters: 2.8,
+    maxReachDepthMeters: 5.2,
     speedMps: 4.2,
     rareAttractionBonus: 1.0,
-    unlockSummaryAr: 'يفتح الإبحار إلى الحافة الصخرية (عمق 2.8م)',
+    unlockSummaryAr: 'يفتح الإبحار إلى الحافة الصخرية (عمق 5.2م)',
   },
   {
     level: 2,
@@ -417,7 +447,7 @@ export const BOAT_CATALOG: BoatDefinition[] = [
     subtitleAr: 'هيكل خشبي متين بمقدمة حادة وفانوس أمامي يشق الأمواج نحو وسط البحيرة',
     upgradeCostXp: 140,
     maxSpotOrder: 2,
-    maxReachDepthMeters: 4.6,
+    maxReachDepthMeters: 8.7,
     speedMps: 5.6,
     rareAttractionBonus: 1.08,
     unlockSummaryAr: 'يصل إلى وسط البحيرة العميق ومواطن الشبوط والكراكي العملاق',
@@ -429,7 +459,7 @@ export const BOAT_CATALOG: BoatDefinition[] = [
     subtitleAr: 'مزود بمحرك خلفي هادئ ومقعد مريح للوصول إلى الأعماق السحيقة',
     upgradeCostXp: 320,
     maxSpotOrder: 3,
-    maxReachDepthMeters: 5.8,
+    maxReachDepthMeters: 11.1,
     speedMps: 7.4,
     rareAttractionBonus: 1.16,
     unlockSummaryAr: 'يصل إلى أعماق وسط البحيرة حيث حفش الجبال وسلور الأعماق',
@@ -441,7 +471,7 @@ export const BOAT_CATALOG: BoatDefinition[] = [
     subtitleAr: 'مجهز بسونار أعماق وكشاف ليلي ومظلة للوصول إلى قلب الهاوية الجبلية',
     upgradeCostXp: 620,
     maxSpotOrder: 4,
-    maxReachDepthMeters: 6.5,
+    maxReachDepthMeters: 12.2,
     speedMps: 9.2,
     rareAttractionBonus: 1.28,
     unlockSummaryAr: 'يفتح قلب الأعماق السحيقة (+28% فرص الأسماك الأسطورية العملاقة)',
@@ -456,18 +486,18 @@ export const LAKE_ANCHOR_SPOTS: LakeAnchorSpot[] = [
     requiredBoatLevel: 0,
     x: 0,
     z: 2.3,
-    waterDepthMeters: 1.1,
+    waterDepthMeters: 1.4,
     zoneLabel: 'ظل الرصيف',
     notableSpeciesAr: 'فرخ البحيرة، القاروص، سلمون قوس قزح',
   },
   {
     id: 'rocky_ledge',
     nameAr: 'مرسى الحافة الصخرية',
-    subtitleAr: 'مياه صافية على بُعد 19 متراً من الشاطئ',
+    subtitleAr: 'مياه صافية عميقة على بُعد 19 متراً من الشاطئ',
     requiredBoatLevel: 1,
     x: -9.0,
     z: -16.5,
-    waterDepthMeters: 2.9,
+    waterDepthMeters: 5.2,
     zoneLabel: 'الحافة الصخرية',
     notableSpeciesAr: 'القاروص، الشبوط الذهبي، السلمون',
   },
@@ -478,7 +508,7 @@ export const LAKE_ANCHOR_SPOTS: LakeAnchorSpot[] = [
     requiredBoatLevel: 2,
     x: 9.5,
     z: -32.0,
-    waterDepthMeters: 4.7,
+    waterDepthMeters: 8.7,
     zoneLabel: 'حوض البحيرة العميق',
     notableSpeciesAr: 'كراكي الوادي، الشبوط، حفش الجبال',
   },
@@ -489,18 +519,18 @@ export const LAKE_ANCHOR_SPOTS: LakeAnchorSpot[] = [
     requiredBoatLevel: 3,
     x: -6.0,
     z: -48.0,
-    waterDepthMeters: 6.1,
+    waterDepthMeters: 11.1,
     zoneLabel: 'أعماق وسط البحيرة الجبلية',
     notableSpeciesAr: 'حفش الجبال الذهبي، سلور الأعماق، سلمون القمر',
   },
   {
     id: 'abyss_heart',
     nameAr: 'قلب الهاوية الجبلية (الأعمق)',
-    subtitleAr: 'أعمق نقطة في وسط البحيرة أمام القمم الثلجية',
+    subtitleAr: 'أعمق نقطة سحيقة في وسط البحيرة أمام القمم الثلجية',
     requiredBoatLevel: 4,
     x: 1.5,
-    z: -60.0,
-    waterDepthMeters: 6.6,
+    z: -52.0,
+    waterDepthMeters: 12.1,
     zoneLabel: 'أعماق وسط البحيرة الجبلية',
     notableSpeciesAr: 'تنين البحيرة الملكي، سلور الأعماق، حفش الجبال',
   },
@@ -687,6 +717,105 @@ export const TIME_PRESETS: { id: TimePresetId; label: string; hour: number }[] =
   { id: 'night', label: 'الليل', hour: 23.0 },
 ];
 
+export const NIGHT_REFLECTION_MOODS: NightReflectionMoodDefinition[] = [
+  {
+    id: 'auto',
+    nameAr: 'تبديل تلقائي مع الليل',
+    subtitleAr: 'يتنقل بانسيابية بين المرآة الفضية والشفق والمجرة حسب ساعات الليل',
+    moonColor: 0xdcecff,
+    skyTopNight: 0x091326,
+    skyHorizonNight: 0x1b2d45,
+    waterDeepNight: 0x082338,
+    auroraColorA: 0x3ef0b4,
+    auroraColorB: 0x52a8ff,
+    auroraStrength: 0.25,
+    starDensity: 1.15,
+    starReflBoost: 1.15,
+    moonReflBoost: 1.15,
+    moonSize: 1.0,
+  },
+  {
+    id: 'silver_mirror',
+    nameAr: 'مرآة فضية هادئة',
+    subtitleAr: 'عمود ضوء قمري فضي نقي ونجوم واضحة فوق سطح هادئ',
+    moonColor: 0xe6f2ff,
+    skyTopNight: 0x071224,
+    skyHorizonNight: 0x182b45,
+    waterDeepNight: 0x09263c,
+    auroraColorA: 0x38bdf8,
+    auroraColorB: 0x818cf8,
+    auroraStrength: 0.0,
+    starDensity: 1.1,
+    starReflBoost: 1.25,
+    moonReflBoost: 1.38,
+    moonSize: 1.0,
+  },
+  {
+    id: 'aurora_emerald',
+    nameAr: 'شفق قطبي زمردي',
+    subtitleAr: 'أطياف شفقية زمردية وفيروزية تنعكس على تموجات البحيرة ليلاً',
+    moonColor: 0xbff7ea,
+    skyTopNight: 0x051822,
+    skyHorizonNight: 0x12393f,
+    waterDeepNight: 0x062d33,
+    auroraColorA: 0x34f5b5,
+    auroraColorB: 0x2dd4bf,
+    auroraStrength: 1.0,
+    starDensity: 1.2,
+    starReflBoost: 1.18,
+    moonReflBoost: 1.05,
+    moonSize: 0.96,
+  },
+  {
+    id: 'golden_harvest',
+    nameAr: 'قمر الحصاد الذهبي',
+    subtitleAr: 'بدر دافئ ذهبي يمد مساراً عنبرياً متلألئاً فوق المياه الداكنة',
+    moonColor: 0xffcf7d,
+    skyTopNight: 0x121226,
+    skyHorizonNight: 0x382832,
+    waterDeepNight: 0x141d33,
+    auroraColorA: 0xfbbf24,
+    auroraColorB: 0xfb7185,
+    auroraStrength: 0.0,
+    starDensity: 0.95,
+    starReflBoost: 0.95,
+    moonReflBoost: 1.55,
+    moonSize: 1.32,
+  },
+  {
+    id: 'crimson_eclipse',
+    nameAr: 'قمر قرمزي غامض',
+    subtitleAr: 'مزاج درامي هادئ بقمر ياقوتي وأفق أرجواني داكن',
+    moonColor: 0xff7b6b,
+    skyTopNight: 0x14091b,
+    skyHorizonNight: 0x33172a,
+    waterDeepNight: 0x190e24,
+    auroraColorA: 0xf43f5e,
+    auroraColorB: 0xa855f7,
+    auroraStrength: 0.18,
+    starDensity: 1.05,
+    starReflBoost: 1.1,
+    moonReflBoost: 1.42,
+    moonSize: 1.24,
+  },
+  {
+    id: 'starlight_nebula',
+    nameAr: 'سماء المجرة والنجوم',
+    subtitleAr: 'مئات النجوم المتلألئة وبريق المجرة ينعكس بكثافة على صفحة البحيرة',
+    moonColor: 0xb9c9ff,
+    skyTopNight: 0x050b1c,
+    skyHorizonNight: 0x151f3d,
+    waterDeepNight: 0x071836,
+    auroraColorA: 0x818cf8,
+    auroraColorB: 0x38bdf8,
+    auroraStrength: 0.42,
+    starDensity: 1.85,
+    starReflBoost: 1.75,
+    moonReflBoost: 0.92,
+    moonSize: 0.85,
+  },
+];
+
 export const FISH_SPECIES: FishSpecies[] = [
   {
     id: 'rainbow_trout',
@@ -777,7 +906,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 34,
     maxLengthCm: 68,
     baseWeightKg: 2.8,
-    preferredDepth: [1.4, 3.2],
+    preferredDepth: [1.8, 4.4],
     fightStrength: 0.68,
     speedMultiplier: 0.84,
     activeWeather: ['clear', 'mist', 'rain'],
@@ -801,7 +930,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 48,
     maxLengthCm: 92,
     baseWeightKg: 4.5,
-    preferredDepth: [1.8, 3.8],
+    preferredDepth: [2.4, 5.8],
     fightStrength: 0.84,
     speedMultiplier: 1.25,
     activeWeather: ['cloudy', 'rain', 'storm'],
@@ -825,7 +954,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 58,
     maxLengthCm: 105,
     baseWeightKg: 6.4,
-    preferredDepth: [2.2, 4.6],
+    preferredDepth: [3.0, 7.2],
     fightStrength: 0.94,
     speedMultiplier: 1.32,
     activeWeather: ['mist', 'storm', 'clear'],
@@ -849,7 +978,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 76,
     maxLengthCm: 138,
     baseWeightKg: 9.4,
-    preferredDepth: [3.0, 5.2],
+    preferredDepth: [4.6, 8.8],
     fightStrength: 0.93,
     speedMultiplier: 0.98,
     activeWeather: ['clear', 'cloudy', 'mist', 'rain'],
@@ -873,7 +1002,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 88,
     maxLengthCm: 158,
     baseWeightKg: 13.2,
-    preferredDepth: [3.4, 5.9],
+    preferredDepth: [5.6, 10.6],
     fightStrength: 0.98,
     speedMultiplier: 1.08,
     activeWeather: ['cloudy', 'mist', 'rain', 'storm'],
@@ -897,7 +1026,7 @@ export const FISH_SPECIES: FishSpecies[] = [
     minLengthCm: 105,
     maxLengthCm: 185,
     baseWeightKg: 18.6,
-    preferredDepth: [3.8, 6.2],
+    preferredDepth: [6.4, 11.5],
     fightStrength: 1.05,
     speedMultiplier: 1.36,
     activeWeather: ['clear', 'mist', 'rain', 'storm'],
@@ -1018,9 +1147,9 @@ export function getPresetFromHour(hour: number): TimePresetId {
 export function classifyLakeZone(x: number, z: number, waterDepth: number): LakeZoneId {
   const distFromDock = Math.hypot(x, z - 2.0);
   if (distFromDock < 12.5) return 'dock_shade';
-  if (waterDepth < 1.65 || Math.abs(x) > 38.0) return 'shore_reeds';
-  if (waterDepth >= 4.5 && z < -32) return 'alpine_abyss';
-  if (waterDepth > 2.95 && z < -20) return 'deep_basin';
+  if (waterDepth < 2.2 || Math.abs(x) > 40.0) return 'shore_reeds';
+  if (waterDepth >= 7.2 && z < -28) return 'alpine_abyss';
+  if (waterDepth > 4.2 && z < -18) return 'deep_basin';
   return 'rocky_ledge';
 }
 

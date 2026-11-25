@@ -4,12 +4,13 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { NatureSoundEngine } from '../audio/soundEngine';
+import { NatureSoundEngine, type AudioLocationContext } from '../audio/soundEngine';
 import {
   BAIT_CATALOG,
   BOAT_CATALOG,
   HOOK_CATALOG,
   LAKE_ANCHOR_SPOTS,
+  NIGHT_REFLECTION_MOODS,
   SEASON_CATALOG,
   SKILL_CATALOG,
   WEATHER_OPTIONS,
@@ -28,6 +29,7 @@ import {
   type FishingPhase,
   type HookId,
   type LakeSpotId,
+  type NightReflectionMoodId,
   type PlayerProgression,
   type PoiDiscoveryNotice,
   type PoiHudItem,
@@ -41,19 +43,48 @@ import {
 import { createBoatSystem } from './boatSystem';
 import { createCrocodilesAndFrogs } from './crocodilesAndFrogs';
 import { createDockAndRig } from './dockAndRig';
-import { createEnvironment, groundHeightAt } from './environment';
+import { createEnvironment, groundHeightAt, type NightSkyMoodUniforms } from './environment';
 import { createFishSystem, type ActiveFish } from './fishSystem';
 import { createPointsOfInterest } from './pointsOfInterest';
 import { createRivalAnglers } from './rivalAnglers';
 import { createProceduralTextures } from './textures';
-import { createCrystalWater } from './water';
+import { createCrystalWater, type WaterNightReflectionUniforms } from './water';
 import { createWildlifeSystem } from './wildlife';
 import { createPerchingBirdSystem } from './perchingBird';
+import { createFishDripAndKeepnetSystem } from './fishDripAndKeepnet';
 
 const STORAGE_KEY = 'serene_valley_angler_save_v1';
 const DAILY_STORAGE_KEY = 'serene_valley_daily_challenges_v1';
 const SPECIES_RECORDS_STORAGE_KEY = 'serene_valley_species_records_v1';
 const DISCOVERED_POIS_STORAGE_KEY = 'serene_valley_discovered_pois_v1';
+const NIGHT_MOOD_STORAGE_KEY = 'serene_valley_night_mood_v1';
+
+const AUTO_NIGHT_MOOD_CYCLE: Exclude<NightReflectionMoodId, 'auto'>[] = [
+  'silver_mirror',
+  'aurora_emerald',
+  'starlight_nebula',
+  'golden_harvest',
+];
+
+function loadSavedNightMood(): NightReflectionMoodId {
+  try {
+    const raw = localStorage.getItem(NIGHT_MOOD_STORAGE_KEY);
+    if (raw && NIGHT_REFLECTION_MOODS.some((m) => m.id === raw)) {
+      return raw as NightReflectionMoodId;
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return 'auto';
+}
+
+function saveNightMood(mood: NightReflectionMoodId): void {
+  try {
+    localStorage.setItem(NIGHT_MOOD_STORAGE_KEY, mood);
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 function createInitialProgression(): PlayerProgression {
   return {
@@ -221,6 +252,7 @@ export class FishingSceneManager {
   private poiSystem: ReturnType<typeof createPointsOfInterest>;
   private wildlife: ReturnType<typeof createWildlifeSystem>;
   private perchingBird: ReturnType<typeof createPerchingBirdSystem>;
+  private fishDripAndKeepnet: ReturnType<typeof createFishDripAndKeepnetSystem>;
   private crocsAndFrogs: ReturnType<typeof createCrocodilesAndFrogs>;
   private rivalAnglers: ReturnType<typeof createRivalAnglers>;
   private sound = new NatureSoundEngine();
@@ -296,9 +328,10 @@ export class FishingSceneManager {
   private manualWindKmh = 10;
   private currentWindSpeedKmh = 7;
   private soundMuted = false;
-  private weatherChangeTimer = 42;
+  private nightReflectionMood: NightReflectionMoodId = loadSavedNightMood();
+  private weatherChangeTimer = 160;
   private lightningAlpha = 0;
-  private nextLightningTimer = 7;
+  private nextLightningTimer = 10;
   private rainDropTimer = 0;
 
   // Fishing State
@@ -343,6 +376,30 @@ export class FishingSceneManager {
   private rivalWonThisCatch = false;
   private rivalNotice: string | null = null;
   private rivalNoticeTimer = 0;
+  private rivalCutawayTimer = 0;
+  private rivalCutawayBlend = 0;
+  private rivalCutawayCooldown = 0;
+  private rivalCutawaySpeciesName: string | null = null;
+  private rivalCutawayWasActive = false;
+  private _rivalCamQuat = new THREE.Quaternion();
+  private playerCutawayTimer = 0;
+  private playerCutawayBlend = 0;
+  private playerCutawaySpeciesName: string | null = null;
+  private playerCutawayWasActive = false;
+  private _playerCutCamPos = new THREE.Vector3();
+  private _playerCutLookAt = new THREE.Vector3();
+  private _playerCutQuat = new THREE.Quaternion();
+  private _prevBoatAudioPos = new THREE.Vector3();
+  private _hasPrevBoatAudioPos = false;
+  private smoothBoatSpeedNorm = 0;
+  private _audioLocation: AudioLocationContext = {
+    isOnBoat: false,
+    isSailing: false,
+    boatSpeedNorm: 0,
+    waterDepthMeters: 1.4,
+    shoreProximity: 1,
+    nearCaveOrRock: 0,
+  };
   private speciesRecords: Record<string, SpeciesRecordEntry>;
   private recordBrokenNotice: string | null = null;
   private recordNoticeTimer = 0;
@@ -385,6 +442,49 @@ export class FishingSceneManager {
   private _playerAnchorOffset = new THREE.Vector3();
   private _boatWorldPos = new THREE.Vector3();
   private _landingPoint = new THREE.Vector3();
+
+  // Night reflection mood smoothed state & zero-GC shader payloads
+  private _moonDir = new THREE.Vector3(-0.22, 0.44, -0.87).normalize();
+  private _smoothMoonColor = new THREE.Color(0xdcecff);
+  private _smoothSkyTopNight = new THREE.Color(0x091326);
+  private _smoothSkyHorizonNight = new THREE.Color(0x1b2d45);
+  private _smoothWaterDeepNight = new THREE.Color(0x082338);
+  private _smoothAuroraA = new THREE.Color(0x3ef0b4);
+  private _smoothAuroraB = new THREE.Color(0x52a8ff);
+  private _targetColorA = new THREE.Color();
+  private _targetColorB = new THREE.Color();
+  private _noonTop = new THREE.Color(0x2869b2);
+  private _noonHorizon = new THREE.Color(0xbce0f4);
+  private _sunsetTop = new THREE.Color(0x3a3f75);
+  private _sunsetHorizon = new THREE.Color(0xf49d64);
+  private _tintColor = new THREE.Color();
+  private smoothMoonSize = 1.0;
+  private smoothStarDensity = 1.15;
+  private smoothStarReflBoost = 1.15;
+  private smoothMoonReflBoost = 1.15;
+  private smoothAuroraStrength = 0.25;
+  private _skyMoodPayload: NightSkyMoodUniforms = {
+    moonDir: this._moonDir,
+    moonColor: this._smoothMoonColor,
+    moonSize: 1.0,
+    starDensity: 1.15,
+    auroraStrength: 0.25,
+    auroraColorA: this._smoothAuroraA,
+    auroraColorB: this._smoothAuroraB,
+  };
+  private _waterNightPayload: WaterNightReflectionUniforms = {
+    nightFactor: 0,
+    moonDir: this._moonDir,
+    moonColor: this._smoothMoonColor,
+    moonSize: 1.0,
+    moonReflBoost: 1.15,
+    starReflStrength: 1.15,
+    auroraStrength: 0.25,
+    auroraColorA: this._smoothAuroraA,
+    auroraColorB: this._smoothAuroraB,
+    waterDeepNightTint: this._smoothWaterDeepNight,
+    cloudCover: 0.25,
+  };
 
   constructor(container: HTMLElement, onHudUpdate: (state: FishingHudState) => void) {
     this.container = container;
@@ -477,17 +577,20 @@ export class FishingSceneManager {
     this.poiSystem.setDiscoveredIds(Object.keys(this.discoveredPois) as PoiId[]);
     this.wildlife = createWildlifeSystem();
     this.perchingBird = createPerchingBirdSystem();
+    this.fishDripAndKeepnet = createFishDripAndKeepnetSystem(this.textures);
     this.crocsAndFrogs = createCrocodilesAndFrogs();
     this.rivalAnglers = createRivalAnglers();
 
     this.scene.add(this.environment.group);
     this.scene.add(this.dockRig.group);
     this.scene.add(this.boatSystem.group);
+    this.boatSystem.boatRoot.add(this.fishDripAndKeepnet.boatKeepnetGroup);
     this.scene.add(this.poiSystem.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
     this.scene.add(this.wildlife.group);
     this.scene.add(this.perchingBird.group);
+    this.scene.add(this.fishDripAndKeepnet.group);
     this.scene.add(this.crocsAndFrogs.group);
     this.scene.add(this.rivalAnglers.group);
 
@@ -690,8 +793,42 @@ export class FishingSceneManager {
 
   private markUserActivity(cancelManual = true): void {
     this.lastActivityTime = this.elapsed;
+    let changed = false;
     if (cancelManual && this.cinematicManualActive) {
       this.cinematicManualActive = false;
+      changed = true;
+    }
+    if (cancelManual && this.rivalCutawayTimer > 0) {
+      this.rivalCutawayTimer = 0;
+      this.rivalCutawaySpeciesName = null;
+      changed = true;
+    }
+    if (cancelManual && this.playerCutawayTimer > 0 && this.playerCutawayTimer < 2.85) {
+      this.playerCutawayTimer = 0;
+      this.playerCutawaySpeciesName = null;
+      changed = true;
+    }
+    if (changed) {
+      this.emitHudState(true);
+    }
+  }
+
+  public cancelRivalCutaway(): void {
+    if (this.rivalCutawayTimer > 0 || this.rivalCutawayWasActive) {
+      this.rivalCutawayTimer = 0;
+      this.rivalCutawayWasActive = false;
+      this.rivalCutawaySpeciesName = null;
+      this.lastActivityTime = this.elapsed;
+      this.emitHudState(true);
+    }
+  }
+
+  public cancelPlayerCutaway(): void {
+    if (this.playerCutawayTimer > 0 || this.playerCutawayWasActive) {
+      this.playerCutawayTimer = 0;
+      this.playerCutawayWasActive = false;
+      this.playerCutawaySpeciesName = null;
+      this.lastActivityTime = this.elapsed;
       this.emitHudState(true);
     }
   }
@@ -828,6 +965,10 @@ export class FishingSceneManager {
       return;
     }
     if (this.phase === 'idle') {
+      if (this.playerCutawayTimer > 0) {
+        this.playerCutawayTimer = 0;
+        this.playerCutawaySpeciesName = null;
+      }
       this.phase = 'charging';
       this.castPower = 0.08;
       this.castPowerDir = 1;
@@ -877,7 +1018,17 @@ export class FishingSceneManager {
   }
 
   public setLineDepth(depthMeters: number): void {
-    this.lineDepthMeters = THREE.MathUtils.clamp(depthMeters, 0.5, 5.5);
+    this.lineDepthMeters = THREE.MathUtils.clamp(depthMeters, 0.5, 10.5);
+    this.emitHudState(true);
+  }
+
+  public setNightReflectionMood(mood: NightReflectionMoodId): void {
+    this.nightReflectionMood = mood;
+    saveNightMood(mood);
+    const def = NIGHT_REFLECTION_MOODS.find((m) => m.id === mood);
+    if (def) {
+      this.statusMessage = `تم ضبط مزاج انعكاس الليل: ${def.nameAr}`;
+    }
     this.emitHudState(true);
   }
 
@@ -1095,7 +1246,7 @@ export class FishingSceneManager {
     this.boatSystem.setBoatLevel(nextTier.level);
     this.sound.playCatchChime();
     this.newlyUnlockedNotice = `تمت ترقية القارب إلى «${nextTier.nameAr}»! ${nextTier.unlockSummaryAr}`;
-    this.unlockNoticeTimer = 7.0;
+    this.unlockNoticeTimer = 3.0;
     this.statusMessage = `أصبح لديك «${nextTier.nameAr}» — أبحر الآن نحو المناطق الأعمق في وسط البحيرة!`;
     this.emitHudState(true);
   }
@@ -1116,7 +1267,20 @@ export class FishingSceneManager {
       this.sound.playSplash(0.6);
       this.statusMessage = `أُطلقت السمكة في المياه الصافية (+${bonusXp} خبرة إضافية للحفاظ على البيئة)`;
     } else {
-      this.statusMessage = `تم حفظ ${record.species.nameAr} في سجل الصيد`;
+      const dropStart = this.hookedFish ? this.hookedFish.position : this.getPlayerLandingAnchor(this._landingPoint);
+      const dropScale = this.hookedFish ? this.hookedFish.lengthScale : 1.0;
+      this.fishDripAndKeepnet.onPlaceInKeepnet(
+        dropStart,
+        record.species,
+        dropScale,
+        this.boatSystem.isOnBoat(),
+      );
+      this.rivalCutawayTimer = 0;
+      this.rivalCutawaySpeciesName = null;
+      this.playerCutawayTimer = 3.25;
+      this.playerCutawaySpeciesName = record.species.nameAr;
+      this.lastActivityTime = this.elapsed;
+      this.statusMessage = `تم وضع ${record.species.nameAr} في السبت وحفظها في السجل`;
     }
 
     this.catchHistory = [record, ...this.catchHistory];
@@ -1264,9 +1428,9 @@ export class FishingSceneManager {
       }
       this.newlyUnlockedNotice =
         newGearNames.length > 0
-          ? `ترقية إلى المستوى ${newLevel}! فُتحت معدات جديدة: ${newGearNames.join('، ')}`
+          ? `ترقية للمستوى ${newLevel}: ${newGearNames.join('، ')}`
           : `ترقية إلى المستوى ${newLevel}!`;
-      this.unlockNoticeTimer = 6.5;
+      this.unlockNoticeTimer = 3.0;
     }
 
     this.progression = {
@@ -1283,6 +1447,7 @@ export class FishingSceneManager {
   private completeCatch(fish: ActiveFish): void {
     this.sound.playCatchChime();
     this.sound.playSplash(0.9);
+    this.fishDripAndKeepnet.onFishEmerged(fish.position, fish.lengthScale);
     this.phase = 'caught';
     this.reelHeld = false;
     this.lineTension = 0;
@@ -1316,9 +1481,9 @@ export class FishingSceneManager {
       saveSpeciesRecords(updatedRecords);
 
       this.recordBrokenNotice = existingRecord
-        ? `رقم قياسي جديد لـ ${sp.nameAr}: ${weightKg} كجم (حطّم ${existingRecord.maxWeightKg} كجم)! (+${recordBonusXp} XP)`
-        : `أول وزن قياسي مسجّل لـ ${sp.nameAr}: ${weightKg} كجم! (+${recordBonusXp} XP)`;
-      this.recordNoticeTimer = 6.5;
+        ? `رقم قياسي جديد لـ ${sp.nameAr}: ${weightKg} كجم (+${recordBonusXp} XP)`
+        : `أول رقم قياسي لـ ${sp.nameAr}: ${weightKg} كجم (+${recordBonusXp} XP)`;
+      this.recordNoticeTimer = 3.0;
     }
 
     const challengeBonusXp = this.evaluateDailyChallenges(sp.id, this.selectedBait, this.weather);
@@ -1423,8 +1588,8 @@ export class FishingSceneManager {
       saveDailyChallenges(this.dailyChallenges);
 
       if (completedTitles.length > 0) {
-        this.challengeCompletedNotice = `أكملت التحدي اليومي: ${completedTitles.join(' و ')} (+${bonusXp} XP إضافية!)`;
-        this.challengeNoticeTimer = 7.5;
+        this.challengeCompletedNotice = `إنجاز تحدٍّ يومي: ${completedTitles.join(' و ')} (+${bonusXp} XP)`;
+        this.challengeNoticeTimer = 3.0;
       }
     }
 
@@ -1437,8 +1602,8 @@ export class FishingSceneManager {
     conditionLabel: string;
   } {
     if (this.autoTimeCycle) {
-      // Full 24h cycle every ~4 minutes (gentle, noticeable sunset/dawn transitions)
-      this.timeOfDay = (this.timeOfDay + dt * 0.1) % 24;
+      // Full 24h cycle every ~16 minutes for natural, unhurried dawn/day/sunset/night transitions
+      this.timeOfDay = (this.timeOfDay + dt * 0.025) % 24;
     }
 
     const seasonDef = SEASON_CATALOG.find((s) => s.id === this.season)!;
@@ -1446,7 +1611,7 @@ export class FishingSceneManager {
     if (this.autoWeather) {
       this.weatherChangeTimer -= dt;
       if (this.weatherChangeTimer <= 0) {
-        this.weatherChangeTimer = 34 + Math.random() * 28;
+        this.weatherChangeTimer = 160 + Math.random() * 110;
         const weights = seasonDef.preferredWeatherWeights;
         const totalW = Object.values(weights).reduce((a, b) => a + b, 0);
         let r = Math.random() * totalW;
@@ -1470,17 +1635,84 @@ export class FishingSceneManager {
     const golden = Math.exp(-Math.pow((sunElev - 0.06) * 4.5, 2));
     const nightFactor = 1 - daylight;
 
-    // Base Sky & Horizon Colors across Time of Day
-    const noonTop = new THREE.Color(0x2869b2);
-    const noonHorizon = new THREE.Color(0xbce0f4);
-    const sunsetTop = new THREE.Color(0x3a3f75);
-    const sunsetHorizon = new THREE.Color(0xf49d64);
-    const nightTop = new THREE.Color(0x091326);
-    const nightHorizon = new THREE.Color(0x1b2d45);
+    // Resolve active Night Reflection Mood (supports 'auto' smooth cycling or explicit preset)
+    let targetMoonSize = 1.0;
+    let targetStarDensity = 1.15;
+    let targetStarReflBoost = 1.15;
+    let targetMoonReflBoost = 1.15;
+    let targetAuroraStrength = 0.25;
 
-    this._skyTop.copy(nightTop).lerp(noonTop, daylight).lerp(sunsetTop, golden * 0.72);
-    this._skyHorizon.copy(nightHorizon).lerp(noonHorizon, daylight).lerp(sunsetHorizon, golden * 0.85);
-    this._sunColor.setHex(0xfff4db).lerp(new THREE.Color(0xff9a52), golden * 0.85).lerp(new THREE.Color(0xa6c4eb), nightFactor);
+    if (this.nightReflectionMood === 'auto') {
+      const cyclePos = (this.timeOfDay * 0.14 + this.elapsed * 0.0045) % AUTO_NIGHT_MOOD_CYCLE.length;
+      const idxA = Math.floor(cyclePos);
+      const idxB = (idxA + 1) % AUTO_NIGHT_MOOD_CYCLE.length;
+      const blend = THREE.MathUtils.smoothstep(cyclePos - idxA, 0.15, 0.85);
+      const moodA = NIGHT_REFLECTION_MOODS.find((m) => m.id === AUTO_NIGHT_MOOD_CYCLE[idxA]) ?? NIGHT_REFLECTION_MOODS[1];
+      const moodB = NIGHT_REFLECTION_MOODS.find((m) => m.id === AUTO_NIGHT_MOOD_CYCLE[idxB]) ?? NIGHT_REFLECTION_MOODS[2];
+
+      const dampRate = 3.2;
+      this._targetColorA.setHex(moodA.moonColor).lerp(this._targetColorB.setHex(moodB.moonColor), blend);
+      this._smoothMoonColor.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      this._targetColorA.setHex(moodA.skyTopNight).lerp(this._targetColorB.setHex(moodB.skyTopNight), blend);
+      this._smoothSkyTopNight.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      this._targetColorA.setHex(moodA.skyHorizonNight).lerp(this._targetColorB.setHex(moodB.skyHorizonNight), blend);
+      this._smoothSkyHorizonNight.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      this._targetColorA.setHex(moodA.waterDeepNight).lerp(this._targetColorB.setHex(moodB.waterDeepNight), blend);
+      this._smoothWaterDeepNight.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      this._targetColorA.setHex(moodA.auroraColorA).lerp(this._targetColorB.setHex(moodB.auroraColorA), blend);
+      this._smoothAuroraA.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      this._targetColorA.setHex(moodA.auroraColorB).lerp(this._targetColorB.setHex(moodB.auroraColorB), blend);
+      this._smoothAuroraB.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      targetMoonSize = THREE.MathUtils.lerp(moodA.moonSize, moodB.moonSize, blend);
+      targetStarDensity = THREE.MathUtils.lerp(moodA.starDensity, moodB.starDensity, blend);
+      targetStarReflBoost = THREE.MathUtils.lerp(moodA.starReflBoost, moodB.starReflBoost, blend);
+      targetMoonReflBoost = THREE.MathUtils.lerp(moodA.moonReflBoost, moodB.moonReflBoost, blend);
+      targetAuroraStrength = THREE.MathUtils.lerp(moodA.auroraStrength, moodB.auroraStrength, blend);
+    } else {
+      const mood = NIGHT_REFLECTION_MOODS.find((m) => m.id === this.nightReflectionMood) ?? NIGHT_REFLECTION_MOODS[1];
+      const dampRate = 3.6;
+      this._targetColorA.setHex(mood.moonColor);
+      this._smoothMoonColor.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+      this._targetColorA.setHex(mood.skyTopNight);
+      this._smoothSkyTopNight.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+      this._targetColorA.setHex(mood.skyHorizonNight);
+      this._smoothSkyHorizonNight.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+      this._targetColorA.setHex(mood.waterDeepNight);
+      this._smoothWaterDeepNight.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+      this._targetColorA.setHex(mood.auroraColorA);
+      this._smoothAuroraA.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+      this._targetColorA.setHex(mood.auroraColorB);
+      this._smoothAuroraB.lerp(this._targetColorA, Math.min(1, dt * dampRate));
+
+      targetMoonSize = mood.moonSize;
+      targetStarDensity = mood.starDensity;
+      targetStarReflBoost = mood.starReflBoost;
+      targetMoonReflBoost = mood.moonReflBoost;
+      targetAuroraStrength = mood.auroraStrength;
+    }
+
+    this.smoothMoonSize = THREE.MathUtils.damp(this.smoothMoonSize, targetMoonSize, 3.4, dt);
+    this.smoothStarDensity = THREE.MathUtils.damp(this.smoothStarDensity, targetStarDensity, 3.4, dt);
+    this.smoothStarReflBoost = THREE.MathUtils.damp(this.smoothStarReflBoost, targetStarReflBoost, 3.4, dt);
+    this.smoothMoonReflBoost = THREE.MathUtils.damp(this.smoothMoonReflBoost, targetMoonReflBoost, 3.4, dt);
+    this.smoothAuroraStrength = THREE.MathUtils.damp(this.smoothAuroraStrength, targetAuroraStrength, 3.4, dt);
+
+    // Moon trajectory over the alpine lake (-Z) across nighttime hours
+    const nightArc = this.timeOfDay >= 18 ? this.timeOfDay - 24 : this.timeOfDay;
+    const moonX = Math.sin(nightArc * 0.22) * 0.44;
+    const moonY = Math.max(0.16, 0.24 + Math.cos(nightArc * 0.24) * 0.24);
+    this._moonDir.set(moonX, moonY, -0.85).normalize();
+
+    // Base Sky & Horizon Colors across Time of Day
+    this._skyTop.copy(this._smoothSkyTopNight).lerp(this._noonTop, daylight).lerp(this._sunsetTop, golden * 0.72);
+    this._skyHorizon.copy(this._smoothSkyHorizonNight).lerp(this._noonHorizon, daylight).lerp(this._sunsetHorizon, golden * 0.85);
+    this._sunColor.setHex(0xfff4db).lerp(this._targetColorA.setHex(0xff9a52), golden * 0.85).lerp(this._smoothMoonColor, nightFactor);
 
     // Weather Atmospheric Overrides (crisp clear mountains & plains in good weather)
     let targetFogDensity = 0.0014 * seasonDef.fogMultiplier;
@@ -1488,26 +1720,26 @@ export class FishingSceneManager {
     let windBase = 7;
 
     if (this.weather === 'cloudy') {
-      this._skyTop.lerp(new THREE.Color(0x5d7285), 0.45);
-      this._skyHorizon.lerp(new THREE.Color(0x9fb0bd), 0.5);
+      this._skyTop.lerp(this._tintColor.setHex(0x5d7285), 0.45);
+      this._skyHorizon.lerp(this._tintColor.setHex(0x9fb0bd), 0.5);
       targetFogDensity = 0.0028 * seasonDef.fogMultiplier;
       cloudDensity = 0.72;
       windBase = 13;
     } else if (this.weather === 'mist') {
-      this._skyTop.lerp(new THREE.Color(0x88a2ad), 0.55);
-      this._skyHorizon.lerp(new THREE.Color(0xc5d5dc), 0.72);
+      this._skyTop.lerp(this._tintColor.setHex(0x88a2ad), 0.55);
+      this._skyHorizon.lerp(this._tintColor.setHex(0xc5d5dc), 0.72);
       targetFogDensity = 0.0125 * seasonDef.fogMultiplier;
       cloudDensity = 0.62;
       windBase = 5;
     } else if (this.weather === 'rain') {
-      this._skyTop.lerp(new THREE.Color(0x3d4e5e), 0.68);
-      this._skyHorizon.lerp(new THREE.Color(0x6e808f), 0.7);
+      this._skyTop.lerp(this._tintColor.setHex(0x3d4e5e), 0.68);
+      this._skyHorizon.lerp(this._tintColor.setHex(0x6e808f), 0.7);
       targetFogDensity = 0.0068 * seasonDef.fogMultiplier;
       cloudDensity = 0.88;
       windBase = 18;
     } else if (this.weather === 'storm') {
-      this._skyTop.lerp(new THREE.Color(0x1f2833), 0.82);
-      this._skyHorizon.lerp(new THREE.Color(0x3e4b59), 0.82);
+      this._skyTop.lerp(this._tintColor.setHex(0x1f2833), 0.82);
+      this._skyHorizon.lerp(this._tintColor.setHex(0x3e4b59), 0.82);
       targetFogDensity = 0.0095 * seasonDef.fogMultiplier;
       cloudDensity = 0.96;
       windBase = 34;
@@ -1540,17 +1772,18 @@ export class FishingSceneManager {
       this.sunLight.color.copy(this._sunColor);
       this.sunLight.intensity = (0.35 + daylight * 2.15) * weatherDim + this.lightningAlpha * 2.6;
     } else {
-      // Moonlight from above-front
-      this.sunLight.position.set(-18, 42, -38);
-      this.sunLight.color.setHex(0x8cb2e6);
-      this.sunLight.intensity = 0.45 * weatherDim + this.lightningAlpha * 2.6;
+      // Sync directional moonlight & shadows with the moon mood position & tint
+      this.sunLight.position.copy(this.sunLight.target.position).addScaledVector(this._moonDir, 88);
+      this.sunLight.color.copy(this._smoothMoonColor);
+      this.sunLight.intensity = (0.42 + (this.smoothMoonReflBoost - 1.0) * 0.25) * weatherDim + this.lightningAlpha * 2.6;
     }
 
     if (this.bloomPass) {
-      this.bloomPass.strength = 0.22 + nightFactor * 0.14 + golden * 0.06;
+      this.bloomPass.strength =
+        0.22 + nightFactor * (0.12 + this.smoothAuroraStrength * 0.08 + (this.smoothMoonReflBoost - 1.0) * 0.06) + golden * 0.06;
     }
 
-    this._hemiSky.copy(this._skyTop).lerp(new THREE.Color(0xffffff), 0.25);
+    this._hemiSky.copy(this._skyTop).lerp(this._tintColor.setHex(0xffffff), 0.25);
     this._hemiGround.setHex(this.season === 'winter' ? 0x5c6b70 : this.season === 'autumn' ? 0x5a4c2d : 0x3b4d33);
     this.hemiLight.color.copy(this._hemiSky);
     this.hemiLight.groundColor.copy(this._hemiGround);
@@ -1652,16 +1885,16 @@ export class FishingSceneManager {
       this.pollenGeo.attributes.position.needsUpdate = true;
     }
 
-    // Cold Weather Intensity & Angler Cold Breath Vapor Emitter
+    // Cold Weather Intensity & Angler Cold Breath Vapor Emitter (gentle, realistic frost ramp)
     let targetCold = 0.0;
     if (this.season === 'winter') {
       targetCold = 1.0;
     } else if (this.season === 'autumn') {
-      targetCold = nightFactor > 0.35 || this.weather === 'mist' || this.weather === 'rain' || this.weather === 'storm' ? 0.56 : 0.2;
+      targetCold = nightFactor > 0.45 || this.weather === 'mist' || this.weather === 'rain' || this.weather === 'storm' ? 0.52 : 0.14;
     } else if (this.season === 'spring') {
-      targetCold = nightFactor > 0.55 || this.weather === 'mist' ? 0.44 : 0.0;
+      targetCold = nightFactor > 0.78 ? 0.28 : 0.0;
     }
-    this.coldIntensity = THREE.MathUtils.damp(this.coldIntensity, targetCold, 0.9, dt);
+    this.coldIntensity = THREE.MathUtils.damp(this.coldIntensity, targetCold, 0.18, dt);
 
     const canBreathe = this.coldIntensity > 0.32 && this.cinematicBlend < 0.25;
     this.breathPoints.visible = this.coldIntensity > 0.2 && this.cinematicBlend < 0.35;
@@ -1735,6 +1968,10 @@ export class FishingSceneManager {
 
     const effectiveWindMult = Math.max(0.25, windSpeedKmh / 10);
 
+    this._skyMoodPayload.moonSize = this.smoothMoonSize;
+    this._skyMoodPayload.starDensity = this.smoothStarDensity;
+    this._skyMoodPayload.auroraStrength = this.smoothAuroraStrength;
+
     this.environment.update(
       this.elapsed,
       this._sunDir,
@@ -1746,7 +1983,15 @@ export class FishingSceneManager {
       nightFactor,
       cloudDensity,
       effectiveWindMult,
+      this._skyMoodPayload,
     );
+
+    this._waterNightPayload.nightFactor = nightFactor;
+    this._waterNightPayload.moonSize = this.smoothMoonSize;
+    this._waterNightPayload.moonReflBoost = this.smoothMoonReflBoost;
+    this._waterNightPayload.starReflStrength = this.smoothStarReflBoost;
+    this._waterNightPayload.auroraStrength = this.smoothAuroraStrength;
+    this._waterNightPayload.cloudCover = THREE.MathUtils.clamp(cloudDensity, 0, 1);
 
     this.water.update(
       dt,
@@ -1759,9 +2004,53 @@ export class FishingSceneManager {
       windSpeedKmh,
       this._fogColor,
       this.fog.density,
+      this._waterNightPayload,
     );
 
-    this.sound.updateAmbience(this.weather, this.timeOfDay, this.elapsed, windSpeedKmh);
+    const isOnBoatAudio = this.boatSystem.isOnBoat();
+    this.boatSystem.getBoatPosition(this._boatWorldPos);
+    let rawBoatSpeed = 0;
+    if (isOnBoatAudio && this._hasPrevBoatAudioPos && dt > 0.0001) {
+      const dx = this._boatWorldPos.x - this._prevBoatAudioPos.x;
+      const dz = this._boatWorldPos.z - this._prevBoatAudioPos.z;
+      rawBoatSpeed = Math.hypot(dx, dz) / dt;
+    }
+    this._prevBoatAudioPos.copy(this._boatWorldPos);
+    this._hasPrevBoatAudioPos = true;
+    this.smoothBoatSpeedNorm = THREE.MathUtils.damp(
+      this.smoothBoatSpeedNorm,
+      THREE.MathUtils.clamp(rawBoatSpeed / 5.5, 0, 1),
+      4.5,
+      dt,
+    );
+
+    const playerX = isOnBoatAudio ? this._boatWorldPos.x : 0;
+    const playerZ = isOnBoatAudio ? this._boatWorldPos.z : 2.3;
+    const depthHere = Math.max(0.5, -groundHeightAt(playerX, playerZ));
+    // Open center lake around (0, -44) -> shoreProximity = 0; wooden pier / shoreline -> shoreProximity = 1
+    const distFromCenter = Math.hypot(playerX / 62, (playerZ + 44) / 40);
+    const shoreProx = isOnBoatAudio
+      ? THREE.MathUtils.clamp(0.15 + Math.max(0, distFromCenter - 0.35) * 1.15 - (depthHere - 2.0) * 0.05, 0.08, 0.88)
+      : 1.0;
+
+    let nearCaveOrRock = 0;
+    for (const info of this.poiSystem.getPoiInfos()) {
+      if (info.definition.id === 'hidden_cave' || info.definition.id === 'wrecked_skiff_cove') {
+        const dPoi = Math.hypot(info.worldX - playerX, info.worldZ - playerZ);
+        if (dPoi < 22) {
+          nearCaveOrRock = Math.max(nearCaveOrRock, THREE.MathUtils.clamp(1 - dPoi / 22, 0, 1));
+        }
+      }
+    }
+
+    this._audioLocation.isOnBoat = isOnBoatAudio;
+    this._audioLocation.isSailing = this.boatSystem.isSailing();
+    this._audioLocation.boatSpeedNorm = this.smoothBoatSpeedNorm;
+    this._audioLocation.waterDepthMeters = depthHere;
+    this._audioLocation.shoreProximity = shoreProx;
+    this._audioLocation.nearCaveOrRock = nearCaveOrRock;
+
+    this.sound.updateAmbience(this.weather, this.timeOfDay, this.elapsed, windSpeedKmh, this._audioLocation);
 
     let conditionLabel = 'جيد للصيد';
     if (this.weather === 'storm') conditionLabel = 'عاصف · فرص نادرة لأسماك العمق';
@@ -1865,7 +2154,7 @@ export class FishingSceneManager {
           storyAr: def.discoveryStoryAr,
           xpReward: def.xpReward,
         };
-        this.poiNoticeTimer = 7.5;
+        this.poiNoticeTimer = 3.0;
         this.statusMessage = `اكتشفت معلماً جديداً: ${def.nameAr}! (+${def.xpReward} XP للاستكشاف)`;
         this.emitHudState(true);
       }
@@ -2131,9 +2420,9 @@ export class FishingSceneManager {
         this.water.spawnSplash(f.position.x, f.position.z, 1.35);
       }
 
-      // Clamp hooked fish inside deep water basin
+      // Clamp hooked fish inside deepened lake water basin (up to ~12m)
       const bedY = groundHeightAt(f.position.x, f.position.z);
-      f.position.y = THREE.MathUtils.clamp(f.position.y, Math.max(bedY + 0.22, -5.4), distToDock <= 7.0 ? -0.14 : -0.35);
+      f.position.y = THREE.MathUtils.clamp(f.position.y, Math.max(bedY + 0.22, -11.0), distToDock <= 7.0 ? -0.14 : -0.35);
       f.mesh.position.copy(f.position);
       f.mesh.rotation.y = Math.atan2(
         this.reelHeld ? -dockPos.x : this._rightVec.x,
@@ -2150,8 +2439,8 @@ export class FishingSceneManager {
 
       // Check line snap vs landing catch
       if (this.lineTension >= 0.99) {
-        this.lineSnappedNotice = 'انقطع الخيط بسبب الشد الزائد! هدّئ السحب عند احمرار المؤشر أو طوّر متانة الخيط.';
-        this.lineSnapTimer = 4.5;
+        this.lineSnappedNotice = 'انقطع الخيط بسبب الشد الزائد! خفّف السحب عند الاحمرار.';
+        this.lineSnapTimer = 3.0;
         this.resetToIdle('انقطع الخيط! اضغط للرمي مجدداً');
       } else if (distToDock <= 2.9) {
         this.completeCatch(f);
@@ -2187,6 +2476,22 @@ export class FishingSceneManager {
       this.bobberPos.set(f.position.x, f.position.y + 0.14, f.position.z);
       this.lurePos.set(f.position.x, f.position.y + 0.04, f.position.z);
     }
+
+    // Update falling water droplets from caught fish & keepnet drop animation
+    this.fishDripAndKeepnet.update({
+      dt,
+      elapsed: this.elapsed,
+      isCaughtShowcase: this.phase === 'caught' && this.hookedFish !== null,
+      fishWorldPos: this.hookedFish ? this.hookedFish.position : null,
+      fishYaw: this.catchInspectAngle,
+      fishScale: this.hookedFish ? this.hookedFish.mesh.scale.x : 1.0,
+      isOnBoat: isOnBoatNow,
+      boatRoot: this.boatSystem.boatRoot,
+      getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
+      onWaterRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
+      onWaterDripSound: (pan, inten) => this.sound.playWaterDrip(pan, inten),
+      onKeepnetDropSound: (pan) => this.sound.playKeepnetDrop(pan),
+    });
 
     // Smoothly ramp showcase fill light so caught fish scales & markings shine clearly even at dusk/night
     const wantShowcaseLight = this.phase === 'caught' && this.hookedFish !== null;
@@ -2292,11 +2597,8 @@ export class FishingSceneManager {
     });
 
     for (const rIdx of crocResult.devouredRivalIndices) {
-      const eatenRivalName = this.rivalAnglers.devourRivalFish(rIdx);
-      if (eatenRivalName && !this.rivalContestActive) {
-        this.rivalNotice = `التهم التمساح صيد ${eatenRivalName} في البحيرة!`;
-        this.rivalNoticeTimer = 3.8;
-      }
+      // Visual 3D crocodile lunge & splash happens directly on the lake without popping text banners
+      this.rivalAnglers.devourRivalFish(rIdx);
     }
 
     this.crocThreatActive = crocResult.threatActive;
@@ -2307,8 +2609,8 @@ export class FishingSceneManager {
     if (crocResult.devoured && activeReelingFish) {
       this.fishSystem.consumeHookedFish();
       this.hookedFish = null;
-      this.lineSnappedNotice = 'التهم التمساح السمكة لتباطؤ السحب! واصل السحب بثبات قبل اقترابه.';
-      this.lineSnapTimer = 5.2;
+      this.lineSnappedNotice = 'التهم التمساح السمكة! اسحب بسرعة أكبر قبل اقترابه.';
+      this.lineSnapTimer = 3.0;
       this.resetToIdle('التهم التمساح السمكة! ارمِ الصنارة من جديد');
     }
 
@@ -2335,8 +2637,8 @@ export class FishingSceneManager {
     this.rivalContestBalance = rivalResult.contestBalance;
 
     if (rivalResult.justStarted && rivalResult.rivalName) {
-      this.rivalNotice = `اشتبك ${rivalResult.rivalName} على نفس السمكة! اسحب بقوة للفوز بها!`;
-      this.rivalNoticeTimer = 4.5;
+      this.rivalNotice = `اشتبك ${rivalResult.rivalName} على نفس السمكة! اسحب بقوة!`;
+      this.rivalNoticeTimer = 3.0;
     }
     if (rivalResult.contestActive && stillReelingFish) {
       stillReelingFish.position.x += rivalResult.pullVectorX * dt;
@@ -2345,14 +2647,97 @@ export class FishingSceneManager {
     }
     if (rivalResult.justWon) {
       this.rivalWonThisCatch = true;
-      this.rivalNotice = 'حسمت صراع السحب لصالحك ضد المنافس! (+50 خبرة عند الصيد)';
-      this.rivalNoticeTimer = 4.5;
+      this.rivalNotice = 'حسمت صراع السحب ضد المنافس! (+50 XP)';
+      this.rivalNoticeTimer = 3.0;
     } else if (rivalResult.justStolen && stillReelingFish) {
       this.fishSystem.consumeHookedFish();
       this.hookedFish = null;
-      this.rivalNotice = 'خطف الصياد المنافس السمكة من أمامك في صراع السحب!';
-      this.rivalNoticeTimer = 5.2;
+      this.rivalNotice = 'خطف الصياد المنافس السمكة في صراع السحب!';
+      this.rivalNoticeTimer = 3.0;
       this.resetToIdle('فاز المنافس بالسمكة! ارمِ الصنارة في نقطة أخرى');
+    }
+
+    // Main player's ~3.25s short close-up video placing caught fish into their woven basket ("السبت")
+    if (this.playerCutawayTimer > 0 && this.phase === 'idle' && !this.boatSystem.isSailing()) {
+      this.playerCutawayTimer = Math.max(0, this.playerCutawayTimer - dt);
+      this.lastActivityTime = this.elapsed;
+    } else if (this.playerCutawayTimer > 0) {
+      this.playerCutawayTimer = 0;
+      this.playerCutawaySpeciesName = null;
+    }
+
+    const playerCutawayActiveNow = this.playerCutawayTimer > 0;
+    if (playerCutawayActiveNow !== this.playerCutawayWasActive) {
+      this.playerCutawayWasActive = playerCutawayActiveNow;
+      this.emitHudState(true);
+    }
+
+    this.playerCutawayBlend = THREE.MathUtils.damp(
+      this.playerCutawayBlend,
+      playerCutawayActiveNow ? 1 : 0,
+      playerCutawayActiveNow ? 5.2 : 4.5,
+      dt,
+    );
+
+    // Short ~4-second live focus cutaway when Abu Ali lifts his catch off the hook & drops it in his basket
+    if (this.rivalCutawayCooldown > 0) {
+      this.rivalCutawayCooldown = Math.max(0, this.rivalCutawayCooldown - dt);
+    }
+    const playerAvailableForCutaway =
+      (this.phase === 'idle' || this.phase === 'waiting') &&
+      !this.isDragging &&
+      !this.pointerDown &&
+      !this.boatSystem.isSailing() &&
+      !this.cinematicManualActive &&
+      this.playerCutawayTimer <= 0;
+
+    if (rivalResult.abuAliCutaway.justStarted && playerAvailableForCutaway && this.rivalCutawayCooldown <= 0) {
+      this.rivalCutawayTimer = 4.0;
+      this.rivalCutawayCooldown = 14.0;
+      this.rivalCutawaySpeciesName = rivalResult.abuAliCutaway.speciesNameAr;
+    }
+
+    if (
+      this.rivalCutawayTimer > 0 &&
+      rivalResult.abuAliCutaway.active &&
+      (this.phase === 'idle' || this.phase === 'waiting') &&
+      this.playerCutawayTimer <= 0
+    ) {
+      this.rivalCutawayTimer = Math.max(0, this.rivalCutawayTimer - dt);
+      this.rivalCutawaySpeciesName = rivalResult.abuAliCutaway.speciesNameAr;
+    } else if (this.rivalCutawayTimer > 0) {
+      this.rivalCutawayTimer = 0;
+      this.rivalCutawaySpeciesName = null;
+    }
+
+    const cutawayActiveNow = this.rivalCutawayTimer > 0;
+    if (cutawayActiveNow !== this.rivalCutawayWasActive) {
+      this.rivalCutawayWasActive = cutawayActiveNow;
+      this.emitHudState(true);
+    }
+
+    this.rivalCutawayBlend = THREE.MathUtils.damp(
+      this.rivalCutawayBlend,
+      cutawayActiveNow ? 1 : 0,
+      cutawayActiveNow ? 4.2 : 5.2,
+      dt,
+    );
+    if (this.playerCutawayBlend > 0.002) {
+      this.fishDripAndKeepnet.getCutawayPose(
+        isOnBoatNow,
+        this.boatSystem.boatRoot,
+        this._playerCutCamPos,
+        this._playerCutLookAt,
+      );
+      this._lookMatrix.lookAt(this._playerCutCamPos, this._playerCutLookAt, this._camUp);
+      this._playerCutQuat.setFromRotationMatrix(this._lookMatrix);
+      this.camera.position.lerp(this._playerCutCamPos, this.playerCutawayBlend);
+      this.camera.quaternion.slerp(this._playerCutQuat, this.playerCutawayBlend);
+    } else if (this.rivalCutawayBlend > 0.002) {
+      this._lookMatrix.lookAt(rivalResult.abuAliCutaway.camPos, rivalResult.abuAliCutaway.lookAt, this._camUp);
+      this._rivalCamQuat.setFromRotationMatrix(this._lookMatrix);
+      this.camera.position.lerp(rivalResult.abuAliCutaway.camPos, this.rivalCutawayBlend);
+      this.camera.quaternion.slerp(this._rivalCamQuat, this.rivalCutawayBlend);
     }
 
     const rigYawForRod = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
@@ -2467,6 +2852,7 @@ export class FishingSceneManager {
       timeOfDay: this.timeOfDay,
       timePreset: getPresetFromHour(this.timeOfDay),
       autoTimeCycle: this.autoTimeCycle,
+      nightReflectionMood: this.nightReflectionMood,
       season: this.season,
       weather: this.weather,
       autoWeather: this.autoWeather,
@@ -2496,6 +2882,10 @@ export class FishingSceneManager {
       rivalName: this.rivalName,
       rivalContestBalance: this.rivalContestBalance,
       rivalNotice: this.rivalNotice,
+      rivalCutawayActive: this.rivalCutawayTimer > 0 || this.rivalCutawayBlend > 0.08,
+      rivalCutawaySpeciesName: this.rivalCutawaySpeciesName,
+      playerBasketCutawayActive: this.playerCutawayTimer > 0 || this.playerCutawayBlend > 0.08,
+      playerBasketCutawaySpeciesName: this.playerCutawaySpeciesName,
       speciesRecords: this.speciesRecords,
       recordBrokenNotice: this.recordBrokenNotice,
       isHeavyHookedFish: this.phase === 'reeling' && this.isHeavyHookedFish,
@@ -2535,6 +2925,7 @@ export class FishingSceneManager {
     this.poiSystem.dispose();
     this.wildlife.dispose();
     this.perchingBird.dispose();
+    this.fishDripAndKeepnet.dispose();
     this.crocsAndFrogs.dispose();
     this.rivalAnglers.dispose();
     this.textures.dispose();

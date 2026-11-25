@@ -64,13 +64,13 @@ export function groundHeightAt(x: number, z: number): number {
   let height = 0;
 
   if (lakeDist < 1.0) {
-    // Smooth bowl from 0 at shoreline down to -6.7 in central alpine abyss
+    // Smooth bowl from 0 at shoreline down to ~12.2m in central alpine abyss
     const t = Math.max(0, 1.0 - lakeDist);
-    const depth = Math.pow(t, 0.72) * 5.15;
-    const abyssT = THREE.MathUtils.clamp((0.58 - lakeDist) / 0.58, 0, 1);
-    const abyssExtra = Math.pow(abyssT, 1.35) * 1.55;
+    const depth = Math.pow(t, 0.78) * 8.4;
+    const abyssT = THREE.MathUtils.clamp((0.62 - lakeDist) / 0.62, 0, 1);
+    const abyssExtra = Math.pow(abyssT, 1.32) * 3.85;
     const ledgeBump =
-      (Math.sin(x * 0.11) * Math.cos(z * 0.1) * 0.35 + (fbm(x * 0.07, z * 0.07, 2) - 0.5) * 0.45) *
+      (Math.sin(x * 0.11) * Math.cos(z * 0.1) * 0.42 + (fbm(x * 0.07, z * 0.07, 2) - 0.5) * 0.55) *
       Math.min(1, t * 2.5);
     height = -depth - abyssExtra + ledgeBump;
   } else {
@@ -101,6 +101,16 @@ export function groundHeightAt(x: number, z: number): number {
   return height;
 }
 
+export interface NightSkyMoodUniforms {
+  moonDir: THREE.Vector3;
+  moonColor: THREE.Color;
+  moonSize: number;
+  starDensity: number;
+  auroraStrength: number;
+  auroraColorA: THREE.Color;
+  auroraColorB: THREE.Color;
+}
+
 export interface EnvironmentSystem {
   group: THREE.Group;
   skyMaterial: THREE.ShaderMaterial;
@@ -117,6 +127,7 @@ export interface EnvironmentSystem {
     starAlpha: number,
     cloudDensity: number,
     windMultiplier: number,
+    nightMood: NightSkyMoodUniforms,
   ) => void;
   dispose: () => void;
 }
@@ -132,6 +143,13 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     fog: false,
     uniforms: {
       uSunDir: { value: new THREE.Vector3(0.3, 0.5, -0.8).normalize() },
+      uMoonDir: { value: new THREE.Vector3(-0.22, 0.44, -0.87).normalize() },
+      uMoonColor: { value: new THREE.Color(0xdcecff) },
+      uMoonSize: { value: 1.0 },
+      uStarDensity: { value: 1.15 },
+      uAuroraStrength: { value: 0.25 },
+      uAuroraColorA: { value: new THREE.Color(0x3ef0b4) },
+      uAuroraColorB: { value: new THREE.Color(0x52a8ff) },
       uSkyTop: { value: new THREE.Color(0x2a66a8) },
       uSkyHorizon: { value: new THREE.Color(0xb8dcf0) },
       uSunColor: { value: new THREE.Color(0xfff1cc) },
@@ -150,6 +168,13 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     `,
     fragmentShader: `
       uniform vec3 uSunDir;
+      uniform vec3 uMoonDir;
+      uniform vec3 uMoonColor;
+      uniform float uMoonSize;
+      uniform float uStarDensity;
+      uniform float uAuroraStrength;
+      uniform vec3 uAuroraColorA;
+      uniform vec3 uAuroraColorB;
       uniform vec3 uSkyTop;
       uniform vec3 uSkyHorizon;
       uniform vec3 uSunColor;
@@ -194,26 +219,70 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
         float sunDisc = smoothstep(0.9982, 0.9994, sunDot) * (1.0 - uStormFactor * 0.8);
         col += uSunColor * (sunHalo * (1.0 - uStormFactor * 0.5) + sunDisc * 1.8);
 
-        // Crescent/Full Moon opposite sun when night
-        vec3 moonDir = normalize(vec3(-uSunDir.x * 0.6, max(0.28, -uSunDir.y * 0.8 + 0.35), -0.65));
-        float moonDot = max(dot(dir, moonDir), 0.0);
-        float moonDisc = smoothstep(0.9991, 0.9996, moonDot) * uStarAlpha;
-        float moonGlow = pow(moonDot, 36.0) * 0.28 * uStarAlpha;
-        col += vec3(0.82, 0.9, 1.0) * (moonDisc * 1.4 + moonGlow);
+        // Twinkling Multi-Tier Stars + Milky Way band at dusk/night
+        if (uStarAlpha > 0.01 && dir.y > 0.03) {
+          float clearSky = (1.0 - uStormFactor * 0.88) * smoothstep(0.03, 0.22, dir.y);
+          // Subtle diagonal Milky Way stardust band
+          float bandCoord = dir.x * 0.65 - dir.z * 0.55 + dir.y * 0.45;
+          float bandMask = exp(-pow((bandCoord - 0.12) * 3.8, 2.0)) * smoothstep(1.0, 1.8, uStarDensity);
+          float nebula = fbmCloud(dir.xz * 4.2 + vec2(1.7, 3.1));
+          col += mix(uAuroraColorB, uMoonColor, 0.45) * bandMask * nebula * 0.16 * uStarAlpha * clearSky;
 
-        // Twinkling Stars at dusk/night
-        if (uStarAlpha > 0.01 && dir.y > 0.04) {
-          vec2 starUv = dir.xz / (dir.y + 0.35) * 95.0;
-          vec2 cell = floor(starUv);
-          vec2 gv = fract(starUv) - 0.5;
-          float rnd = hash(cell);
-          if (rnd > 0.965) {
-            float d = length(gv);
-            float twinkle = 0.65 + 0.35 * sin(uTime * 2.2 + rnd * 40.0);
-            float star = smoothstep(0.18, 0.02, d) * twinkle;
-            col += vec3(0.92, 0.95, 1.0) * star * uStarAlpha * smoothstep(0.04, 0.25, dir.y) * (1.0 - uStormFactor * 0.85);
+          // Primary bright stars
+          vec2 starUv1 = dir.xz / (dir.y + 0.35) * 95.0;
+          vec2 cell1 = floor(starUv1);
+          vec2 gv1 = fract(starUv1) - 0.5;
+          float rnd1 = hash(cell1);
+          float starThresh1 = mix(0.972, 0.946, clamp((uStarDensity - 0.8) * 0.85, 0.0, 1.0));
+          if (rnd1 > starThresh1) {
+            float d1 = length(gv1);
+            float twinkle1 = 0.62 + 0.38 * sin(uTime * (2.0 + fract(rnd1 * 17.0) * 2.2) + rnd1 * 45.0);
+            float star1 = smoothstep(0.20, 0.02, d1) * twinkle1;
+            vec3 starTint = mix(vec3(0.86, 0.92, 1.0), vec3(1.0, 0.93, 0.82), fract(rnd1 * 31.0));
+            col += starTint * star1 * uStarAlpha * clearSky * 1.15;
+          }
+
+          // Secondary fine dense starfield
+          if (uStarDensity > 1.02) {
+            vec2 starUv2 = dir.xz / (dir.y + 0.28) * 165.0 + vec2(11.3, 7.7);
+            vec2 cell2 = floor(starUv2);
+            vec2 gv2 = fract(starUv2) - 0.5;
+            float rnd2 = hash(cell2);
+            float starThresh2 = mix(0.978, 0.945, clamp((uStarDensity - 1.0) * 0.95, 0.0, 1.0));
+            if (rnd2 > starThresh2) {
+              float d2 = length(gv2);
+              float twinkle2 = 0.55 + 0.45 * cos(uTime * 2.9 + rnd2 * 60.0);
+              float star2 = smoothstep(0.16, 0.02, d2) * twinkle2;
+              col += vec3(0.88, 0.94, 1.0) * star2 * uStarAlpha * clearSky * 0.72;
+            }
           }
         }
+
+        // Flowing Aurora Borealis ribbons in upper night sky
+        if (uStarAlpha > 0.02 && uAuroraStrength > 0.01 && dir.y > 0.05) {
+          vec2 aUv = dir.xz / (dir.y + 0.34);
+          float waveA = sin(aUv.x * 2.4 + uTime * 0.14 + sin(aUv.y * 1.8 - uTime * 0.08) * 1.4);
+          float curtain = smoothstep(0.15, 0.92, waveA * 0.5 + 0.5);
+          float streak = fbmCloud(vec2(aUv.x * 3.1 + uTime * 0.04, aUv.y * 1.2 - uTime * 0.06));
+          float bandEnv = smoothstep(0.05, 0.28, dir.y) * smoothstep(0.88, 0.22, dir.y);
+          float auroraMask = curtain * smoothstep(0.32, 0.78, streak) * bandEnv * uAuroraStrength * uStarAlpha * (1.0 - uStormFactor * 0.85);
+          vec3 auroraCol = mix(uAuroraColorA, uAuroraColorB, smoothstep(0.16, 0.55, dir.y));
+          col += auroraCol * auroraMask * 0.72;
+        }
+
+        // Synchronized Celestial Moon with subtle lunar mare shading & mood-tinted corona
+        vec3 moonDir = normalize(uMoonDir);
+        float moonDot = max(dot(dir, moonDir), 0.0);
+        float discEdge = 0.9991 - clamp(uMoonSize - 1.0, -0.3, 0.6) * 0.0007;
+        float moonDisc = smoothstep(discEdge - 0.0004, discEdge + 0.0003, moonDot) * uStarAlpha * (1.0 - uStormFactor * 0.86);
+        float moonGlow = (pow(moonDot, 22.0) * 0.24 + pow(moonDot, 110.0) * 0.34) * uStarAlpha * (1.0 - uStormFactor * 0.65);
+
+        // Subtle surface crater/mare texture inside moon disc
+        vec3 mRight = normalize(cross(vec3(0.0, 1.0, 0.0), moonDir));
+        vec3 mUp = cross(moonDir, mRight);
+        vec2 mUv = vec2(dot(dir, mRight), dot(dir, mUp)) * 42.0;
+        float mare = 0.82 + 0.18 * fbmCloud(mUv + vec2(3.1, 1.4));
+        col += uMoonColor * (moonDisc * 1.55 * mare + moonGlow);
 
         // Soft drifting clouds above horizon
         if (dir.y > 0.03) {
@@ -223,7 +292,8 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
           float cloudMask = smoothstep(threshold, threshold + 0.25, c) * smoothstep(0.03, 0.24, dir.y);
           vec3 cloudLit = mix(vec3(0.96, 0.97, 0.99), uSunColor, 0.28);
           cloudLit = mix(cloudLit, uSkyHorizon * 0.72, uStormFactor * 0.65);
-          cloudLit = mix(cloudLit, vec3(0.24, 0.29, 0.38), uStarAlpha * 0.75);
+          vec3 nightCloudCol = mix(uSkyHorizon * 0.78, uMoonColor * 0.38, pow(moonDot, 6.0) * 0.65);
+          cloudLit = mix(cloudLit, nightCloudCol, uStarAlpha * 0.82);
           col = mix(col, cloudLit, cloudMask * mix(0.65, 0.92, uStormFactor));
         }
 
@@ -263,8 +333,8 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5)) * 0.1;
 
     if (y < -0.35) {
-      const deepT = THREE.MathUtils.clamp((-y - 0.35) / 4.0, 0, 1);
-      tmpColor.copy(cSand).lerp(cPebble, deepT * 0.75 + n);
+      const deepT = THREE.MathUtils.clamp((-y - 0.35) / 8.5, 0, 1);
+      tmpColor.copy(cSand).lerp(cPebble, deepT * 0.88 + n);
     } else if (y < 0.75) {
       const shoreT = THREE.MathUtils.clamp((y + 0.35) / 1.1, 0, 1);
       tmpColor.copy(cSand).lerp(cMeadow, shoreT);
@@ -399,9 +469,9 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
              diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, snowLedge * 0.92);
            }
 
-           // Underwater sun caustics
+           // Underwater sun caustics (attenuate gradually into the deeper 12m abyss)
            if (vWorldPosTerrain.y < 0.02) {
-             float depthFade = smoothstep(-5.0, -0.1, vWorldPosTerrain.y);
+             float depthFade = smoothstep(-8.8, -0.1, vWorldPosTerrain.y);
              float c = causticPattern(vWorldPosTerrain.xz, uTime);
              diffuseColor.rgb += vec3(0.19, 0.28, 0.26) * c * depthFade * uSunIntensity;
            }
@@ -841,7 +911,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const rz = (hash2(19, i) - 0.5) * 155 - 44;
     if (Math.hypot(rx, rz - 1) < 6.0) continue;
     const ry = groundHeightAt(rx, rz);
-    if (ry < -4.2 || ry > 9.0) continue;
+    if (ry < -8.5 || ry > 9.0) continue;
 
     const s = 0.35 + hash2(rx, rz) * 1.25;
     dummy.position.set(rx, ry + s * 0.18, rz);
@@ -983,9 +1053,16 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     skyMaterial,
     terrainMaterial,
     reedsMesh,
-    update: (elapsed, sunDir, skyTop, skyHorizon, sunColor, weather, season, starAlpha, cloudDensity, windMultiplier) => {
+    update: (elapsed, sunDir, skyTop, skyHorizon, sunColor, weather, season, starAlpha, cloudDensity, windMultiplier, nightMood) => {
       const stormFactor = weather === 'storm' ? 1.0 : weather === 'rain' ? 0.55 : weather === 'mist' ? 0.25 : 0.0;
       skyMaterial.uniforms.uSunDir.value.copy(sunDir);
+      skyMaterial.uniforms.uMoonDir.value.copy(nightMood.moonDir);
+      skyMaterial.uniforms.uMoonColor.value.copy(nightMood.moonColor);
+      skyMaterial.uniforms.uMoonSize.value = nightMood.moonSize;
+      skyMaterial.uniforms.uStarDensity.value = nightMood.starDensity;
+      skyMaterial.uniforms.uAuroraStrength.value = nightMood.auroraStrength;
+      skyMaterial.uniforms.uAuroraColorA.value.copy(nightMood.auroraColorA);
+      skyMaterial.uniforms.uAuroraColorB.value.copy(nightMood.auroraColorB);
       skyMaterial.uniforms.uSkyTop.value.copy(skyTop);
       skyMaterial.uniforms.uSkyHorizon.value.copy(skyHorizon);
       skyMaterial.uniforms.uSunColor.value.copy(sunColor);
