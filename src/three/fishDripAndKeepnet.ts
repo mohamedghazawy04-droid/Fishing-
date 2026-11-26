@@ -207,12 +207,29 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
       side: THREE.DoubleSide,
     }),
   );
+  const rareWickerMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      map: wickerTex,
+      color: 0xf7d88c,
+      roughness: 0.76,
+      metalness: 0.08,
+      side: THREE.DoubleSide,
+    }),
+  );
   const bambooMat = trackMat(
     new THREE.MeshStandardMaterial({
       map: textures.woodPlankMap,
       color: 0x734d26,
       roughness: 0.82,
       metalness: 0.04,
+    }),
+  );
+  const rareBambooMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      map: textures.woodPlankMap,
+      color: 0xb6812c,
+      roughness: 0.62,
+      metalness: 0.24,
     }),
   );
   const innerDarkMat = trackMat(
@@ -226,6 +243,13 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
       color: 0x5c3e20,
       roughness: 0.72,
       metalness: 0.12,
+    }),
+  );
+  const rareWireMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xd4a644,
+      roughness: 0.36,
+      metalness: 0.65,
     }),
   );
   const ropeMat = trackMat(
@@ -258,17 +282,28 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
     disposables.push(tex);
   }
 
-  // 1. Pier Wicker Basket ("سبت الصيد") clearly visible in FRONT of angler on front pier deck, away from hands/rod
-  const pierCage = buildKeepnetMesh(0.31, 0.21, 0.25, bambooMat, wickerMat, innerDarkMat, wireMat, ropeMat, shadowMat, disposables);
-  pierCage.cageRoot.position.set(-0.56, 0.72, 0.08);
-  pierCage.cageRoot.rotation.y = 0.22;
-  group.add(pierCage.cageRoot);
+  // 1A. Pier Left Wicker Basket ("سلة الصيد الشائع")
+  const pierCommonCage = buildKeepnetMesh(0.31, 0.21, 0.25, bambooMat, wickerMat, innerDarkMat, wireMat, ropeMat, shadowMat, disposables);
+  pierCommonCage.cageRoot.position.set(-0.58, 0.72, 0.08);
+  pierCommonCage.cageRoot.rotation.y = 0.24;
+  group.add(pierCommonCage.cageRoot);
 
-  // 2. Boat Wicker Basket seated prominently in FRONT on the forward casting thwart bench, away from hands/rod
-  const boatCage = buildKeepnetMesh(0.23, 0.16, 0.21, bambooMat, wickerMat, innerDarkMat, wireMat, ropeMat, shadowMat, disposables);
-  boatCage.cageRoot.position.set(-0.28, 0.228, -0.90);
-  boatCage.cageRoot.rotation.y = 0.24;
-  boatKeepnetGroup.add(boatCage.cageRoot);
+  // 1B. Pier Right Wicker Basket ("سلة النوادر والأساطير") — clear of worm dish (0.48, 0.34) & tackle box (0.72, 1.95)
+  const pierRareCage = buildKeepnetMesh(0.31, 0.21, 0.25, rareBambooMat, rareWickerMat, innerDarkMat, rareWireMat, ropeMat, shadowMat, disposables);
+  pierRareCage.cageRoot.position.set(0.76, 0.72, 0.06);
+  pierRareCage.cageRoot.rotation.y = -0.24;
+  group.add(pierRareCage.cageRoot);
+
+  // 2A & 2B. Boat Wicker Baskets on forward casting thwart bench (left = common, right = rare/legendary)
+  const boatCommonCage = buildKeepnetMesh(0.21, 0.15, 0.20, bambooMat, wickerMat, innerDarkMat, wireMat, ropeMat, shadowMat, disposables);
+  boatCommonCage.cageRoot.position.set(-0.34, 0.228, -0.92);
+  boatCommonCage.cageRoot.rotation.y = 0.24;
+  boatKeepnetGroup.add(boatCommonCage.cageRoot);
+
+  const boatRareCage = buildKeepnetMesh(0.21, 0.15, 0.20, rareBambooMat, rareWickerMat, innerDarkMat, rareWireMat, ropeMat, shadowMat, disposables);
+  boatRareCage.cageRoot.position.set(0.34, 0.228, -0.92);
+  boatRareCage.cageRoot.rotation.y = -0.24;
+  boatKeepnetGroup.add(boatRareCage.cageRoot);
 
   // Anatomical Multi-Part Fish Geometries for the animated kept fish & stored basket replicas
   const fishProfile = [
@@ -381,8 +416,10 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
   dropFishGroup.add(dropHookGroup);
   group.add(dropFishGroup);
 
-  const storedPierMeshes: THREE.Group[] = [];
-  const storedBoatMeshes: THREE.Group[] = [];
+  const storedPierCommonMeshes: THREE.Group[] = [];
+  const storedPierRareMeshes: THREE.Group[] = [];
+  const storedBoatCommonMeshes: THREE.Group[] = [];
+  const storedBoatRareMeshes: THREE.Group[] = [];
 
   function addSpeciesReplicaToBasket(
     cageFishGroup: THREE.Group,
@@ -527,6 +564,7 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
   let dropT = 0;
   const dropDuration = 3.2;
   let dropTargetIsBoat = false;
+  let dropTargetIsRare = false;
   let dropHoverDoneSplash = false;
   let dropTrailAccum = 0;
   let activeDropSpecies: FishSpecies = FISH_SPECIES[0];
@@ -624,6 +662,7 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
       dropHoverDoneSplash = false;
       dropTrailAccum = 0;
       dropTargetIsBoat = isOnBoat;
+      dropTargetIsRare = species.rarity !== 'شائع';
       activeDropSpecies = species;
       dropStartPos.copy(startWorldPos);
 
@@ -638,22 +677,26 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
       dropHookGroup.visible = true;
 
       if (isOnBoat) {
-        boatCage.cageRoot.updateWorldMatrix(true, false);
-        boatCage.cageRoot.getWorldPosition(tmpBoatCageWorld);
-        const pileHeight = Math.min(0.18, Math.floor(storedBoatMeshes.length / 4) * 0.03);
+        const targetBoatCage = dropTargetIsRare ? boatRareCage : boatCommonCage;
+        const storedList = dropTargetIsRare ? storedBoatRareMeshes : storedBoatCommonMeshes;
+        targetBoatCage.cageRoot.updateWorldMatrix(true, false);
+        targetBoatCage.cageRoot.getWorldPosition(tmpBoatCageWorld);
+        const pileHeight = Math.min(0.18, Math.floor(storedList.length / 4) * 0.03);
         dropHoverPos.set(tmpBoatCageWorld.x, tmpBoatCageWorld.y + 0.58, tmpBoatCageWorld.z);
         dropTargetPos.set(tmpBoatCageWorld.x, tmpBoatCageWorld.y + 0.14 + pileHeight, tmpBoatCageWorld.z);
       } else {
-        const pileHeight = Math.min(0.20, Math.floor(storedPierMeshes.length / 4) * 0.032);
+        const targetPierCage = dropTargetIsRare ? pierRareCage : pierCommonCage;
+        const storedList = dropTargetIsRare ? storedPierRareMeshes : storedPierCommonMeshes;
+        const pileHeight = Math.min(0.20, Math.floor(storedList.length / 4) * 0.032);
         dropHoverPos.set(
-          pierCage.cageRoot.position.x,
-          pierCage.cageRoot.position.y + 0.64,
-          pierCage.cageRoot.position.z,
+          targetPierCage.cageRoot.position.x,
+          targetPierCage.cageRoot.position.y + 0.64,
+          targetPierCage.cageRoot.position.z,
         );
         dropTargetPos.set(
-          pierCage.cageRoot.position.x,
-          pierCage.cageRoot.position.y + 0.16 + pileHeight,
-          pierCage.cageRoot.position.z,
+          targetPierCage.cageRoot.position.x,
+          targetPierCage.cageRoot.position.y + 0.16 + pileHeight,
+          targetPierCage.cageRoot.position.z,
         );
       }
 
@@ -664,13 +707,18 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
       const bob = Math.cos(cutawaySeqTime * 0.7) * 0.035;
       if (isOnBoat) {
         boatRoot.updateMatrixWorld(true);
-        tmpBoatCamLocal.set(0.56 + pan, 0.96 + bob, -1.78);
-        tmpBoatLookLocal.set(-0.28, 0.39, -0.90);
+        const targetX = dropTargetIsRare ? 0.34 : -0.34;
+        const camX = dropTargetIsRare ? -0.56 : 0.56;
+        tmpBoatCamLocal.set(camX + pan, 0.96 + bob, -1.78);
+        tmpBoatLookLocal.set(targetX, 0.39, -0.92);
         outCamPos.copy(tmpBoatCamLocal).applyMatrix4(boatRoot.matrixWorld);
         outLookAt.copy(tmpBoatLookLocal).applyMatrix4(boatRoot.matrixWorld);
+      } else if (dropTargetIsRare) {
+        outCamPos.set(-0.36 + pan, 1.54 + bob, -1.04);
+        outLookAt.set(0.76, 0.92, 0.06);
       } else {
         outCamPos.set(0.56 + pan, 1.54 + bob, -1.04);
-        outLookAt.set(-0.56, 0.92, 0.08);
+        outLookAt.set(-0.58, 0.92, 0.08);
       }
     },
     update: ({
@@ -708,8 +756,10 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
 
         if (dropTargetIsBoat) {
           boatRoot.updateMatrixWorld();
-          boatCage.cageRoot.getWorldPosition(tmpBoatCageWorld);
-          const pileHeight = Math.min(0.18, Math.floor(storedBoatMeshes.length / 4) * 0.03);
+          const targetBoatCage = dropTargetIsRare ? boatRareCage : boatCommonCage;
+          const storedList = dropTargetIsRare ? storedBoatRareMeshes : storedBoatCommonMeshes;
+          targetBoatCage.cageRoot.getWorldPosition(tmpBoatCageWorld);
+          const pileHeight = Math.min(0.18, Math.floor(storedList.length / 4) * 0.03);
           dropHoverPos.set(tmpBoatCageWorld.x, tmpBoatCageWorld.y + 0.58, tmpBoatCageWorld.z);
           dropTargetPos.set(tmpBoatCageWorld.x, tmpBoatCageWorld.y + 0.14 + pileHeight, tmpBoatCageWorld.z);
         }
@@ -751,16 +801,22 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
             emitFishBodyDroplets(tmpPt, dropFishGroup.rotation.y, 0.82, 1, 0.48);
           }
         } else {
-          // Stage 3: Land inside basket with splash burst, wobble, and leave species replica inside
+          // Stage 3: Land inside basket with splash burst, wobble, and leave species replica inside the matching rarity basket
           if (!dropHoverDoneSplash) {
             dropHoverDoneSplash = true;
             dropFishGroup.visible = false;
             cageJiggle = 1.0;
-            addSpeciesReplicaToBasket(pierCage.innerFishGroup, storedPierMeshes, activeDropSpecies, 0.60, 0.105);
-            addSpeciesReplicaToBasket(boatCage.innerFishGroup, storedBoatMeshes, activeDropSpecies, 0.46, 0.075);
+            if (dropTargetIsRare) {
+              addSpeciesReplicaToBasket(pierRareCage.innerFishGroup, storedPierRareMeshes, activeDropSpecies, 0.60, 0.105);
+              addSpeciesReplicaToBasket(boatRareCage.innerFishGroup, storedBoatRareMeshes, activeDropSpecies, 0.44, 0.072);
+            } else {
+              addSpeciesReplicaToBasket(pierCommonCage.innerFishGroup, storedPierCommonMeshes, activeDropSpecies, 0.60, 0.105);
+              addSpeciesReplicaToBasket(boatCommonCage.innerFishGroup, storedBoatCommonMeshes, activeDropSpecies, 0.44, 0.072);
+            }
             emitFishBodyDroplets(dropTargetPos, 0, 0.78, 18, 1.15);
             if (onKeepnetDropSound) {
-              onKeepnetDropSound(dropTargetIsBoat ? -0.35 : -0.45);
+              const pan = dropTargetIsRare ? 0.42 : -0.42;
+              onKeepnetDropSound(pan);
             }
           }
         }
@@ -772,17 +828,27 @@ export function createFishDripAndKeepnetSystem(textures: ProceduralTextureSet): 
       }
 
       // Basket jiggle/rattle decay & hinged rim bounce
+      pierCommonCage.cageRoot.rotation.z = 0;
+      pierCommonCage.lidPivot.rotation.x = -1.25;
+      pierRareCage.cageRoot.rotation.z = 0;
+      pierRareCage.lidPivot.rotation.x = -1.25;
+      boatCommonCage.cageRoot.rotation.z = 0;
+      boatCommonCage.lidPivot.rotation.x = -1.25;
+      boatRareCage.cageRoot.rotation.z = 0;
+      boatRareCage.lidPivot.rotation.x = -1.25;
+
       if (cageJiggle > 0.005) {
         cageJiggle = Math.max(0, cageJiggle - dt * 2.1);
         const wobble = Math.sin(elapsed * 24) * 0.095 * cageJiggle;
-        const activeCage = isOnBoat ? boatCage : pierCage;
+        const activeCage = dropTargetIsBoat
+          ? dropTargetIsRare
+            ? boatRareCage
+            : boatCommonCage
+          : dropTargetIsRare
+            ? pierRareCage
+            : pierCommonCage;
         activeCage.cageRoot.rotation.z = wobble;
         activeCage.lidPivot.rotation.x = -1.25 + Math.abs(Math.sin(elapsed * 14)) * 0.42 * cageJiggle;
-      } else {
-        pierCage.cageRoot.rotation.z = 0;
-        pierCage.lidPivot.rotation.x = -1.25;
-        boatCage.cageRoot.rotation.z = 0;
-        boatCage.lidPivot.rotation.x = -1.25;
       }
 
       // Update Falling 3D Teardrop Water Droplets

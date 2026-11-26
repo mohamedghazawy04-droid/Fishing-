@@ -2,5 +2,5 @@
   "name": "وادي الصيد الهادئ",
   "description": "لعبة صيد أسماك ثلاثية الأبعاد بمنظور الشخص الأول على ضفاف بحيرة جبلية صافية، مع نظام واقعي لحركة الأسماك وتغيرات الطقس والأوقات.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

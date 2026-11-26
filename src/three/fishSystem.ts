@@ -54,6 +54,12 @@ export interface FishSystemUpdateInput {
   timePreset: TimePresetId;
   anglerSenseLevel: number;
   rareAttractionBonus?: number;
+  adaptiveModifiers?: {
+    biteSpeedMult: number;
+    rareAttractionMult: number;
+    targetZone?: LakeZoneId;
+    targetZoneMult?: number;
+  };
   isReelingPhase: boolean;
   onNibble: (x: number, z: number) => void;
   onBiteStart: (fish: ActiveFish) => void;
@@ -705,6 +711,7 @@ export function createFishSystem(): FishSystem {
       timePreset,
       anglerSenseLevel,
       rareAttractionBonus = 1.0,
+      adaptiveModifiers,
       isReelingPhase,
       onNibble,
       onBiteStart,
@@ -713,6 +720,8 @@ export function createFishSystem(): FishSystem {
       const bait = BAIT_CATALOG.find((b) => b.id === baitId)!;
       const hook = HOOK_CATALOG.find((h) => h.id === hookId)!;
       const seasonDef = SEASON_CATALOG.find((s) => s.id === season)!;
+      const adaptiveBiteMult = adaptiveModifiers?.biteSpeedMult ?? 1.0;
+      const adaptiveRareMult = adaptiveModifiers?.rareAttractionMult ?? 1.0;
 
       schoolAnchor.x = -12.0 + Math.sin(elapsed * 0.06) * 18.0;
       schoolAnchor.y = -22.0 + Math.cos(elapsed * 0.05) * 10.0;
@@ -720,6 +729,11 @@ export function createFishSystem(): FishSystem {
       const lureZone = lurePos
         ? classifyLakeZone(lurePos.x, lurePos.z, Math.max(0.2, -groundHeightAt(lurePos.x, lurePos.z)))
         : 'rocky_ledge';
+      const zoneEventMult =
+        adaptiveModifiers?.targetZone && adaptiveModifiers.targetZone === lureZone
+          ? adaptiveModifiers.targetZoneMult ?? 1.15
+          : 1.0;
+      const effectiveRareBonus = rareAttractionBonus * adaptiveRareMult * zoneEventMult;
 
       const alreadyClaimedLure = fishes.some(
         (f) => f.aiState === 'curious' || f.aiState === 'nibbling' || f.aiState === 'biting' || f.aiState === 'hooked',
@@ -727,6 +741,7 @@ export function createFishSystem(): FishSystem {
 
       for (const fish of fishes) {
         if (fish.aiState === 'hooked') {
+          fish.hookedUniform.value = 1.0;
           fish.swimPhase += dt * 18.0;
           fish.tailPivot.rotation.y = Math.sin(fish.swimPhase) * 0.54;
           const fShader = fish.bodyMat.userData.shader;
@@ -749,6 +764,7 @@ export function createFishSystem(): FishSystem {
         let maxSpeed = 0.9 * fish.species.speedMultiplier * seasonDef.fishActivityBonus * weatherSpeedFactor;
 
         if (fish.aiState === 'spooked') {
+          fish.hookedUniform.value = 0;
           maxSpeed *= 2.4;
           fish.stateTimer -= dt;
           if (fish.stateTimer <= 0) {
@@ -756,6 +772,7 @@ export function createFishSystem(): FishSystem {
             pickPatrolPoint(fish);
           }
         } else if (fish.aiState === 'patrol') {
+          fish.hookedUniform.value = 0;
           if (fish.species.behavior === 'ambush' && fish.pauseTimer > 0) {
             fish.pauseTimer -= dt;
             maxSpeed = 0.06;
@@ -777,10 +794,10 @@ export function createFishSystem(): FishSystem {
               timePreset,
               lureZone,
               anglerSenseLevel,
-              rareAttractionBonus,
+              effectiveRareBonus,
             );
             const detectRange = (bait.attractionRadius + 3.2) * (0.75 + interest * 0.45);
-            if (distToLure < detectRange && Math.random() < dt * 0.95 * interest * bait.biteSpeedBonus) {
+            if (distToLure < detectRange && Math.random() < dt * 0.95 * interest * bait.biteSpeedBonus * adaptiveBiteMult * zoneEventMult) {
               fish.aiState = 'curious';
               fish.stateTimer = 5.0 + Math.random() * 2.5;
               fish.nibbleCount = 0;
@@ -792,17 +809,21 @@ export function createFishSystem(): FishSystem {
           fish.targetPos.copy(lurePos);
           fish.stateTimer -= dt;
           const dist = fish.position.distanceTo(lurePos);
+          // Reveal approaching fish clearly underwater as it swims toward the hook
+          fish.hookedUniform.value = dist < 4.8 ? THREE.MathUtils.clamp(1 - dist / 5.2, 0.28, 0.65) : 0;
           if (dist < 0.65) {
             fish.aiState = 'nibbling';
             fish.stateTimer = 0.65 + Math.random() * 0.55;
             onNibble(lurePos.x, lurePos.z);
           } else if (fish.stateTimer <= 0) {
             fish.aiState = 'patrol';
+            fish.hookedUniform.value = 0;
             pickPatrolPoint(fish);
           }
         } else if (fish.aiState === 'nibbling' && lurePos) {
           maxSpeed = 0.26;
           fish.targetPos.copy(lurePos);
+          fish.hookedUniform.value = 0.72;
           fish.stateTimer -= dt;
           if (fish.stateTimer <= 0) {
             fish.nibbleCount++;
@@ -815,7 +836,7 @@ export function createFishSystem(): FishSystem {
               timePreset,
               lureZone,
               anglerSenseLevel,
-              rareAttractionBonus,
+              effectiveRareBonus,
             );
             if (fish.nibbleCount >= fish.maxNibbles) {
               if (Math.random() < Math.min(0.95, 0.58 * interest)) {
@@ -824,6 +845,7 @@ export function createFishSystem(): FishSystem {
                 onBiteStart(fish);
               } else {
                 fish.aiState = 'spooked';
+                fish.hookedUniform.value = 0;
                 fish.stateTimer = 2.0;
                 pickPatrolPoint(fish);
               }
@@ -835,9 +857,11 @@ export function createFishSystem(): FishSystem {
         } else if (fish.aiState === 'biting' && lurePos) {
           maxSpeed = 0.35;
           fish.targetPos.set(lurePos.x, lurePos.y - 0.15, lurePos.z);
+          fish.hookedUniform.value = 0.92;
           fish.stateTimer -= dt;
           if (fish.stateTimer <= 0) {
             fish.aiState = 'spooked';
+            fish.hookedUniform.value = 0;
             fish.stateTimer = 2.8;
             pickPatrolPoint(fish);
             onBiteExpired();

@@ -10,6 +10,7 @@ interface PerchTarget {
   edgeAxis: THREE.Vector3; // valid small-hop direction along perch rim
   hopLimit: number;
   baseLocalYaw: number; // default perched facing direction relative to boat or world
+  isWormRaid?: boolean;
 }
 
 export interface PerchingBirdSystem {
@@ -27,6 +28,7 @@ export interface PerchingBirdSystem {
     boatMovingFast: boolean;
     onBirdChirp?: (pan: number) => void;
     onWingFlutter?: (pan: number) => void;
+    onStealWorm?: (pan: number) => void;
   }) => void;
   dispose: () => void;
 }
@@ -200,6 +202,32 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
   beak.position.set(0, -0.002, 0.072);
   beak.castShadow = true;
   headPivot.add(beak);
+
+  // Stolen wriggling 3D worm clamped in the beak tip during a dish raid
+  const stolenWormMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xd16e5a,
+      roughness: 0.28,
+      metalness: 0.06,
+    }),
+  );
+  const stolenWormCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.044, -0.012, 0.008),
+    new THREE.Vector3(-0.018, 0.004, -0.004),
+    new THREE.Vector3(0.0, 0.0, 0.0),
+    new THREE.Vector3(0.024, -0.014, 0.012),
+    new THREE.Vector3(0.042, -0.042, -0.006),
+    new THREE.Vector3(0.056, -0.064, 0.014),
+  ]);
+  const stolenWormGeo = trackGeo(new THREE.TubeGeometry(stolenWormCurve, 18, 0.0085, 7, false));
+  const stolenWormPivot = new THREE.Group();
+  stolenWormPivot.position.set(0, -0.003, 0.104);
+  stolenWormPivot.visible = false;
+  const stolenWormMesh = new THREE.Mesh(stolenWormGeo, stolenWormMat);
+  stolenWormMesh.castShadow = true;
+  stolenWormPivot.add(stolenWormMesh);
+  headPivot.add(stolenWormPivot);
+
   bodyPivot.add(headPivot);
 
   // Articulated Sculpted Wings (+X left wing, -X right wing)
@@ -285,6 +313,24 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
       hopLimit: 0.16,
       baseLocalYaw: -0.58,
     },
+    {
+      id: 'pier_worm_dish',
+      kind: 'pier',
+      pos: new THREE.Vector3(0.61, 0.792, 0.28),
+      edgeAxis: new THREE.Vector3(0.42, 0, 0.91),
+      hopLimit: 0.032,
+      baseLocalYaw: -1.14,
+      isWormRaid: true,
+    },
+    {
+      id: 'boat_worm_dish',
+      kind: 'boat',
+      pos: new THREE.Vector3(0.108, 0.288, -0.89),
+      edgeAxis: new THREE.Vector3(0.42, 0, 0.91),
+      hopLimit: 0.024,
+      baseLocalYaw: -1.14,
+      isWormRaid: true,
+    },
   ];
 
   // State machine variables (zero runtime allocations in update)
@@ -311,6 +357,13 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
   let chirpCooldown = 1.2;
   let prevCinematic = false;
   let prevBoatMovingFast = false;
+
+  // Worm-stealing raid sub-state
+  let raidPeckPhase: 'inspecting' | 'pecking' | 'grabbed' = 'inspecting';
+  let raidDelay = 2.0;
+  let raidPeckElapsed = 0;
+  let wormGrabbedThisVisit = false;
+  let raidScaredOff = false;
 
   const flightStart = new THREE.Vector3();
   const flightControl = new THREE.Vector3();
@@ -348,15 +401,21 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
   }
 
   function pickNextTarget(isOnBoat: boolean): PerchTarget {
-    const boatTargets = perchTargets.filter((t) => t.kind === 'boat');
-    const pierTargets = perchTargets.filter((t) => t.kind === 'pier');
+    // Sometimes (~45% of visits) the bird swoops directly to the player's worm dish to steal a worm!
+    if (Math.random() < 0.45) {
+      const raidId = isOnBoat ? 'boat_worm_dish' : 'pier_worm_dish';
+      const raidTarget = perchTargets.find((t) => t.id === raidId);
+      if (raidTarget) return raidTarget;
+    }
+    const scenicBoat = perchTargets.filter((t) => t.kind === 'boat' && !t.isWormRaid);
+    const scenicPier = perchTargets.filter((t) => t.kind === 'pier' && !t.isWormRaid);
     if (isOnBoat) {
       // When cruising/anchored out on boat, prefer boat gunwale edges
-      const pool = Math.random() < 0.85 ? boatTargets : pierTargets;
+      const pool = Math.random() < 0.85 ? scenicBoat : scenicPier;
       return pool[Math.floor(Math.random() * pool.length)];
     }
     // When on wooden pier, alternate naturally between pier edges/piling and moored boat edge
-    const pool = Math.random() < 0.52 ? boatTargets : pierTargets;
+    const pool = Math.random() < 0.52 ? scenicBoat : scenicPier;
     return pool[Math.floor(Math.random() * pool.length)];
   }
 
@@ -383,6 +442,11 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
     wingFold = 0;
     hopOffset = 0;
     hopProgress = -1;
+    stolenWormPivot.visible = false;
+    wormGrabbedThisVisit = false;
+    raidScaredOff = false;
+    raidPeckPhase = 'inspecting';
+    raidPeckElapsed = 0;
     state = 'approaching';
     birdRoot.visible = true;
   }
@@ -414,8 +478,15 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
   return {
     group,
     triggerScatter: () => {
-      if (state === 'perched' && stateTimer > 1.2) {
-        stateTimer = 0.25;
+      if (state === 'perched') {
+        if (raidPeckPhase !== 'grabbed') {
+          raidScaredOff = true;
+        }
+        if (stateTimer > 0.22) {
+          stateTimer = 0.16;
+        }
+      } else if (state === 'approaching' && activeTarget.isWormRaid) {
+        raidScaredOff = true;
       }
     },
     update: ({
@@ -430,6 +501,7 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
       boatMovingFast,
       onBirdChirp,
       onWingFlutter,
+      onStealWorm,
     }) => {
       const weatherAllowed = weather !== 'storm' && nightFactor < 0.86;
 
@@ -441,6 +513,7 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
 
       // If boat accelerates suddenly while bird is perched on it, bird startles and flies away
       if (boatMovingFast && !prevBoatMovingFast && state === 'perched' && activeTarget.kind === 'boat') {
+        raidScaredOff = true;
         stateTimer = 0.15;
       }
       prevBoatMovingFast = boatMovingFast;
@@ -511,16 +584,21 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
 
         if (phaseT >= 1) {
           state = 'perched';
-          perchDuration = 7.0 + Math.random() * 4.5;
-          stateTimer = perchDuration;
+          const isRaid = Boolean(activeTarget.isWormRaid) && !raidScaredOff;
+          perchDuration = isRaid ? 4.5 : 7.0 + Math.random() * 4.5;
+          stateTimer = isRaid && raidScaredOff ? 0.18 : perchDuration;
           flutterTimer = 0.48; // brief joyful settle-flutter right on landing
           nextFlutterIn = 1.8 + Math.random() * 2.2;
-          headSnapTimer = 0.4;
-          targetHeadYaw = (Math.random() - 0.5) * 1.1;
-          targetHeadPitch = 0.08;
-          targetHeadRoll = 0.16;
-          nextHopIn = 2.4 + Math.random() * 2.6;
+          headSnapTimer = isRaid ? 0.28 : 0.4;
+          targetHeadYaw = isRaid ? (Math.random() - 0.5) * 0.45 : (Math.random() - 0.5) * 1.1;
+          targetHeadPitch = isRaid ? 0.52 : 0.08;
+          targetHeadRoll = 0.18;
+          nextHopIn = isRaid ? 1.0 + Math.random() * 0.5 : 2.4 + Math.random() * 2.6;
           chirpCooldown = 0.35;
+          raidPeckPhase = 'inspecting';
+          raidDelay = 1.45 + Math.random() * 0.85;
+          raidPeckElapsed = 0;
+          wormGrabbedThisVisit = false;
           if (onWingFlutter) {
             onWingFlutter(THREE.MathUtils.clamp(tmpPerchWorld.x * 0.2, -0.65, 0.65));
           }
@@ -531,6 +609,35 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
       if (state === 'perched') {
         stateTimer -= dt;
         computePerchWorldPos(activeTarget, boatRoot, tmpPerchWorld);
+
+        const isActiveRaid = Boolean(activeTarget.isWormRaid) && !raidScaredOff;
+        if (isActiveRaid) {
+          if (raidPeckPhase === 'inspecting') {
+            raidDelay -= dt;
+            if (raidDelay <= 0 && stateTimer > 0.65) {
+              raidPeckPhase = 'pecking';
+              raidPeckElapsed = 0;
+              hopProgress = -1;
+              flutterTimer = Math.max(flutterTimer, 0.42);
+            }
+          } else if (raidPeckPhase === 'pecking') {
+            raidPeckElapsed += dt;
+            const peckDuration = 0.48;
+            const p = Math.min(1, raidPeckElapsed / peckDuration);
+            if (p >= 0.48 && !wormGrabbedThisVisit) {
+              wormGrabbedThisVisit = true;
+              stolenWormPivot.visible = true;
+              if (onStealWorm) {
+                onStealWorm(THREE.MathUtils.clamp(birdRoot.position.x * 0.2, -0.75, 0.75));
+              }
+            }
+            if (p >= 1) {
+              raidPeckPhase = 'grabbed';
+              beginDeparture(boatRoot, onWingFlutter);
+              return;
+            }
+          }
+        }
 
         // Hop offset along valid rim axis
         if (hopProgress >= 0) {
@@ -543,7 +650,7 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
           }
         } else {
           nextHopIn -= dt;
-          if (nextHopIn <= 0 && activeTarget.hopLimit > 0.04 && stateTimer > 1.6) {
+          if (nextHopIn <= 0 && activeTarget.hopLimit > 0.04 && stateTimer > 1.6 && raidPeckPhase === 'inspecting') {
             nextHopIn = 3.2 + Math.random() * 2.5;
             hopFrom = hopOffset;
             hopTo = (Math.random() * 2 - 1) * activeTarget.hopLimit;
@@ -565,28 +672,50 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
         const takeOffCrouch = stateTimer < 0.22 ? (1 - stateTimer / 0.22) : 0;
         birdRoot.rotation.set(takeOffCrouch * 0.24, baseYaw, 0);
 
-        // Leg stance & subtle breathing/crouch
-        const legCrouch = hopProgress >= 0 ? -0.2 : takeOffCrouch * 0.35;
+        const peckProgress =
+          isActiveRaid && raidPeckPhase === 'pecking'
+            ? Math.min(1, raidPeckElapsed / 0.48)
+            : 0;
+        const peckLunging = peckProgress > 0 ? Math.sin(peckProgress * Math.PI) : 0;
+        const peckLiftEnd = peckProgress > 0.5 ? THREE.MathUtils.smoothstep(peckProgress, 0.5, 1.0) : 0;
+
+        // Leg stance & subtle breathing/crouch (+ deep forward lunge during worm peck)
+        const legCrouch = hopProgress >= 0 ? -0.2 : takeOffCrouch * 0.35 + peckLunging * 0.28;
         leftLegPivot.rotation.x = 0.06 + legCrouch;
         rightLegPivot.rotation.x = 0.06 + legCrouch;
-        bodyPivot.position.y = 0.095 - takeOffCrouch * 0.024 + Math.sin(elapsed * 3.1) * 0.0025;
-        bodyPivot.rotation.x = Math.sin(elapsed * 3.1) * 0.03;
+        bodyPivot.position.y = 0.095 - takeOffCrouch * 0.024 - peckLunging * 0.028 + Math.sin(elapsed * 3.1) * 0.0025;
+        bodyPivot.rotation.x = Math.sin(elapsed * 3.1) * 0.03 + peckLunging * 0.62 - peckLiftEnd * 0.14;
 
-        // Curious songbird head snaps & tilts
+        // Curious songbird head snaps & tilts (eyes glued downward on dish during worm raid)
         headSnapTimer -= dt;
-        if (headSnapTimer <= 0) {
-          headSnapTimer = 0.65 + Math.random() * 1.25;
-          targetHeadYaw = (Math.random() - 0.5) * 1.45;
-          targetHeadPitch = Math.random() < 0.25 ? 0.36 : (Math.random() - 0.5) * 0.28;
-          targetHeadRoll = Math.random() < 0.45 ? (Math.random() < 0.5 ? 0.26 : -0.26) : 0;
+        if (headSnapTimer <= 0 && raidPeckPhase === 'inspecting') {
+          headSnapTimer = isActiveRaid ? 0.36 + Math.random() * 0.45 : 0.65 + Math.random() * 1.25;
+          targetHeadYaw = isActiveRaid ? (Math.random() - 0.5) * 0.52 : (Math.random() - 0.5) * 1.45;
+          targetHeadPitch = isActiveRaid
+            ? 0.46 + Math.random() * 0.20
+            : Math.random() < 0.25 ? 0.36 : (Math.random() - 0.5) * 0.28;
+          targetHeadRoll = isActiveRaid
+            ? (Math.random() < 0.5 ? 0.30 : -0.30)
+            : Math.random() < 0.45 ? (Math.random() < 0.5 ? 0.26 : -0.26) : 0;
         }
-        headPivot.rotation.y = THREE.MathUtils.damp(headPivot.rotation.y, targetHeadYaw, 18, dt);
-        headPivot.rotation.x = THREE.MathUtils.damp(headPivot.rotation.x, targetHeadPitch, 16, dt);
-        headPivot.rotation.z = THREE.MathUtils.damp(headPivot.rotation.z, targetHeadRoll, 16, dt);
+        if (isActiveRaid && raidPeckPhase === 'pecking') {
+          headPivot.rotation.y = THREE.MathUtils.damp(headPivot.rotation.y, 0, 26, dt);
+          headPivot.rotation.x = THREE.MathUtils.lerp(0.48, 0.96, peckLunging) - peckLiftEnd * 0.72;
+          headPivot.rotation.z = THREE.MathUtils.damp(headPivot.rotation.z, 0, 24, dt);
+        } else {
+          headPivot.rotation.y = THREE.MathUtils.damp(headPivot.rotation.y, targetHeadYaw, 18, dt);
+          headPivot.rotation.x = THREE.MathUtils.damp(headPivot.rotation.x, targetHeadPitch, 16, dt);
+          headPivot.rotation.z = THREE.MathUtils.damp(headPivot.rotation.z, targetHeadRoll, 16, dt);
+        }
+
+        if (stolenWormPivot.visible) {
+          stolenWormPivot.rotation.x = Math.sin(elapsed * 22) * 0.24;
+          stolenWormPivot.rotation.z = Math.cos(elapsed * 18) * 0.32;
+        }
 
         // Wagtail-like tail bobbing + flutter fanning
         const tailWag = Math.sin(elapsed * 4.8) * 0.09 + (flutterTimer > 0 ? Math.sin(elapsed * 22) * 0.16 : 0);
-        tailPivot.rotation.x = 0.12 + tailWag;
+        tailPivot.rotation.x = 0.12 + tailWag - peckLunging * 0.24;
 
         // Spontaneous wing-flutter bursts ("يرفرف") while perched
         if (flutterTimer > 0) {
@@ -656,9 +785,16 @@ export function createPerchingBirdSystem(): PerchingBirdSystem {
         bodyPivot.rotation.x = 0;
         headPivot.rotation.set(0, 0, 0);
 
+        if (stolenWormPivot.visible) {
+          stolenWormPivot.rotation.x = Math.sin(elapsed * 20) * 0.26;
+          stolenWormPivot.rotation.z = Math.cos(elapsed * 16) * 0.34;
+          stolenWormPivot.rotation.y = Math.sin(elapsed * 12) * 0.22;
+        }
+
         if (phaseT >= 1) {
           state = 'cooldown';
           stateTimer = 14 + Math.random() * 11;
+          stolenWormPivot.visible = false;
           birdRoot.visible = false;
         }
       }

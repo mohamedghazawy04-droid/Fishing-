@@ -263,6 +263,74 @@ export interface PoiDiscoveryNotice {
   xpReward: number;
 }
 
+export interface AdaptiveLakeEvent {
+  id: string;
+  titleAr: string;
+  descriptionAr: string;
+  coachingTipAr: string;
+  bonusBiteMult: number;
+  bonusRarityMult: number;
+  targetZone: LakeZoneId;
+  source: 'gemini' | 'adaptive';
+  updatedAt: number;
+}
+
+export interface AdaptiveTelemetrySummary {
+  skillScore: number;
+  biteSpeedMult: number;
+  fishFightScale: number;
+  rareSpawnBoost: number;
+  crocAggressionScale: number;
+  totalCatches: number;
+  totalSnaps: number;
+  totalCrocDevours: number;
+  favoriteBait: BaitId;
+  streakWithoutSnap: number;
+  evolveCount: number;
+}
+
+export interface SaveHealthReport {
+  healthy: boolean;
+  repairedCount: number;
+  repairedKeys: string[];
+  checkedAt: string;
+  webglRecoveries: number;
+}
+
+export type SmartNotificationMode = 'smart' | 'essential' | 'all';
+
+export type NotificationCategory = 'critical' | 'achievement' | 'rival' | 'ambient';
+
+export interface SmartNotificationToast {
+  id: string;
+  eventKey: string;
+  category: NotificationCategory;
+  titleAr: string;
+  detailAr?: string;
+  xpTag?: string;
+  repeatCount: number;
+}
+
+export interface SmartNotificationFeedItem {
+  id: string;
+  eventKey: string;
+  category: NotificationCategory;
+  titleAr: string;
+  detailAr?: string;
+  xpTag?: string;
+  repeatCount: number;
+  timeLabel: string;
+  wasSuppressed: boolean;
+}
+
+export interface SmartNotificationsHudState {
+  mode: SmartNotificationMode;
+  activeToast: SmartNotificationToast | null;
+  unreadCount: number;
+  suppressedTotal: number;
+  feed: SmartNotificationFeedItem[];
+}
+
 export interface FishingHudState {
   phase: FishingPhase;
   castPower: number; // 0..1
@@ -323,6 +391,12 @@ export interface FishingHudState {
   pois: PoiHudItem[];
   poiDiscoveredNotice: PoiDiscoveryNotice | null;
   nearbyPoiName: string | null;
+  adaptiveEvent: AdaptiveLakeEvent;
+  adaptiveStats: AdaptiveTelemetrySummary;
+  adaptiveNotice: string | null;
+  adaptiveBusy: boolean;
+  saveHealth: SaveHealthReport;
+  smartNotifications: SmartNotificationsHudState;
 }
 
 export const SEASON_CATALOG: SeasonDefinition[] = [

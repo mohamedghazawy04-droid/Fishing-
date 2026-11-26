@@ -7,6 +7,7 @@ export interface AudioLocationContext {
   waterDepthMeters: number;
   shoreProximity: number; // 0 (open center lake) .. 1 (wooden pier / shoreline)
   nearCaveOrRock: number; // 0..1 proximity to cave / rocky cliffs
+  waterfallProximity?: number; // 0 (distant pier) .. 1 (north shoreline near alpine cascade)
 }
 
 export interface WeatherSoundContext {
@@ -43,6 +44,8 @@ export class NatureSoundEngine {
   private frostWindFilter: BiquadFilterNode | null = null;
   private stormRumbleGain: GainNode | null = null;
   private stormRumbleFilter: BiquadFilterNode | null = null;
+  private waterfallGain: GainNode | null = null;
+  private waterfallFilter: BiquadFilterNode | null = null;
 
   private muted = false;
   private initialized = false;
@@ -302,6 +305,25 @@ export class NatureSoundEngine {
       this.stormRumbleGain = stormRumbleGain;
       this.stormRumbleFilter = stormRumbleFilter;
 
+      // 8. Distant Horizon Waterfall Cascade Roar & Mist Shimmer (هدير الشلال البعيد في الأفق)
+      const wfSrc = ctx.createBufferSource();
+      wfSrc.buffer = pinkBuffer;
+      wfSrc.loop = true;
+      const wfFilter = ctx.createBiquadFilter();
+      wfFilter.type = 'lowpass';
+      wfFilter.frequency.value = 540;
+      wfFilter.Q.value = 0.7;
+      const wfGain = ctx.createGain();
+      wfGain.gain.value = 0;
+      const wfPan = this.createPanner(ctx, -0.06);
+      wfSrc.connect(wfFilter);
+      wfFilter.connect(wfGain);
+      wfGain.connect(wfPan);
+      wfPan.connect(master);
+      wfSrc.start(0, 1.8);
+      this.waterfallGain = wfGain;
+      this.waterfallFilter = wfFilter;
+
       this.initialized = true;
     } catch {
       // AudioContext unavailable
@@ -524,6 +546,13 @@ export class NatureSoundEngine {
 
     this.stormRumbleGain?.gain.setTargetAtTime(stormRumbleTarget, now, 1.35);
     this.stormRumbleFilter?.frequency.setTargetAtTime(stormRumbleFreq, now, 1.35);
+
+    const wfProx = Math.max(0, Math.min(1, location.waterfallProximity ?? 0));
+    const wfShimmer = 0.90 + 0.10 * Math.sin(elapsed * 0.48);
+    const waterfallTarget = (0.014 + wfProx * 0.056) * wfShimmer * winterMuteFactor * this.mix.water;
+    const waterfallFreq = (480 + wfProx * 620) * (1 - this.smoothMist * 0.2);
+    this.waterfallGain?.gain.setTargetAtTime(waterfallTarget, now, 0.85);
+    this.waterfallFilter?.frequency.setTargetAtTime(waterfallFreq, now, 0.85);
 
     if (!this.muted) {
       // Faint Distant Rolling Thunder when storm approaches or rumbles afar between lightning strikes
@@ -1351,6 +1380,48 @@ export class NatureSoundEngine {
     this.routeAmbientVoice(gain, 0, 0.18);
     osc.start(now);
     osc.stop(now + 0.18);
+  }
+
+  /** Tactile vintage mechanical switch click & brief warm radio tuning crackle */
+  public playRadioSwitchClick(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(1450, now);
+    osc.frequency.exponentialRampToValueAtTime(340, now + 0.028);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.12, now + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.036);
+    osc.connect(gain);
+    this.routeAmbientVoice(gain, -0.25, 0.08);
+    osc.start(now);
+    osc.stop(now + 0.042);
+
+    // Subtle analog tuning whisper
+    const dur = 0.045;
+    const bufferSize = Math.floor(this.ctx.sampleRate * dur);
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1850;
+    bp.Q.value = 1.2;
+    const nGain = this.ctx.createGain();
+    nGain.gain.setValueAtTime(0.035, now + 0.008);
+    nGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.008 + dur);
+    src.connect(bp);
+    bp.connect(nGain);
+    this.routeAmbientVoice(nGain, -0.25, 0.06);
+    src.start(now + 0.008);
+    oscSafeStop(src, now + 0.015 + dur);
   }
 
   public dispose(): void {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import express from 'express';
+import { GoogleGenAI, Type } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 import type {
   ChatMessage,
@@ -289,6 +290,151 @@ async function startServer(): Promise<void> {
         };
       });
     res.json({ openRooms });
+  });
+
+  const VALID_ZONES = new Set(['dock_shade', 'shore_reeds', 'rocky_ledge', 'deep_basin', 'alpine_abyss']);
+  const VALID_WEATHERS = new Set(['clear', 'cloudy', 'mist', 'rain', 'storm']);
+  const VALID_SEASONS = new Set(['spring', 'summer', 'autumn', 'winter']);
+  const VALID_BAITS = new Set(['worm', 'fly', 'spinner', 'glow_minnow', 'golden_corn']);
+
+  const rawGeminiKey = process.env.GEMINI_API_KEY?.trim() || '';
+  const hasGeminiKey = rawGeminiKey.length > 10 && rawGeminiKey !== 'MY_GEMINI_API_KEY';
+  const geminiClient = hasGeminiKey
+    ? new GoogleGenAI({
+        apiKey: rawGeminiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      })
+    : null;
+
+  app.post('/api/ai/evolve', async (req, res) => {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const level = Math.round(clampFinite(body.level, 1, 99, 1));
+    const catchesCount = Math.round(clampFinite(body.catchesCount, 0, 100000, 0));
+    const snapsCount = Math.round(clampFinite(body.snapsCount, 0, 100000, 0));
+    const crocDevours = Math.round(clampFinite(body.crocDevours, 0, 10000, 0));
+    const streakWithoutSnap = Math.round(clampFinite(body.streakWithoutSnap, 0, 1000, 0));
+    const skillScore = clampFinite(body.skillScore, 0.1, 1.0, 0.5);
+    const favoriteBait = typeof body.favoriteBait === 'string' && VALID_BAITS.has(body.favoriteBait) ? body.favoriteBait : 'worm';
+    const weather = typeof body.weather === 'string' && VALID_WEATHERS.has(body.weather) ? body.weather : 'clear';
+    const season = typeof body.season === 'string' && VALID_SEASONS.has(body.season) ? body.season : 'spring';
+
+    const buildFallbackEvent = () => {
+      let targetZone = 'rocky_ledge';
+      let titleAr = 'تيار الحافة النشط';
+      let descriptionAr = 'تتحرك أسراب الأسماك قرب الصخور بحثاً عن الغذاء الطبيعي.';
+      let coachingTipAr = 'راقب الأسماك وهي تتفحص الطعم تحت الماء واضغط فور الغمز.';
+      let bonusBiteMult = 1.15;
+      let bonusRarityMult = 1.16;
+
+      if (snapsCount > catchesCount * 0.45 && snapsCount >= 2) {
+        targetZone = 'shore_reeds';
+        titleAr = 'هدوء ضفة القصب';
+        descriptionAr = 'استجابت البحيرة بتهدئة التيار قرب ضفة القصب لمساعدتك على سحب متزن.';
+        coachingTipAr = 'اترك الخيط يتنفس لحظة عند ارتفاع التوتر فوق 75%.';
+        bonusBiteMult = 1.2;
+        bonusRarityMult = 1.12;
+      } else if (streakWithoutSnap >= 4 || level >= 3) {
+        targetZone = level >= 3 ? 'alpine_abyss' : 'deep_basin';
+        titleAr = 'صحوة عمالقة الأعماق';
+        descriptionAr = 'سلسلة نجاحك جذبت أسماكاً نادرة وضخمة إلى أعماق البحيرة.';
+        coachingTipAr = 'جرّب الإبحار بالقارب واستخدم طُعم السمكة المضيئة أو الدوّار.';
+        bonusBiteMult = 1.14;
+        bonusRarityMult = 1.32;
+      } else if (crocDevours >= 1) {
+        targetZone = 'dock_shade';
+        titleAr = 'ملاذ ظل الرصيف';
+        descriptionAr = 'تتجمع الأسماك الرشيقة قرب الرصيف بعيداً عن التماسيح.';
+        coachingTipAr = 'عند ظهور إنذار التمساح اسحب بأقصى سرعة متتابعة لإنقاذ صيدك.';
+        bonusBiteMult = 1.22;
+        bonusRarityMult = 1.14;
+      }
+
+      return {
+        id: `srv_adaptive_${Date.now()}`,
+        titleAr,
+        descriptionAr,
+        coachingTipAr,
+        bonusBiteMult,
+        bonusRarityMult,
+        targetZone,
+        source: 'adaptive' as const,
+        updatedAt: Date.now(),
+      };
+    };
+
+    if (!geminiClient) {
+      res.json(buildFallbackEvent());
+      return;
+    }
+
+    try {
+      const prompt = [
+        'أنت مدير الذكاء التكيّفي في لعبة صيد أسماك ثلاثية الأبعاد هادئة اسمها «وادي الصيد الهادئ».',
+        `بيانات اللاعب: المستوى ${level}، إجمالي الصيد ${catchesCount}، انقطاعات الخيط ${snapsCount}، هجمات التمساح ${crocDevours}، سلسلة النجاح ${streakWithoutSnap}، مؤشر المهارة ${skillScore}، الطعم المفضل ${favoriteBait}، الطقس ${weather}، الفصل ${season}.`,
+        'أنشئ حدثاً تكيّفياً جديداً وموجزاً باللغة العربية يتفاعل مع أداء اللاعب، واختر منطقة مناسبة ومكافأة متوازنة.',
+      ].join('\n');
+
+      const response = await geminiClient.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              titleAr: { type: Type.STRING },
+              descriptionAr: { type: Type.STRING },
+              coachingTipAr: { type: Type.STRING },
+              targetZone: {
+                type: Type.STRING,
+                enum: ['dock_shade', 'shore_reeds', 'rocky_ledge', 'deep_basin', 'alpine_abyss'],
+              },
+              bonusBiteMult: { type: Type.NUMBER },
+              bonusRarityMult: { type: Type.NUMBER },
+            },
+            required: [
+              'titleAr',
+              'descriptionAr',
+              'coachingTipAr',
+              'targetZone',
+              'bonusBiteMult',
+              'bonusRarityMult',
+            ],
+          },
+          temperature: 0.7,
+        },
+      });
+
+      const rawText = response.text?.trim() || '';
+      const parsed = JSON.parse(rawText) as Record<string, unknown>;
+      const targetZone =
+        typeof parsed.targetZone === 'string' && VALID_ZONES.has(parsed.targetZone)
+          ? parsed.targetZone
+          : 'rocky_ledge';
+
+      res.json({
+        id: `gemini_${Date.now()}`,
+        titleAr:
+          typeof parsed.titleAr === 'string' && parsed.titleAr.trim()
+            ? parsed.titleAr.trim().slice(0, 64)
+            : 'تفاعل البحيرة الذكي',
+        descriptionAr:
+          typeof parsed.descriptionAr === 'string' && parsed.descriptionAr.trim()
+            ? parsed.descriptionAr.trim().slice(0, 180)
+            : 'رصدت البحيرة أسلوب صيدك وبدأت حركة أسماك متجددة.',
+        coachingTipAr:
+          typeof parsed.coachingTipAr === 'string' && parsed.coachingTipAr.trim()
+            ? parsed.coachingTipAr.trim().slice(0, 180)
+            : 'راقب السمكة تحت الماء واختر الطعم الملائم لعمق المنطقة.',
+        bonusBiteMult: Number(clampFinite(parsed.bonusBiteMult, 1.0, 1.35, 1.15).toFixed(2)),
+        bonusRarityMult: Number(clampFinite(parsed.bonusRarityMult, 1.0, 1.42, 1.2).toFixed(2)),
+        targetZone,
+        source: 'gemini' as const,
+        updatedAt: Date.now(),
+      });
+    } catch {
+      res.json(buildFallbackEvent());
+    }
   });
 
   const server = http.createServer(app);

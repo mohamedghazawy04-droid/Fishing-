@@ -726,6 +726,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const tx = Math.cos(angle) * radius;
     const tz = Math.sin(angle) * radius - 78;
     if (Math.abs(tx) < 7.5 && tz > -2 && tz < 17) continue;
+    if (Math.hypot(tx + 16, tz + 292) < 40) continue;
     const ty = groundHeightAt(tx, tz);
     if (ty < 0.85 || ty > 28.5) continue;
 
@@ -828,6 +829,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const lx = Math.cos(ang) * rad;
     const lz = Math.sin(ang) * rad - 78;
     if (Math.abs(lx) < 8 && lz > -2 && lz < 18) continue;
+    if (Math.hypot(lx + 16, lz + 292) < 38) continue;
     const ly = groundHeightAt(lx, lz);
     if (ly < 0.75 || ly > 12.5) continue;
 
@@ -879,6 +881,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     const bx = (hash2(i * 1.9, 14.3) - 0.5) * 380;
     const bz = (hash2(11.7, i * 2.9) - 0.5) * 265 - 88;
     if (Math.abs(bx) < 5.2 && bz > -2 && bz < 14) continue;
+    if (Math.hypot(bx + 16, bz + 292) < 36) continue;
     const by = groundHeightAt(bx, bz);
     if (by < 0.45 || by > 11.5) continue;
 

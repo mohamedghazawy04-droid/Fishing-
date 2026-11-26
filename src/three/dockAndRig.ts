@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { ProceduralTextureSet } from './textures';
 import { groundHeightAt } from './environment';
 import { BAIT_CATALOG, type BaitId } from '../types/fishing';
+import { createVintageRadioSystem } from './vintageRadio';
 
 export interface DockAndRigSystem {
   group: THREE.Group;
@@ -17,7 +18,13 @@ export interface DockAndRigSystem {
   lanternFlameMat: THREE.MeshStandardMaterial;
   boatWormDishGroup: THREE.Group;
   wormDishHitTargets: THREE.Object3D[];
+  boatRadioGroup: THREE.Group;
+  radioHitTargets: THREE.Object3D[];
+  setRadioState: (playing: boolean, loading: boolean, stationIndex?: number) => void;
+  setRadioHovered: (hovered: boolean) => void;
+  notifyWormStolen: (isOnBoat: boolean) => void;
   setActiveBaitVisual: (baitId: BaitId) => void;
+  setUnlockedBaits: (unlockedBaits: BaitId[], playerLevel: number) => void;
   setPlayerRigTransform: (offset: THREE.Vector3, pitch: number, roll: number, yaw?: number) => void;
   updateRodAndLine: (params: {
     elapsed: number;
@@ -431,29 +438,124 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   const dishRingGeo = new THREE.RingGeometry(0.165, 0.19, 28);
   dishRingGeo.rotateX(-Math.PI / 2);
 
+  // Adaptive Multi-Bait Dish Materials & Geometries (تتكيف محتويات الطبق وزخرفته مع مستوى اللاعب)
+  const rimUpgradeMat = new THREE.MeshStandardMaterial({
+    color: 0x8b6b4a,
+    roughness: 0.36,
+    metalness: 0.72,
+  });
+  const flyFeatherMat = new THREE.MeshStandardMaterial({
+    color: 0xd97706,
+    roughness: 0.68,
+    metalness: 0.04,
+  });
+  const flyWingAccentMat = new THREE.MeshStandardMaterial({
+    color: 0xfef3c7,
+    roughness: 0.62,
+  });
+  const cornKernelMat = new THREE.MeshStandardMaterial({
+    color: 0xfbbf24,
+    roughness: 0.28,
+    metalness: 0.08,
+  });
+  const cornLeafMat = new THREE.MeshStandardMaterial({
+    color: 0x3f6e33,
+    roughness: 0.78,
+  });
+  const spinnerBladeMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.16,
+    metalness: 0.94,
+  });
+  const spinnerBeadMat = new THREE.MeshStandardMaterial({
+    color: 0xdc2626,
+    roughness: 0.25,
+    metalness: 0.15,
+  });
+  const glowMinnowMat = new THREE.MeshStandardMaterial({
+    color: 0x67e8f9,
+    emissive: 0x22d3ee,
+    emissiveIntensity: 0.95,
+    roughness: 0.22,
+    metalness: 0.12,
+  });
+  const glowTailMat = new THREE.MeshStandardMaterial({
+    color: 0xa5f3fc,
+    emissive: 0x06b6d4,
+    emissiveIntensity: 0.65,
+    roughness: 0.3,
+  });
+
+  const rimBandGeo = new THREE.TorusGeometry(0.151, 0.0085, 8, 28);
+  rimBandGeo.rotateX(Math.PI / 2);
+  const corkPadGeo = new THREE.CylinderGeometry(0.036, 0.038, 0.012, 14);
+  const flyBodyGeo = new THREE.CapsuleGeometry(0.0055, 0.016, 4, 8);
+  flyBodyGeo.rotateZ(Math.PI / 2);
+  const flyFeatherGeo = new THREE.ConeGeometry(0.009, 0.022, 7);
+  flyFeatherGeo.rotateZ(-Math.PI / 2);
+  const cornLeafGeo = new THREE.CylinderGeometry(0.042, 0.044, 0.005, 12);
+  const cornKernelGeo = new THREE.SphereGeometry(0.011, 8, 8);
+  cornKernelGeo.scale(1.15, 0.85, 0.95);
+  const spinnerBladeGeo = new THREE.SphereGeometry(0.017, 10, 8);
+  spinnerBladeGeo.scale(1.55, 0.22, 0.85);
+  const spinnerBeadGeo = new THREE.SphereGeometry(0.009, 8, 8);
+  const minnowBodyGeo = new THREE.CapsuleGeometry(0.012, 0.036, 5, 10);
+  minnowBodyGeo.rotateZ(Math.PI / 2);
+  const minnowTailGeo = new THREE.ConeGeometry(0.013, 0.020, 6);
+  minnowTailGeo.rotateZ(Math.PI / 2);
+
   disposables.push(
     bowlMat,
     soilMat,
     wormMat,
     wormHighlightRingMat,
+    rimUpgradeMat,
+    flyFeatherMat,
+    flyWingAccentMat,
+    cornKernelMat,
+    cornLeafMat,
+    spinnerBladeMat,
+    spinnerBeadMat,
+    glowMinnowMat,
+    glowTailMat,
     bowlGeo,
     soilGeo,
     dishWormGeo,
     dishShadowGeo,
     dishRingGeo,
+    rimBandGeo,
+    corkPadGeo,
+    flyBodyGeo,
+    flyFeatherGeo,
+    cornLeafGeo,
+    cornKernelGeo,
+    spinnerBladeGeo,
+    spinnerBeadGeo,
+    minnowBodyGeo,
+    minnowTailGeo,
   );
 
   interface DishWormAnim {
     mesh: THREE.Mesh;
+    dish: 'pier' | 'boat';
     baseRotY: number;
     baseX: number;
     baseZ: number;
     phase: number;
+    stolenTimer: number;
+  }
+  interface DishAdaptiveSlots {
+    rimBand: THREE.Mesh;
+    flyGroup: THREE.Group;
+    cornGroup: THREE.Group;
+    spinnerGroup: THREE.Group;
+    glowMinnowGroup: THREE.Group;
   }
   const dishWorms: DishWormAnim[] = [];
   const dishRings: THREE.Mesh[] = [];
+  const dishAdaptiveSlots: DishAdaptiveSlots[] = [];
 
-  function buildWormDish(scale: number): THREE.Group {
+  function buildWormDish(scale: number, dish: 'pier' | 'boat'): THREE.Group {
     const root = new THREE.Group();
     const dShadow = new THREE.Mesh(dishShadowGeo, contactShadowMat);
     dShadow.position.y = 0.003;
@@ -467,7 +569,13 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     const soil = new THREE.Mesh(soilGeo, soilMat);
     soil.position.y = 0.024;
     soil.receiveShadow = true;
-    root.add(dShadow, ring, bowl, soil);
+
+    // Level-adaptive rim band around top ceramic lip (appears at level >= 2)
+    const rimBand = new THREE.Mesh(rimBandGeo, rimUpgradeMat);
+    rimBand.position.y = 0.072;
+    rimBand.visible = false;
+
+    root.add(dShadow, ring, bowl, soil, rimBand);
 
     const wormSpecs: [number, number, number, number][] = [
       [-0.025, 0.052, 0.022, 0.25],
@@ -485,27 +593,113 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
       root.add(wMesh);
       dishWorms.push({
         mesh: wMesh,
+        dish,
         baseRotY: rotY,
         baseX: wx,
         baseZ: wz,
         phase: idx * 1.45,
+        stolenTimer: 0,
       });
+    });
+
+    // 1. Feathered Trout Flies on small cork pad (unlocked at Lv1)
+    const flyGroup = new THREE.Group();
+    flyGroup.position.set(-0.078, 0.052, 0.048);
+    const corkPad = new THREE.Mesh(corkPadGeo, corkMat);
+    corkPad.castShadow = true;
+    flyGroup.add(corkPad);
+    for (let fi = 0; fi < 2; fi++) {
+      const fly = new THREE.Group();
+      fly.position.set(fi === 0 ? -0.01 : 0.012, 0.010, fi === 0 ? -0.008 : 0.01);
+      fly.rotation.y = fi === 0 ? 0.5 : -0.6;
+      const body = new THREE.Mesh(flyBodyGeo, flyFeatherMat);
+      const wing = new THREE.Mesh(flyFeatherGeo, fi === 0 ? flyWingAccentMat : flyFeatherMat);
+      wing.position.set(-0.012, 0.004, 0);
+      wing.rotation.z = 0.24;
+      fly.add(body, wing);
+      flyGroup.add(fly);
+    }
+    root.add(flyGroup);
+
+    // 2. Golden Aromatic Corn Cluster on leaf pad (unlocked at Lv2)
+    const cornGroup = new THREE.Group();
+    cornGroup.position.set(0.072, 0.050, 0.055);
+    const cornLeaf = new THREE.Mesh(cornLeafGeo, cornLeafMat);
+    cornGroup.add(cornLeaf);
+    const kernelOffsets: [number, number, number][] = [
+      [0, 0.009, 0],
+      [-0.015, 0.008, 0.008],
+      [0.014, 0.008, 0.009],
+      [-0.010, 0.008, -0.013],
+      [0.012, 0.008, -0.011],
+      [0.001, 0.018, 0.002],
+      [0.022, 0.007, 0.001],
+    ];
+    kernelOffsets.forEach(([kx, ky, kz], ki) => {
+      const k = new THREE.Mesh(cornKernelGeo, cornKernelMat);
+      k.position.set(kx, ky, kz);
+      k.rotation.y = ki * 0.9;
+      k.castShadow = true;
+      cornGroup.add(k);
+    });
+    cornGroup.visible = false;
+    root.add(cornGroup);
+
+    // 3. Metallic Silver Spinner Lure (unlocked at Lv3)
+    const spinnerGroup = new THREE.Group();
+    spinnerGroup.position.set(-0.068, 0.058, -0.062);
+    spinnerGroup.rotation.y = 0.45;
+    const spBlade = new THREE.Mesh(spinnerBladeGeo, spinnerBladeMat);
+    spBlade.position.set(-0.012, 0.006, 0);
+    spBlade.rotation.z = 0.22;
+    const spBead = new THREE.Mesh(spinnerBeadGeo, spinnerBeadMat);
+    spBead.position.set(0.016, 0.004, 0);
+    const spSwivel = new THREE.Mesh(spinnerBeadGeo, brassMat);
+    spSwivel.scale.set(0.8, 0.8, 0.8);
+    spSwivel.position.set(0.029, 0.004, 0);
+    spinnerGroup.add(spBlade, spBead, spSwivel);
+    spinnerGroup.visible = false;
+    root.add(spinnerGroup);
+
+    // 4. Bioluminescent Glow Minnow Lure (unlocked at Lv4)
+    const glowMinnowGroup = new THREE.Group();
+    glowMinnowGroup.position.set(0.066, 0.057, -0.064);
+    glowMinnowGroup.rotation.y = -0.55;
+    const mBody = new THREE.Mesh(minnowBodyGeo, glowMinnowMat);
+    const mTail = new THREE.Mesh(minnowTailGeo, glowTailMat);
+    mTail.position.set(-0.028, 0.002, 0);
+    glowMinnowGroup.add(mBody, mTail);
+    glowMinnowGroup.visible = false;
+    root.add(glowMinnowGroup);
+
+    dishAdaptiveSlots.push({
+      rimBand,
+      flyGroup,
+      cornGroup,
+      spinnerGroup,
+      glowMinnowGroup,
     });
 
     root.scale.setScalar(scale);
     return root;
   }
 
-  const pierWormDish = buildWormDish(1.0);
+  const pierWormDish = buildWormDish(1.0, 'pier');
   pierWormDish.position.set(0.48, pierTopY, 0.34);
   group.add(pierWormDish);
 
   const boatWormDishGroup = new THREE.Group();
-  const boatWormDish = buildWormDish(0.84);
-  boatWormDish.position.set(0.28, 0.228, -0.90);
+  const boatWormDish = buildWormDish(0.84, 'boat');
+  boatWormDish.position.set(0.0, 0.228, -0.84);
   boatWormDishGroup.add(boatWormDish);
 
   const wormDishHitTargets: THREE.Object3D[] = [pierWormDish, boatWormDish];
+
+  // 4c. Vintage Walnut & Brass Portable Radio in front-left of the seated fisherman (pier & boat bow)
+  const vintageRadio = createVintageRadioSystem(contactShadowMat, enableColdFrostDusting);
+  group.add(vintageRadio.pierRadio);
+  const boatRadioGroup = vintageRadio.boatRadioGroup;
+  const radioHitTargets = vintageRadio.hitTargets;
 
   // 5. Realistic Anatomical First-Person Fisherman Forearms & Both Hands + Rod
   const rodRoot = new THREE.Group();
@@ -972,6 +1166,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   const colWarn = new THREE.Color(0xf5b942);
   const colDanger = new THREE.Color(0xff3b30);
   let activeBaitId: BaitId = 'worm';
+  let prevDishElapsed = 0;
 
   function setActiveBaitVisual(baitId: BaitId): void {
     activeBaitId = baitId;
@@ -983,6 +1178,47 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     } else {
       baitMat.emissive.setHex(0x000000);
       baitMat.emissiveIntensity = 0;
+    }
+  }
+
+  // Flying/threading bait shown during the tactile bait-hooking animation from dish onto J-hook
+  const transferBaitMesh = new THREE.Mesh(baitGeo, baitMat);
+  transferBaitMesh.visible = false;
+  transferBaitMesh.scale.setScalar(0.95);
+  group.add(transferBaitMesh);
+
+  function setUnlockedBaits(unlockedBaits: BaitId[], playerLevel: number): void {
+    const hasFly = unlockedBaits.includes('fly');
+    const hasCorn = unlockedBaits.includes('golden_corn');
+    const hasSpinner = unlockedBaits.includes('spinner');
+    const hasGlow = unlockedBaits.includes('glow_minnow');
+
+    for (const slot of dishAdaptiveSlots) {
+      slot.flyGroup.visible = hasFly;
+      slot.cornGroup.visible = hasCorn;
+      slot.spinnerGroup.visible = hasSpinner;
+      slot.glowMinnowGroup.visible = hasGlow;
+      slot.rimBand.visible = playerLevel >= 2;
+    }
+
+    if (playerLevel >= 4) {
+      rimUpgradeMat.color.setHex(0xeab308);
+      rimUpgradeMat.roughness = 0.22;
+      rimUpgradeMat.metalness = 0.92;
+      rimUpgradeMat.emissive.setHex(0x422006);
+      rimUpgradeMat.emissiveIntensity = 0.25;
+    } else if (playerLevel >= 3) {
+      rimUpgradeMat.color.setHex(0xc59b47);
+      rimUpgradeMat.roughness = 0.28;
+      rimUpgradeMat.metalness = 0.86;
+      rimUpgradeMat.emissive.setHex(0x000000);
+      rimUpgradeMat.emissiveIntensity = 0;
+    } else if (playerLevel >= 2) {
+      rimUpgradeMat.color.setHex(0xa16207);
+      rimUpgradeMat.roughness = 0.38;
+      rimUpgradeMat.metalness = 0.68;
+      rimUpgradeMat.emissive.setHex(0x000000);
+      rimUpgradeMat.emissiveIntensity = 0;
     }
   }
 
@@ -1000,7 +1236,27 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     lanternFlameMat,
     boatWormDishGroup,
     wormDishHitTargets,
+    boatRadioGroup,
+    radioHitTargets,
+    setRadioState: (playing, loading, stationIndex) => {
+      vintageRadio.setRadioState(playing, loading, stationIndex);
+    },
+    setRadioHovered: (hovered) => {
+      vintageRadio.setHovered(hovered);
+    },
+    notifyWormStolen: (isOnBoat) => {
+      const targetDish: 'pier' | 'boat' = isOnBoat ? 'boat' : 'pier';
+      const candidates = dishWorms.filter((dw) => dw.dish === targetDish && dw.stolenTimer <= 0);
+      const chosen = candidates.length > 0
+        ? candidates[Math.floor(Math.random() * candidates.length)]
+        : dishWorms.find((dw) => dw.dish === targetDish);
+      if (chosen) {
+        chosen.stolenTimer = 5.5;
+        chosen.mesh.visible = false;
+      }
+    },
     setActiveBaitVisual,
+    setUnlockedBaits,
     setPlayerRigTransform: (offset, pitch, roll, yaw = 0) => {
       playerRigGroup.position.copy(offset);
       rigSeatPivot.rotation.set(pitch * 0.4, yaw, roll * 0.4);
@@ -1105,8 +1361,17 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
       }
 
       // Wriggle worms continuously inside the ceramic dish + gently pulse highlight when hook is empty
+      const dishDt = prevDishElapsed > 0 ? Math.min(0.1, Math.max(0, elapsed - prevDishElapsed)) : 0.016;
+      prevDishElapsed = elapsed;
       for (let wi = 0; wi < dishWorms.length; wi++) {
         const dw = dishWorms[wi];
+        if (dw.stolenTimer > 0) {
+          dw.stolenTimer = Math.max(0, dw.stolenTimer - dishDt);
+          dw.mesh.visible = dw.stolenTimer <= 0;
+          if (!dw.mesh.visible) continue;
+        } else {
+          dw.mesh.visible = true;
+        }
         const sq = Math.sin(elapsed * 3.6 + dw.phase);
         const sq2 = Math.cos(elapsed * 2.5 + dw.phase * 1.3);
         dw.mesh.rotation.y = dw.baseRotY + sq * 0.14;
@@ -1114,11 +1379,16 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
         dw.mesh.position.x = dw.baseX + sq2 * 0.004;
         dw.mesh.position.z = dw.baseZ + sq * 0.004;
       }
+      // Night luminescence & subtle highlight on adaptive dish glow minnow + ring highlight
+      glowMinnowMat.emissiveIntensity = 0.45 + nightFactor * 0.9 + Math.sin(elapsed * 3.1) * 0.18;
       const needBaitPulse = !bobberVisible && !hookBaited && baitingProgress < 0;
       wormHighlightRingMat.opacity = needBaitPulse ? 0.35 + Math.sin(elapsed * 4.5) * 0.25 : 0.0;
       for (let ri = 0; ri < dishRings.length; ri++) {
         dishRings[ri].visible = needBaitPulse;
       }
+
+      // Animate vintage radio glowing dial, moving needle, and subtle acoustic cloth pulse
+      vintageRadio.update(dishDt, elapsed, nightFactor, coldSnowFactor);
 
       const isBaitingNow = baitingProgress >= 0 && baitingProgress <= 1;
       const showBaitedVisual = hookBaited && !isBaitingNow;
@@ -1137,6 +1407,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
           baitMesh.rotation.y = elapsed * 1.8;
         }
         transferWormMesh.visible = false;
+        transferBaitMesh.visible = false;
 
         // First 14 points: taut catenary curve from rod tip to bobber + high-frequency stress vibration
         const sag = Math.max(0.005, 0.35 * (1 - Math.max(rodBend, stress)));
@@ -1178,7 +1449,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
           linePositions[i * 3 + 2] = tmpPt.z;
         }
       } else {
-        // Idle dangling bobber & hook right beneath rod tip (tilts closer if actively baiting a worm)
+        // Idle dangling bobber & hook right beneath rod tip (tilts closer if actively baiting a worm or lure)
         const dipOffset = isBaitingNow ? Math.sin(baitingProgress * Math.PI) * 0.22 : 0;
         bobberGroup.visible = true;
         bobberGroup.position.set(tmpTip.x, tmpTip.y - 0.50 - dipOffset * 0.5, tmpTip.z);
@@ -1192,13 +1463,17 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
           activeDish.getWorldPosition(tmpDishWorld);
           tmpDishWorld.y += 0.06;
           const easeT = baitingProgress * baitingProgress * (3 - 2 * baitingProgress);
-          transferWormMesh.visible = true;
-          transferWormMesh.position.lerpVectors(tmpDishWorld, baitMesh.position, easeT);
-          transferWormMesh.position.y += Math.sin(easeT * Math.PI) * 0.38;
-          transferWormMesh.rotation.y = elapsed * 10.0;
-          transferWormMesh.rotation.z = Math.sin(elapsed * 14.0) * 0.45;
+          const activeTransfer = activeBaitId === 'worm' ? transferWormMesh : transferBaitMesh;
+          const inactiveTransfer = activeBaitId === 'worm' ? transferBaitMesh : transferWormMesh;
+          inactiveTransfer.visible = false;
+          activeTransfer.visible = true;
+          activeTransfer.position.lerpVectors(tmpDishWorld, baitMesh.position, easeT);
+          activeTransfer.position.y += Math.sin(easeT * Math.PI) * 0.38;
+          activeTransfer.rotation.y = elapsed * 10.0;
+          activeTransfer.rotation.z = Math.sin(elapsed * 14.0) * 0.45;
         } else {
           transferWormMesh.visible = false;
+          transferBaitMesh.visible = false;
         }
 
         for (let i = 0; i < linePointsCount; i++) {
@@ -1214,6 +1489,7 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
       return tmpTip;
     },
     dispose: () => {
+      vintageRadio.dispose();
       for (const d of disposables) d.dispose();
     },
   };

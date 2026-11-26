@@ -60,6 +60,11 @@ import { createPerchingBirdSystem } from './perchingBird';
 import { createFishDripAndKeepnetSystem } from './fishDripAndKeepnet';
 import { createRemotePlayerSystem } from './remotePlayer';
 import type { LocalPlayerSnapshot, PlayerSyncState } from '../types/multiplayer';
+import type { SaveHealthReport, SmartNotificationMode, NotificationCategory } from '../types/fishing';
+import { AdaptiveLakeDirector } from '../game/adaptiveDirector';
+import { repairAllSavedGameData } from '../utils/saveRepair';
+import { createHorizonWaterfall } from './horizonWaterfall';
+import { SmartNotificationEngine } from '../game/smartNotifications';
 
 const STORAGE_KEY = 'serene_valley_angler_save_v1';
 const DAILY_STORAGE_KEY = 'serene_valley_daily_challenges_v1';
@@ -265,9 +270,15 @@ export class FishingSceneManager {
   private crocsAndFrogs: ReturnType<typeof createCrocodilesAndFrogs>;
   private rivalAnglers: ReturnType<typeof createRivalAnglers>;
   private remotePlayerSystem: ReturnType<typeof createRemotePlayerSystem>;
+  private horizonWaterfall: ReturnType<typeof createHorizonWaterfall>;
+  private smartNotifications = new SmartNotificationEngine();
+  private lastNearPoiIdNotified: string | null = null;
   private remotePlayerState: PlayerSyncState | null = null;
   private onCatchBroadcast: ((speciesName: string, weightKg: number) => void) | null = null;
   private onStateFrame: ((snapshot: LocalPlayerSnapshot) => void) | null = null;
+  private onRadioPropClick: (() => void) | null = null;
+  private hoverCheckLastAt = 0;
+  private radioHovered = false;
   private sound = new NatureSoundEngine();
 
   private sunLight: THREE.DirectionalLight;
@@ -444,6 +455,13 @@ export class FishingSceneManager {
   private uiSteerForward = 0;
   private uiSteerTurn = 0;
   private prevBoatYaw = 0.18;
+  private adaptiveDirector = new AdaptiveLakeDirector();
+  private saveHealth: SaveHealthReport;
+  private adaptiveNotice: string | null = null;
+  private adaptiveNoticeTimer = 0;
+  private adaptiveBusy = false;
+  private catchesSinceLastEvolve = 0;
+  private fightStartTime = 0;
 
   private onHudUpdate: (state: FishingHudState) => void;
   private lastHudEmit = 0;
@@ -540,6 +558,7 @@ export class FishingSceneManager {
   constructor(container: HTMLElement, onHudUpdate: (state: FishingHudState) => void) {
     this.container = container;
     this.onHudUpdate = onHudUpdate;
+    this.saveHealth = repairAllSavedGameData(0);
     this.progression = loadSavedProgression();
     this.dailyChallenges = loadDailyChallenges(this.progression.unlockedBaits);
     this.speciesRecords = loadSpeciesRecords();
@@ -623,6 +642,7 @@ export class FishingSceneManager {
     this.fishSystem = createFishSystem();
     this.dockRig = createDockAndRig(this.textures);
     this.dockRig.setActiveBaitVisual(this.selectedBait);
+    this.dockRig.setUnlockedBaits(this.progression.unlockedBaits, this.progression.level);
     this.boatSystem = createBoatSystem(this.textures);
     this.boatSystem.setBoatLevel(this.progression.boatLevel);
     this.poiSystem = createPointsOfInterest(this.textures);
@@ -633,13 +653,16 @@ export class FishingSceneManager {
     this.crocsAndFrogs = createCrocodilesAndFrogs();
     this.rivalAnglers = createRivalAnglers();
     this.remotePlayerSystem = createRemotePlayerSystem();
+    this.horizonWaterfall = createHorizonWaterfall(this.isSoftwareGl);
 
     this.scene.add(this.environment.group);
+    this.scene.add(this.horizonWaterfall.group);
     this.scene.add(this.lakeRocks.group);
     this.scene.add(this.dockRig.group);
     this.scene.add(this.boatSystem.group);
     this.boatSystem.boatRoot.add(this.fishDripAndKeepnet.boatKeepnetGroup);
     this.boatSystem.boatRoot.add(this.dockRig.boatWormDishGroup);
+    this.boatSystem.boatRoot.add(this.dockRig.boatRadioGroup);
     this.scene.add(this.poiSystem.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
@@ -855,13 +878,159 @@ export class FishingSceneManager {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('resize', this.onResize);
     dom.addEventListener('webglcontextlost', this.onContextLost);
+    dom.addEventListener('webglcontextrestored', this.onContextRestored);
   }
 
   private onContextLost = (e: Event): void => {
     e.preventDefault();
     cancelAnimationFrame(this.frameId);
     window.clearTimeout(this.frameId);
+    this.statusMessage = 'تم إيقاف الرسوميات مؤقتاً — جاري الاستعادة التلقائية...';
+    this.emitHudState(true);
   };
+
+  private onContextRestored = (): void => {
+    if (this.disposed) return;
+    try {
+      this.pmremEnv?.dispose();
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.pmremEnv = pmrem.fromScene(new RoomEnvironment(), 0.04);
+      this.scene.environment = this.pmremEnv.texture;
+      pmrem.dispose();
+      this.renderer.compile(this.scene, this.camera);
+    } catch {
+      // Ignore partial restore hiccup
+    }
+    this.saveHealth = {
+      ...this.saveHealth,
+      webglRecoveries: this.saveHealth.webglRecoveries + 1,
+    };
+    const recMsg = 'تمت استعادة محرك الرسوميات ثلاثي الأبعاد تلقائياً';
+    this.adaptiveNotice = recMsg;
+    this.adaptiveNoticeTimer = 3.2;
+    this.smartNotifications.push({
+      eventKey: 'webgl_recovery',
+      category: 'critical',
+      titleAr: recMsg,
+      cooldownSec: 20,
+      maxToastRepeats: 2,
+      durationSec: 3.4,
+    });
+    this.statusMessage = 'تمت استعادة المشهد ثلاثي الأبعاد بسلاسة!';
+    this.clock.getDelta();
+    this.emitHudState(true);
+    this.tick();
+  };
+
+  public setNotificationMode(mode: SmartNotificationMode): void {
+    this.smartNotifications.setMode(mode);
+    this.emitHudState(true);
+  }
+
+  public markNotificationsRead(): void {
+    this.smartNotifications.markAllRead();
+    this.emitHudState(true);
+  }
+
+  public clearNotificationsHistory(): void {
+    this.smartNotifications.clearFeed();
+    this.emitHudState(true);
+  }
+
+  public dismissActiveNotification(): void {
+    this.smartNotifications.dismissActive();
+    this.emitHudState(true);
+  }
+
+  public pushUiNotification(opts: {
+    eventKey: string;
+    category: NotificationCategory;
+    titleAr: string;
+    detailAr?: string;
+    cooldownSec?: number;
+    maxToastRepeats?: number;
+    durationSec?: number;
+  }): void {
+    this.smartNotifications.push(opts);
+    this.emitHudState(true);
+  }
+
+  public handleResize(): void {
+    this.onResize();
+  }
+
+  public runSaveSelfCheck(): void {
+    this.saveHealth = repairAllSavedGameData(this.saveHealth.webglRecoveries);
+    this.progression = loadSavedProgression();
+    this.dockRig.setUnlockedBaits(this.progression.unlockedBaits, this.progression.level);
+    this.dailyChallenges = loadDailyChallenges(this.progression.unlockedBaits);
+    this.speciesRecords = loadSpeciesRecords();
+    this.discoveredPois = loadDiscoveredPois();
+    const checkMsg =
+      this.saveHealth.repairedCount > 0
+        ? `تم فحص وإصلاح ${this.saveHealth.repairedCount} سجل حفظ بنجاح`
+        : 'جميع ملفات التقدم والحفظ سليمة تماماً';
+    this.adaptiveNotice = checkMsg;
+    this.adaptiveNoticeTimer = 3.2;
+    this.smartNotifications.push({
+      eventKey: 'save_self_check',
+      category: 'achievement',
+      titleAr: checkMsg,
+      cooldownSec: 6,
+      maxToastRepeats: 5,
+      durationSec: 3.2,
+    });
+    this.emitHudState(true);
+  }
+
+  public triggerAiEvolution(quiet = false): void {
+    if (this.adaptiveBusy || this.disposed) return;
+    this.adaptiveBusy = true;
+    this.emitHudState(true);
+    void this.adaptiveDirector
+      .evolveLakeEvent({
+        level: this.progression.level,
+        weather: this.weather,
+        season: this.season,
+      })
+      .then((evt) => {
+        if (this.disposed) return;
+        this.adaptiveBusy = false;
+        if (!quiet) {
+          const msg = `تطوّرت البحيرة: «${evt.titleAr}»`;
+          this.adaptiveNotice = msg;
+          this.adaptiveNoticeTimer = 3.6;
+          this.smartNotifications.push({
+            eventKey: `ai_manual_${evt.id}`,
+            category: 'achievement',
+            titleAr: msg,
+            detailAr: evt.descriptionAr,
+            cooldownSec: 12,
+            maxToastRepeats: 3,
+            durationSec: 3.6,
+          });
+        } else {
+          const msg = `نبض تكيّفي جديد: «${evt.titleAr}»`;
+          this.adaptiveNotice = msg;
+          this.adaptiveNoticeTimer = 3.2;
+          this.smartNotifications.push({
+            eventKey: 'ai_adaptive_pulse',
+            category: 'ambient',
+            titleAr: msg,
+            detailAr: evt.descriptionAr,
+            cooldownSec: 75,
+            maxToastRepeats: 1,
+            durationSec: 3.2,
+          });
+        }
+        this.emitHudState(true);
+      })
+      .catch(() => {
+        if (this.disposed) return;
+        this.adaptiveBusy = false;
+        this.emitHudState(true);
+      });
+  }
 
   private clearHoldTimer(): void {
     if (this.holdTimer !== null) {
@@ -912,6 +1081,14 @@ export class FishingSceneManager {
     }
   }
 
+  public setRadioClickHandler(handler: (() => void) | null): void {
+    this.onRadioPropClick = handler;
+  }
+
+  public setRadioState(playing: boolean, loading: boolean, stationIndex = 0): void {
+    this.dockRig.setRadioState(playing, loading, stationIndex);
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
     this.sound.unlock();
     this.markUserActivity(true);
@@ -926,18 +1103,66 @@ export class FishingSceneManager {
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
 
-    this.clearHoldTimer();
-    this.holdTimer = window.setTimeout(() => {
-      if (this.pointerDown && !this.pointerMoved && !this.disposed) {
-        this.holdTriggered = true;
-        this.isDragging = false;
-        this.handlePrimaryActionPress();
+    let startedOnRadio = false;
+    if (this.phase !== 'biting') {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        this._pointerNdc.set(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1,
+        );
+        this._raycaster.setFromCamera(this._pointerNdc, this.camera);
+        startedOnRadio = this._raycaster.intersectObjects(this.dockRig.radioHitTargets, false).length > 0;
       }
-    }, 175);
+    }
+
+    this.clearHoldTimer();
+    if (!startedOnRadio) {
+      this.holdTimer = window.setTimeout(() => {
+        if (this.pointerDown && !this.pointerMoved && !this.disposed) {
+          this.holdTriggered = true;
+          this.isDragging = false;
+          this.handlePrimaryActionPress();
+        }
+      }, 175);
+    }
   };
 
+  private updateRadioHover(e: PointerEvent): void {
+    if (e.target !== this.renderer.domElement) {
+      if (this.radioHovered) {
+        this.radioHovered = false;
+        this.dockRig.setRadioHovered(false);
+        this.renderer.domElement.style.cursor = '';
+      }
+      return;
+    }
+    const now = performance.now();
+    if (now - this.hoverCheckLastAt < 55) return;
+    this.hoverCheckLastAt = now;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    this._pointerNdc.set(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this._raycaster.setFromCamera(this._pointerNdc, this.camera);
+    const hits = this._raycaster.intersectObjects(this.dockRig.radioHitTargets, false);
+    const hovered = hits.length > 0;
+    if (hovered !== this.radioHovered) {
+      this.radioHovered = hovered;
+      this.dockRig.setRadioHovered(hovered);
+      this.renderer.domElement.style.cursor = hovered ? 'pointer' : '';
+    }
+  }
+
   private onPointerMove = (e: PointerEvent): void => {
-    if (!this.pointerDown || this.holdTriggered) return;
+    if (!this.pointerDown) {
+      this.updateRadioHover(e);
+      return;
+    }
+    if (this.holdTriggered) return;
 
     if (!this.pointerMoved) {
       const dist = Math.hypot(e.clientX - this.pointerDownX, e.clientY - this.pointerDownY);
@@ -945,6 +1170,11 @@ export class FishingSceneManager {
         this.pointerMoved = true;
         this.isDragging = true;
         this.clearHoldTimer();
+        if (this.radioHovered) {
+          this.radioHovered = false;
+          this.dockRig.setRadioHovered(false);
+          this.renderer.domElement.style.cursor = '';
+        }
       } else {
         return;
       }
@@ -979,7 +1209,7 @@ export class FishingSceneManager {
     } else if (this.pointerDown && !this.pointerMoved) {
       if (this.phase === 'biting') {
         this.attemptHookSet();
-      } else if (this.phase === 'idle' && !this.boatSystem.isSailing()) {
+      } else {
         const rect = this.renderer.domElement.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
           this._pointerNdc.set(
@@ -987,13 +1217,19 @@ export class FishingSceneManager {
             -((e.clientY - rect.top) / rect.height) * 2 + 1,
           );
           this._raycaster.setFromCamera(this._pointerNdc, this.camera);
-          const hits = this._raycaster.intersectObjects(this.dockRig.wormDishHitTargets, true);
-          if (hits.length > 0) {
-            this.attachBaitToHook(true);
-          } else if (!this.hookBaited) {
-            const hookHits = this._raycaster.intersectObject(this.dockRig.baitMesh, true);
-            if (hookHits.length > 0) {
-              this.attachBaitToHook(true);
+          const radioHits = this._raycaster.intersectObjects(this.dockRig.radioHitTargets, false);
+          if (radioHits.length > 0) {
+            this.sound.playRadioSwitchClick();
+            this.onRadioPropClick?.();
+          } else if (this.phase === 'idle' && !this.boatSystem.isSailing()) {
+            const hits = this._raycaster.intersectObjects(this.dockRig.wormDishHitTargets, true);
+            if (hits.length > 0) {
+              this.attachBaitToHook(false);
+            } else if (!this.hookBaited) {
+              const hookHits = this._raycaster.intersectObject(this.dockRig.baitMesh, true);
+              if (hookHits.length > 0) {
+                this.attachBaitToHook(false);
+              }
             }
           }
         }
@@ -1100,9 +1336,10 @@ export class FishingSceneManager {
     };
   }
 
-  public attachBaitToHook(useWorm = true): void {
+  public attachBaitToHook(useWorm = false): void {
     this.sound.unlock();
     this.markUserActivity(true);
+    this.perchingBird.triggerScatter();
     if (this.phase !== 'idle' || this.boatSystem.isSailing()) return;
     if (useWorm) {
       this.selectedBait = 'worm';
@@ -1173,14 +1410,13 @@ export class FishingSceneManager {
     this.dockRig.setActiveBaitVisual(baitId);
     if (this.phase === 'idle') {
       this.hookBaited = true;
-      if (baitId === 'worm') {
-        this.baitingAnimTimer = this.baitingDuration;
-      }
+      this.baitingAnimTimer = this.baitingDuration;
+      this.sound.playNibble();
     }
     const b = BAIT_CATALOG.find((x) => x.id === baitId);
     if (b) {
       this.lineDepthMeters = b.targetDepthOffset;
-      this.statusMessage = `تم تعليق الطعم: ${b.nameAr}`;
+      this.statusMessage = `تم تعليق الطعم من الطبق: ${b.nameAr}`;
     }
     this.emitHudState(true);
   }
@@ -1441,8 +1677,17 @@ export class FishingSceneManager {
     saveProgression(this.progression);
     this.boatSystem.setBoatLevel(nextTier.level);
     this.sound.playCatchChime();
-    this.newlyUnlockedNotice = `تمت ترقية القارب إلى «${nextTier.nameAr}»! ${nextTier.unlockSummaryAr}`;
+    const boatMsg = `تمت ترقية القارب إلى «${nextTier.nameAr}»! ${nextTier.unlockSummaryAr}`;
+    this.newlyUnlockedNotice = boatMsg;
     this.unlockNoticeTimer = 3.0;
+    this.smartNotifications.push({
+      eventKey: `boat_upgrade_${nextTier.level}`,
+      category: 'achievement',
+      titleAr: boatMsg,
+      cooldownSec: 5,
+      maxToastRepeats: 3,
+      durationSec: 3.8,
+    });
     this.statusMessage = `أصبح لديك «${nextTier.nameAr}» — أبحر الآن نحو المناطق الأعمق في وسط البحيرة!`;
     this.emitHudState(true);
   }
@@ -1476,7 +1721,8 @@ export class FishingSceneManager {
       this.playerCutawayTimer = 3.25;
       this.playerCutawaySpeciesName = record.species.nameAr;
       this.lastActivityTime = this.elapsed;
-      this.statusMessage = `تم وضع ${record.species.nameAr} في السبت وحفظها في السجل`;
+      const basketSide = record.species.rarity === 'شائع' ? 'السلة اليسرى (الشائع)' : 'السلة اليمنى (النوادر والأساطير)';
+      this.statusMessage = `تم وضع ${record.species.nameAr} في ${basketSide} وحفظها في السجل`;
     }
 
     this.catchHistory = [record, ...this.catchHistory];
@@ -1508,6 +1754,7 @@ export class FishingSceneManager {
   // --- Internal Fishing Mechanics ---
   private launchCast(): void {
     this.sound.playCast();
+    this.perchingBird.triggerScatter();
     this.phase = 'casting';
     this.castFlightT = 0;
 
@@ -1570,6 +1817,7 @@ export class FishingSceneManager {
     this.isHeavyHookedFish = dims.weightKg >= 2.2 || dims.heavyFactor >= 0.25;
 
     this.phase = 'reeling';
+    this.fightStartTime = this.elapsed;
     this.lineTension = 0.28 + this.heavyFishFactor * 0.14;
     this.reelHeld = false;
     this.crocCloseEscape = false;
@@ -1636,11 +1884,21 @@ export class FishingSceneManager {
       for (const h of HOOK_CATALOG) {
         if (h.unlockLevel > oldLevel && h.unlockLevel <= newLevel) newGearNames.push(h.nameAr);
       }
-      this.newlyUnlockedNotice =
+      const lvlMsg =
         newGearNames.length > 0
           ? `ترقية للمستوى ${newLevel}: ${newGearNames.join('، ')}`
           : `ترقية إلى المستوى ${newLevel}!`;
+      this.newlyUnlockedNotice = lvlMsg;
       this.unlockNoticeTimer = 3.0;
+      this.smartNotifications.push({
+        eventKey: `level_up_${newLevel}`,
+        category: 'achievement',
+        titleAr: lvlMsg,
+        detailAr: newGearNames.length > 0 ? 'أصبح متاحاً الآن في طبق الطعوم وصندوق العدة' : undefined,
+        cooldownSec: 5,
+        maxToastRepeats: 3,
+        durationSec: 4.0,
+      });
     }
 
     this.progression = {
@@ -1651,6 +1909,7 @@ export class FishingSceneManager {
       unlockedBaits,
       unlockedHooks,
     };
+    this.dockRig.setUnlockedBaits(unlockedBaits, newLevel);
     saveProgression(this.progression);
   }
 
@@ -1690,16 +1949,41 @@ export class FishingSceneManager {
       this.speciesRecords = updatedRecords;
       saveSpeciesRecords(updatedRecords);
 
-      this.recordBrokenNotice = existingRecord
+      const recNotice = existingRecord
         ? `رقم قياسي جديد لـ ${sp.nameAr}: ${weightKg} كجم (+${recordBonusXp} XP)`
         : `أول رقم قياسي لـ ${sp.nameAr}: ${weightKg} كجم (+${recordBonusXp} XP)`;
+      this.recordBrokenNotice = recNotice;
       this.recordNoticeTimer = 3.0;
+      this.smartNotifications.push({
+        eventKey: `record_${sp.id}`,
+        category: 'achievement',
+        titleAr: recNotice,
+        cooldownSec: 8,
+        maxToastRepeats: 4,
+        durationSec: 3.6,
+      });
     }
 
     const challengeBonusXp = this.evaluateDailyChallenges(sp.id, this.selectedBait, this.weather);
     const crocEscapeBonusXp = this.crocCloseEscape ? 35 : 0;
     const rivalWinBonusXp = this.rivalWonThisCatch ? 50 : 0;
     this.applyXpGain(xpEarned + challengeBonusXp + crocEscapeBonusXp + rivalWinBonusXp + recordBonusXp);
+
+    const bedDepth = Math.max(0.3, -groundHeightAt(this.castTargetPos.x, this.castTargetPos.z));
+    const zone = classifyLakeZone(this.castTargetPos.x, this.castTargetPos.z, bedDepth);
+    const fightSeconds = Math.max(2, this.elapsed - this.fightStartTime);
+    this.adaptiveDirector.recordCatch({
+      rarity: sp.rarity,
+      baitId: this.selectedBait,
+      zone,
+      fightSeconds,
+      crocCloseEscape: this.crocCloseEscape,
+    });
+    this.catchesSinceLastEvolve += 1;
+    if (this.catchesSinceLastEvolve >= 4) {
+      this.catchesSinceLastEvolve = 0;
+      this.triggerAiEvolution(true);
+    }
 
     this.heavyFishFactor = 0;
     this.isHeavyHookedFish = false;
@@ -1709,9 +1993,6 @@ export class FishingSceneManager {
     this.rivalContestActive = false;
     this.rivalName = null;
     this.rivalAnglers.resetContest();
-
-    const bedDepth = Math.max(0.3, -groundHeightAt(this.castTargetPos.x, this.castTargetPos.z));
-    const zone = classifyLakeZone(this.castTargetPos.x, this.castTargetPos.z, bedDepth);
 
     this.activeCatch = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -1799,8 +2080,17 @@ export class FishingSceneManager {
       saveDailyChallenges(this.dailyChallenges);
 
       if (completedTitles.length > 0) {
-        this.challengeCompletedNotice = `إنجاز تحدٍّ يومي: ${completedTitles.join(' و ')} (+${bonusXp} XP)`;
+        const chMsg = `إنجاز تحدٍّ يومي: ${completedTitles.join(' و ')} (+${bonusXp} XP)`;
+        this.challengeCompletedNotice = chMsg;
         this.challengeNoticeTimer = 3.0;
+        this.smartNotifications.push({
+          eventKey: `challenge_done_${completedTitles.join('_')}`,
+          category: 'achievement',
+          titleAr: chMsg,
+          cooldownSec: 6,
+          maxToastRepeats: 3,
+          durationSec: 3.8,
+        });
       }
     }
 
@@ -2226,6 +2516,21 @@ export class FishingSceneManager {
       effectiveWindMult,
       this._skyMoodPayload,
     );
+    this.horizonWaterfall.update({
+      elapsed: this.elapsed,
+      sunDir: this._sunDir,
+      sunColor: this._sunColor,
+      skyHorizon: this._skyHorizon,
+      moonDir: this._moonDir,
+      moonColor: this._smoothMoonColor,
+      nightFactor,
+      sunIntensity: daylight * weatherDim,
+      weather: this.weather,
+      season: this.season,
+      windSpeedKmh,
+      fogColor: this._fogColor,
+      fogDensity: this.fog.density,
+    });
     this.lakeRocks.update(this.elapsed, this.coldIntensity);
 
     this._waterNightPayload.nightFactor = nightFactor;
@@ -2302,6 +2607,8 @@ export class FishingSceneManager {
     this._audioLocation.waterDepthMeters = depthHere;
     this._audioLocation.shoreProximity = shoreProx;
     this._audioLocation.nearCaveOrRock = nearCaveOrRock;
+    const distToWf = Math.hypot(playerX - this.horizonWaterfall.worldCenter.x, playerZ - this.horizonWaterfall.worldCenter.z);
+    this._audioLocation.waterfallProximity = THREE.MathUtils.clamp(1 - (distToWf - 85) / 210, 0, 1);
 
     // Dynamic Weather Soundscape Metrics (approaching storm rumble, winter snowfall hush, mist stillness)
     let targetStormApproach = 0;
@@ -2456,6 +2763,15 @@ export class FishingSceneManager {
           xpReward: def.xpReward,
         };
         this.poiNoticeTimer = 3.0;
+        this.smartNotifications.push({
+          eventKey: `poi_found_${def.id}`,
+          category: 'achievement',
+          titleAr: `اكتشفت معلماً: ${def.nameAr} (+${def.xpReward} XP)`,
+          detailAr: def.discoveryStoryAr,
+          cooldownSec: 15,
+          maxToastRepeats: 3,
+          durationSec: 4.2,
+        });
         this.statusMessage = `اكتشفت معلماً جديداً: ${def.nameAr}! (+${def.xpReward} XP للاستكشاف)`;
         this.emitHudState(true);
       }
@@ -2466,8 +2782,21 @@ export class FishingSceneManager {
       this.nearbyPoiName = nearby
         ? `${nearby.definition.mysteryTitleAr} (${Math.round(poiResult.nearbyDistance)} م)`
         : null;
+      if (nearby && this.lastNearPoiIdNotified !== nearby.definition.id) {
+        this.lastNearPoiIdNotified = nearby.definition.id;
+        this.smartNotifications.push({
+          eventKey: `poi_near_${nearby.definition.id}`,
+          category: 'ambient',
+          titleAr: `تقترب من معلم خفي: ${nearby.definition.mysteryTitleAr}`,
+          detailAr: `على بُعد ${Math.round(poiResult.nearbyDistance)} متر`,
+          cooldownSec: 60,
+          maxToastRepeats: 1,
+          durationSec: 3.0,
+        });
+      }
     } else {
       this.nearbyPoiName = null;
+      this.lastNearPoiIdNotified = null;
     }
 
     if (boatResult.arrivedSpotId) {
@@ -2534,7 +2863,7 @@ export class FishingSceneManager {
       this.emitHudState(true);
     }
 
-    // Perching Lakeside Bird (periodically swoops in to land on boat gunwale or wooden pier, flutters, then flies off)
+    // Perching Lakeside Bird (periodically swoops in to land on boat gunwale, wooden pier, or raid the worm dish)
     this.perchingBird.update({
       dt,
       elapsed: this.elapsed,
@@ -2547,6 +2876,26 @@ export class FishingSceneManager {
       boatMovingFast: this.boatSystem.isSailing() || Math.abs(totalFwd) > 0.45,
       onBirdChirp: (pan) => this.sound.playCloseBirdChirp(pan),
       onWingFlutter: (pan) => this.sound.playWingFlutter(pan),
+      onStealWorm: (pan) => {
+        this.sound.playCloseBirdChirp(pan);
+        this.sound.playWingFlutter(pan);
+        this.dockRig.notifyWormStolen(isOnBoatNow);
+        const stealMsg = 'سرق الطائر دودة من الطبق وطار بعيداً!';
+        this.adaptiveNotice = stealMsg;
+        this.adaptiveNoticeTimer = 3.2;
+        this.smartNotifications.push({
+          eventKey: 'bird_steal_worm',
+          category: 'ambient',
+          titleAr: stealMsg,
+          cooldownSec: 70,
+          maxToastRepeats: 1,
+          durationSec: 3.0,
+        });
+        if (this.phase === 'idle') {
+          this.statusMessage = 'اقترب الطائر وخطف دودة من الطبق وطار بها!';
+        }
+        this.emitHudState(true);
+      },
     });
 
     this.cinematicBlend = THREE.MathUtils.damp(
@@ -2609,6 +2958,13 @@ export class FishingSceneManager {
     if (this.poiNoticeTimer > 0) {
       this.poiNoticeTimer -= dt;
       if (this.poiNoticeTimer <= 0) this.poiDiscoveredNotice = null;
+    }
+    if (this.adaptiveNoticeTimer > 0) {
+      this.adaptiveNoticeTimer -= dt;
+      if (this.adaptiveNoticeTimer <= 0) this.adaptiveNotice = null;
+    }
+    if (this.smartNotifications.tick(dt)) {
+      this.emitHudState(true);
     }
 
     // --- Fishing Gameplay Loop ---
@@ -2689,12 +3045,14 @@ export class FishingSceneManager {
       // Perpendicular dart direction
       this._rightVec.set(-dockPos.z, 0, dockPos.x).multiplyScalar(f.surgeDir);
 
+      const adaptiveStats = this.adaptiveDirector.getTelemetrySummary();
       const heavyLoadMult = 1 + this.heavyFishFactor * 0.36;
       const fightForce =
         f.species.fightStrength *
         (isSurging ? 1.35 : 0.55) *
         (0.45 + f.stamina * 0.55) *
-        heavyLoadMult;
+        heavyLoadMult *
+        adaptiveStats.fishFightScale;
 
       if (this.reelHeld) {
         this.sound.playReelTick(this.elapsed);
@@ -2761,9 +3119,19 @@ export class FishingSceneManager {
 
       // Check line snap vs landing catch
       if (this.lineTension >= 0.99) {
-        this.lineSnappedNotice = 'انقطع الخيط بسبب الشد الزائد! خفّف السحب عند الاحمرار.';
+        this.adaptiveDirector.recordLineSnap(this.selectedBait);
+        const snapMsg = 'انقطع الخيط بسبب الشد الزائد! خفّف السحب عند الاحمرار.';
+        this.lineSnappedNotice = snapMsg;
         this.lineSnapTimer = 3.0;
-        this.resetToIdle('انقطع الخيط! علّق دودة جديدة وارمِ مجدداً', true);
+        this.smartNotifications.push({
+          eventKey: 'line_snap_tension',
+          category: 'critical',
+          titleAr: snapMsg,
+          cooldownSec: 8,
+          maxToastRepeats: 5,
+          durationSec: 3.4,
+        });
+        this.resetToIdle('انقطع الخيط! علّق طعماً جديداً وارمِ مجدداً', true);
       } else if (distToDock <= 2.9) {
         this.completeCatch(f);
       }
@@ -2834,6 +3202,8 @@ export class FishingSceneManager {
     // Update Fish AI System
     const lureInWater = this.phase === 'waiting' || this.phase === 'nibbling' || this.phase === 'biting';
     const boatDef = BOAT_CATALOG.find((b) => b.level === this.progression.boatLevel) ?? BOAT_CATALOG[0];
+    const adaptiveSummary = this.adaptiveDirector.getTelemetrySummary();
+    const adaptiveEvt = this.adaptiveDirector.getActiveEvent();
     this.fishSystem.update({
       dt,
       elapsed: this.elapsed,
@@ -2846,6 +3216,12 @@ export class FishingSceneManager {
       timePreset: getPresetFromHour(this.timeOfDay),
       anglerSenseLevel: this.progression.skills.anglerSense,
       rareAttractionBonus: this.boatSystem.isOnBoat() ? boatDef.rareAttractionBonus : 1.0,
+      adaptiveModifiers: {
+        biteSpeedMult: adaptiveSummary.biteSpeedMult,
+        rareAttractionMult: adaptiveSummary.rareSpawnBoost,
+        targetZone: adaptiveEvt.targetZone,
+        targetZoneMult: 1.15,
+      },
       isReelingPhase: this.phase === 'reeling' || this.phase === 'caught',
       onNibble: (rx, rz) => {
         if (this.phase === 'waiting' || this.phase === 'nibbling') {
@@ -2933,11 +3309,21 @@ export class FishingSceneManager {
       this.crocCloseEscape = true;
     }
     if (crocResult.devoured && activeReelingFish) {
+      this.adaptiveDirector.recordCrocDevour();
       this.fishSystem.consumeHookedFish();
       this.hookedFish = null;
-      this.lineSnappedNotice = 'التهم التمساح السمكة! اسحب بسرعة أكبر قبل اقترابه.';
+      const crocMsg = 'التهم التمساح السمكة! اسحب بسرعة أكبر قبل اقترابه.';
+      this.lineSnappedNotice = crocMsg;
       this.lineSnapTimer = 3.0;
-      this.resetToIdle('التهم التمساح السمكة! علّق دودة جديدة وارمِ الصنارة', true);
+      this.smartNotifications.push({
+        eventKey: 'croc_devour',
+        category: 'critical',
+        titleAr: crocMsg,
+        cooldownSec: 12,
+        maxToastRepeats: 4,
+        durationSec: 3.4,
+      });
+      this.resetToIdle('التهم التمساح السمكة! علّق طعماً جديداً وارمِ الصنارة', true);
     }
 
     const reelSkillFactor = 1 + (this.progression.skills.reelSpeed - 1) * 0.14;
@@ -2963,8 +3349,17 @@ export class FishingSceneManager {
     this.rivalContestBalance = rivalResult.contestBalance;
 
     if (rivalResult.justStarted && rivalResult.rivalName) {
-      this.rivalNotice = `اشتبك ${rivalResult.rivalName} على نفس السمكة! اسحب بقوة!`;
+      const startMsg = `اشتبك ${rivalResult.rivalName} على نفس السمكة! اسحب بقوة!`;
+      this.rivalNotice = startMsg;
       this.rivalNoticeTimer = 3.0;
+      this.smartNotifications.push({
+        eventKey: 'rival_contest_start',
+        category: 'rival',
+        titleAr: startMsg,
+        cooldownSec: 45,
+        maxToastRepeats: 2,
+        durationSec: 3.0,
+      });
     }
     if (rivalResult.contestActive && stillReelingFish) {
       stillReelingFish.position.x += rivalResult.pullVectorX * dt;
@@ -2973,13 +3368,31 @@ export class FishingSceneManager {
     }
     if (rivalResult.justWon) {
       this.rivalWonThisCatch = true;
-      this.rivalNotice = 'حسمت صراع السحب ضد المنافس! (+50 XP)';
+      const winMsg = 'حسمت صراع السحب ضد المنافس! (+50 XP)';
+      this.rivalNotice = winMsg;
       this.rivalNoticeTimer = 3.0;
+      this.smartNotifications.push({
+        eventKey: 'rival_contest_win',
+        category: 'achievement',
+        titleAr: winMsg,
+        cooldownSec: 25,
+        maxToastRepeats: 3,
+        durationSec: 3.2,
+      });
     } else if (rivalResult.justStolen && stillReelingFish) {
       this.fishSystem.consumeHookedFish();
       this.hookedFish = null;
-      this.rivalNotice = 'خطف الصياد المنافس السمكة في صراع السحب!';
+      const lossMsg = 'خطف الصياد المنافس السمكة في صراع السحب!';
+      this.rivalNotice = lossMsg;
       this.rivalNoticeTimer = 3.0;
+      this.smartNotifications.push({
+        eventKey: 'rival_contest_lost',
+        category: 'rival',
+        titleAr: lossMsg,
+        cooldownSec: 35,
+        maxToastRepeats: 2,
+        durationSec: 3.2,
+      });
       this.resetToIdle('فاز المنافس بالسمكة! ارمِ الصنارة في نقطة أخرى');
     }
 
@@ -3324,16 +3737,24 @@ export class FishingSceneManager {
       pois: poisHud,
       poiDiscoveredNotice: this.poiDiscoveredNotice,
       nearbyPoiName: this.nearbyPoiName,
+      adaptiveEvent: this.adaptiveDirector.getActiveEvent(),
+      adaptiveStats: this.adaptiveDirector.getTelemetrySummary(),
+      adaptiveNotice: this.adaptiveNotice,
+      adaptiveBusy: this.adaptiveBusy,
+      saveHealth: this.saveHealth,
+      smartNotifications: this.smartNotifications.getState(),
     });
   }
 
   public dispose(): void {
     this.disposed = true;
+    this.onRadioPropClick = null;
     this.clearHoldTimer();
     cancelAnimationFrame(this.frameId);
     window.clearTimeout(this.frameId);
 
     const dom = this.renderer.domElement;
+    dom.style.cursor = '';
     dom.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
@@ -3342,9 +3763,11 @@ export class FishingSceneManager {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('resize', this.onResize);
     dom.removeEventListener('webglcontextlost', this.onContextLost);
+    dom.removeEventListener('webglcontextrestored', this.onContextRestored);
 
     this.sound.dispose();
     this.environment.dispose();
+    this.horizonWaterfall.dispose();
     this.lakeRocks.dispose();
     this.water.dispose();
     this.fishSystem.dispose();

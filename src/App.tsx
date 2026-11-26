@@ -99,6 +99,46 @@ const INITIAL_HUD: FishingHudState = {
   pois: [],
   poiDiscoveredNotice: null,
   nearbyPoiName: null,
+  adaptiveEvent: {
+    id: 'initial_spring_tide',
+    titleAr: 'تيار الصباح الهادئ',
+    descriptionAr: 'تتجمع أسراب الأسماك قرب الحافة الصخرية وظل الرصيف مع بداية نشاط البحيرة.',
+    coachingTipAr: 'جرّب الدودة أو الذبابة على عمق 1.4م لتحقيق بداية متوازنة.',
+    bonusBiteMult: 1.08,
+    bonusRarityMult: 1.06,
+    targetZone: 'rocky_ledge',
+    source: 'adaptive',
+    updatedAt: Date.now(),
+  },
+  adaptiveStats: {
+    skillScore: 0.5,
+    biteSpeedMult: 1.08,
+    fishFightScale: 1.0,
+    rareSpawnBoost: 1.06,
+    crocAggressionScale: 1.0,
+    totalCatches: 0,
+    totalSnaps: 0,
+    totalCrocDevours: 0,
+    favoriteBait: 'worm',
+    streakWithoutSnap: 0,
+    evolveCount: 0,
+  },
+  adaptiveNotice: null,
+  adaptiveBusy: false,
+  saveHealth: {
+    healthy: true,
+    repairedCount: 0,
+    repairedKeys: [],
+    checkedAt: '00:00:00',
+    webglRecoveries: 0,
+  },
+  smartNotifications: {
+    mode: 'smart',
+    activeToast: null,
+    feed: [],
+    unreadCount: 0,
+    suppressedTotal: 0,
+  },
 };
 
 function syncRoomParamInUrl(code: string | null): void {
@@ -133,6 +173,7 @@ export default function App() {
   const [chatOpen, setChatOpen] = useState(true);
   const [unreadChat, setUnreadChat] = useState(0);
   const [mpError, setMpError] = useState<string | null>(null);
+  const [radioPropOpenNonce, setRadioOpenNonce] = useState(0);
 
   const selfIdRef = useRef<string | null>(null);
   const chatOpenRef = useRef(true);
@@ -217,6 +258,9 @@ export default function App() {
     manager.setCatchBroadcastHandler((speciesName, weightKg) => {
       mpClient.sendCatchAnnouncement(speciesName, weightKg);
     });
+    manager.setRadioClickHandler(() => {
+      setRadioOpenNonce((n) => n + 1);
+    });
     mpClientRef.current = mpClient;
 
     // Auto-join room from invite URL (?room=XXXXX) if present
@@ -234,6 +278,7 @@ export default function App() {
     return () => {
       manager?.setStateFrameHandler(null);
       manager?.setCatchBroadcastHandler(null);
+      manager?.setRadioClickHandler(null);
       mpClient.dispose();
       mpClientRef.current = null;
       manager?.dispose();
@@ -297,8 +342,20 @@ export default function App() {
             onCancelRivalCutaway={() => managerRef.current?.cancelRivalCutaway()}
             onCancelPlayerCutaway={() => managerRef.current?.cancelPlayerCutaway()}
             onToggleUnderwaterCam={() => managerRef.current?.toggleUnderwaterCam()}
-            onAttachWorm={() => managerRef.current?.attachBaitToHook(true)}
+            onAttachWorm={() => managerRef.current?.attachBaitToHook(false)}
             onResolveCatch={(rel) => managerRef.current?.resolveActiveCatch(rel)}
+            onTriggerAiEvolution={() => managerRef.current?.triggerAiEvolution(false)}
+            onRunSaveSelfCheck={() => managerRef.current?.runSaveSelfCheck()}
+            onSetNotificationMode={(mode) => managerRef.current?.setNotificationMode(mode)}
+            onMarkNotificationsRead={() => managerRef.current?.markNotificationsRead()}
+            onClearNotifications={() => managerRef.current?.clearNotificationsHistory()}
+            onDismissNotification={() => managerRef.current?.dismissActiveNotification()}
+            onPushNotification={(opts) => managerRef.current?.pushUiNotification(opts)}
+            onViewportResize={() => managerRef.current?.handleResize()}
+            radioPropOpenNonce={radioPropOpenNonce}
+            onRadioPlaybackSync={(playing, loading, stationIndex) =>
+              managerRef.current?.setRadioState(playing, loading, stationIndex)
+            }
             characterName={profile.name}
             multiplayerRoomCode={roomCode}
             multiplayerPlayersCount={roomPlayers.length}

@@ -30,6 +30,13 @@ import {
   Volume2,
   Music2,
   Users,
+  Cpu,
+  ShieldCheck,
+  RefreshCw,
+  Bell,
+  BellOff,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import {
   BAIT_CATALOG,
@@ -55,9 +62,11 @@ import {
   type LakeSpotId,
   type LiveRadioStation,
   type NightReflectionMoodId,
+  type NotificationCategory,
   type PoiId,
   type SeasonId,
   type SkillKey,
+  type SmartNotificationMode,
   type TimePresetId,
   type WeatherType,
 } from '../types/fishing';
@@ -270,6 +279,22 @@ interface FishingHUDProps {
   onResolveCatch: (release: boolean) => void;
   onToggleUnderwaterCam: () => void;
   onAttachWorm: () => void;
+  onTriggerAiEvolution: () => void;
+  onRunSaveSelfCheck: () => void;
+  onSetNotificationMode: (mode: SmartNotificationMode) => void;
+  onMarkNotificationsRead: () => void;
+  onClearNotifications: () => void;
+  onDismissNotification: () => void;
+  onPushNotification: (opts: {
+    eventKey: string;
+    category: NotificationCategory;
+    titleAr: string;
+    detailAr?: string;
+    durationSec?: number;
+  }) => void;
+  onViewportResize: () => void;
+  radioPropOpenNonce: number;
+  onRadioPlaybackSync: (playing: boolean, loading: boolean, stationIndex: number) => void;
   characterName: string;
   multiplayerRoomCode: string | null;
   multiplayerPlayersCount: number;
@@ -318,6 +343,16 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   onResolveCatch,
   onToggleUnderwaterCam,
   onAttachWorm,
+  onTriggerAiEvolution,
+  onRunSaveSelfCheck,
+  onSetNotificationMode,
+  onMarkNotificationsRead,
+  onClearNotifications,
+  onDismissNotification,
+  onPushNotification,
+  onViewportResize,
+  radioPropOpenNonce,
+  onRadioPlaybackSync,
   characterName,
   multiplayerRoomCode,
   multiplayerPlayersCount,
@@ -327,8 +362,16 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   const [activeTab, setActiveTab] = useState<SettingsTab>('fishing');
   const [catchCardHidden, setCatchCardHidden] = useState(false);
   const [radioMenuOpen, setRadioMenuOpen] = useState(false);
+  const [vintageRadioOpen, setVintageRadioOpen] = useState(false);
   const [radioFilter, setRadioFilter] = useState<'all' | 'arabic' | 'chill'>('all');
   const radioMenuRef = useRef<HTMLDivElement | null>(null);
+  const vintageRadioRef = useRef<HTMLDivElement | null>(null);
+  const wasVintageOpenAtDownRef = useRef(false);
+  const [notifMenuOpen, setNotifMenuOpen] = useState(false);
+  const notifMenuRef = useRef<HTMLDivElement | null>(null);
+  const [baitDishOpen, setBaitDishOpen] = useState(false);
+  const baitDishRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     if (hud.phase !== 'caught') {
@@ -362,6 +405,66 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
     }
   };
 
+  const toggleFullscreenRef = useRef<() => void>(() => {});
+
+  const handleToggleFullscreen = async () => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => Promise<void> | void;
+    };
+    const root = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    try {
+      const currentFs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      if (!currentFs) {
+        if (root.requestFullscreen) {
+          await root.requestFullscreen();
+        } else if (root.webkitRequestFullscreen) {
+          await root.webkitRequestFullscreen();
+        } else {
+          onPushNotification({
+            eventKey: 'fullscreen_unsupported',
+            category: 'critical',
+            titleAr: 'وضع ملء الشاشة غير مدعوم في هذا المتصفح',
+            durationSec: 3.0,
+          });
+        }
+      } else {
+        if (doc.exitFullscreen) {
+          await doc.exitFullscreen();
+        } else if (doc.webkitExitFullscreen) {
+          await doc.webkitExitFullscreen();
+        }
+      }
+    } catch {
+      onPushNotification({
+        eventKey: 'fullscreen_blocked',
+        category: 'critical',
+        titleAr: 'المتصفح قيّد تفعيل ملء الشاشة من داخل الإطار المضمّن',
+        durationSec: 3.2,
+      });
+    }
+  };
+  toggleFullscreenRef.current = () => {
+    void handleToggleFullscreen();
+  };
+
+  useEffect(() => {
+    const syncFs = () => {
+      const doc = document as Document & { webkitFullscreenElement?: Element | null };
+      setIsFullscreen(Boolean(doc.fullscreenElement || doc.webkitFullscreenElement));
+      window.setTimeout(() => onViewportResize(), 60);
+    };
+    syncFs();
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFs);
+      document.removeEventListener('webkitfullscreenchange', syncFs);
+    };
+  }, [onViewportResize]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
@@ -369,8 +472,13 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
       if (e.key === 'Escape') {
         setSettingsOpen(false);
         setRadioMenuOpen(false);
+        setVintageRadioOpen(false);
+        setNotifMenuOpen(false);
+        setBaitDishOpen(false);
       } else if (e.key === 'h' || e.key === 'H' || e.key === 'ا') {
         setSettingsOpen((prev) => !prev);
+      } else if ((e.key === 'f' || e.key === 'F' || e.key === 'ب') && !e.ctrlKey && !e.metaKey) {
+        toggleFullscreenRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -378,15 +486,46 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!radioMenuOpen) return;
+    if (!radioMenuOpen && !vintageRadioOpen && !notifMenuOpen && !baitDishOpen) return;
     const onOutsidePointer = (e: PointerEvent) => {
-      if (radioMenuRef.current && !radioMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      wasVintageOpenAtDownRef.current = vintageRadioOpen;
+      if (radioMenuOpen && radioMenuRef.current && !radioMenuRef.current.contains(target)) {
         setRadioMenuOpen(false);
+      }
+      if (vintageRadioOpen && vintageRadioRef.current && !vintageRadioRef.current.contains(target)) {
+        setVintageRadioOpen(false);
+      }
+      if (notifMenuOpen && notifMenuRef.current && !notifMenuRef.current.contains(target)) {
+        setNotifMenuOpen(false);
+      }
+      if (baitDishOpen && baitDishRef.current && !baitDishRef.current.contains(target)) {
+        setBaitDishOpen(false);
       }
     };
     window.addEventListener('pointerdown', onOutsidePointer);
     return () => window.removeEventListener('pointerdown', onOutsidePointer);
-  }, [radioMenuOpen]);
+  }, [radioMenuOpen, vintageRadioOpen, notifMenuOpen, baitDishOpen]);
+
+  useEffect(() => {
+    if (radioPropOpenNonce <= 0) return;
+    if (wasVintageOpenAtDownRef.current) {
+      wasVintageOpenAtDownRef.current = false;
+      return;
+    }
+    setRadioMenuOpen(false);
+    setNotifMenuOpen(false);
+    setBaitDishOpen(false);
+    setVintageRadioOpen(true);
+  }, [radioPropOpenNonce]);
+
+  const onRadioPlaybackSyncRef = useRef(onRadioPlaybackSync);
+  onRadioPlaybackSyncRef.current = onRadioPlaybackSync;
+
+  useEffect(() => {
+    const idx = activeStation ? Math.max(0, LIVE_RADIO_STATIONS.findIndex((s) => s.id === activeStation.id)) : 0;
+    onRadioPlaybackSyncRef.current(radioPlaying, radioStatus === 'loading', idx);
+  }, [radioPlaying, radioStatus, activeStation]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -534,12 +673,14 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
     Math.max(0, ((hud.progression.totalXp - prevThreshold) / Math.max(1, nextThreshold - prevThreshold)) * 100),
   );
 
+  const selectedBaitDef = BAIT_CATALOG.find((b) => b.id === hud.selectedBait) ?? BAIT_CATALOG[0];
+
   const primaryLabel = hud.isSailing
     ? 'جاري الإبحار...'
     : hud.phase === 'idle'
       ? hud.hookBaited
         ? 'اضغط مطولاً لرمي الصنارة'
-        : 'علّق الدودة أولاً للرمي'
+        : `علّق ${selectedBaitDef.nameAr} أولاً للرمي`
       : hud.phase === 'charging'
         ? 'أفلت للرمي الآن'
         : hud.phase === 'casting'
@@ -860,44 +1001,239 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
               </div>
             )}
           </div>
+
+          {/* Smart Notifications Bell + Grouped Activity Feed Dropdown */}
+          <div ref={notifMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setRadioMenuOpen(false);
+                setBaitDishOpen(false);
+                setNotifMenuOpen((prev) => {
+                  const next = !prev;
+                  if (next && hud.smartNotifications.unreadCount > 0) {
+                    onMarkNotificationsRead();
+                  }
+                  return next;
+                });
+              }}
+              aria-expanded={notifMenuOpen}
+              title="مركز الإشعارات الذكي (يمنع التكرار المزعج)"
+              className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-medium shadow-lg transition-colors whitespace-nowrap ${
+                notifMenuOpen
+                  ? 'bg-emerald-500/22 border-emerald-400/60 text-emerald-100'
+                  : hud.smartNotifications.mode === 'essential'
+                    ? 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-300'
+                    : 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-100'
+              }`}
+            >
+              {hud.smartNotifications.mode === 'essential' ? (
+                <BellOff className="w-4 h-4 text-amber-300 shrink-0" />
+              ) : (
+                <Bell className="w-4 h-4 text-emerald-300 shrink-0" />
+              )}
+              <span className="hidden sm:inline">الإشعارات</span>
+              {hud.smartNotifications.unreadCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-md bg-amber-500 text-stone-950 font-mono-nums text-[10px] font-bold">
+                  {hud.smartNotifications.unreadCount}
+                </span>
+              )}
+            </button>
+
+            {notifMenuOpen && (
+              <div className="absolute top-full right-0 mt-2 w-80 max-w-[calc(100vw-1.5rem)] rounded-xl bg-[#0a1418]/96 border border-white/15 shadow-2xl overflow-hidden z-40">
+                <div className="p-2.5 border-b border-white/10 bg-white/[0.03] space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-stone-100">نظام الإشعارات الذكي</span>
+                    <div className="flex items-center gap-1.5">
+                      {hud.smartNotifications.feed.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={onClearNotifications}
+                          className="px-2 py-0.5 rounded bg-white/8 hover:bg-white/15 text-[10px] text-stone-300 transition-colors"
+                        >
+                          مسح السجل
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Smart mode switcher */}
+                  <div className="grid grid-cols-3 gap-1 bg-black/35 p-0.5 rounded-lg border border-white/10">
+                    {(
+                      [
+                        { id: 'smart', label: 'ذكي' },
+                        { id: 'essential', label: 'المهم فقط' },
+                        { id: 'all', label: 'الكل' },
+                      ] as const
+                    ).map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => onSetNotificationMode(m.id)}
+                        className={`py-1 rounded text-[10px] font-semibold transition-colors ${
+                          hud.smartNotifications.mode === m.id
+                            ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40'
+                            : 'text-stone-400 hover:text-stone-200'
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <p className="text-[10px] text-stone-400 leading-snug">
+                    {hud.smartNotifications.mode === 'smart'
+                      ? 'الوضع الذكي: يظهر الحدث المتكرر أول مرة ثم يُجمّع هنا بهدوء دون إزعاج.'
+                      : hud.smartNotifications.mode === 'essential'
+                        ? 'المهم فقط: تظهر التنبيهات الحرجة والإنجازات الكبرى فقط.'
+                        : 'وضع الكل: تعرض جميع الإشعارات عند حدوثها مع منع الازدواج اللحظي.'}
+                  </p>
+                </div>
+
+                <div className="max-h-60 overflow-y-auto p-1.5 space-y-1">
+                  {hud.smartNotifications.feed.length === 0 ? (
+                    <div className="py-5 text-center text-[11px] text-stone-400">
+                      لا توجد إشعارات مسجلة بعد — الأجواء هادئة!
+                    </div>
+                  ) : (
+                    hud.smartNotifications.feed.map((item) => (
+                      <div
+                        key={item.id}
+                        className="p-2 rounded-lg bg-white/[0.04] border border-white/10 text-right space-y-0.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span
+                            className={`text-[11px] font-semibold leading-snug ${
+                              item.category === 'critical'
+                                ? 'text-rose-200'
+                                : item.category === 'achievement'
+                                  ? 'text-emerald-200'
+                                  : item.category === 'rival'
+                                    ? 'text-amber-200'
+                                    : 'text-sky-100'
+                            }`}
+                          >
+                            {item.titleAr}
+                          </span>
+                          <span className="font-mono-nums text-[10px] text-stone-400 shrink-0">
+                            {item.timeLabel}
+                          </span>
+                        </div>
+                        {item.detailAr && (
+                          <p className="text-[10px] text-stone-300 leading-snug">{item.detailAr}</p>
+                        )}
+                        <div className="flex items-center gap-2 text-[9px] text-stone-400">
+                          {item.repeatCount > 1 && (
+                            <span className="px-1.5 py-0.2 rounded bg-white/8 text-amber-200 font-mono-nums">
+                              تكرر ×{item.repeatCount}
+                            </span>
+                          )}
+                          {item.wasSuppressed && (
+                            <span className="text-emerald-300/90">حُفظ بصمت لتقليل الإزعاج</span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {hud.smartNotifications.suppressedTotal > 0 && (
+                  <div className="px-2.5 py-1.5 border-t border-white/10 bg-black/30 text-[10px] text-emerald-300 font-mono-nums">
+                    منع الذكاء الإشعاري {hud.smartNotifications.suppressedTotal} تنبيه مكرر من الظهور على الشاشة
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Fullscreen Toggle Button (F shortcut supported) */}
+          <button
+            type="button"
+            onClick={() => void handleToggleFullscreen()}
+            title={isFullscreen ? 'الخروج من وضع الشاشة الكاملة (F)' : 'تفعيل وضع الشاشة الكاملة (F)'}
+            aria-label={isFullscreen ? 'تصغير الشاشة' : 'ملء الشاشة'}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-medium shadow-lg transition-colors whitespace-nowrap ${
+              isFullscreen
+                ? 'bg-sky-500/25 hover:bg-sky-500/35 border-sky-400/60 text-sky-100'
+                : 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-100'
+            }`}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="w-4 h-4 text-sky-200 shrink-0" />
+            ) : (
+              <Maximize2 className="w-4 h-4 text-stone-200 shrink-0" />
+            )}
+            <span className="hidden sm:inline">{isFullscreen ? 'تصغير' : 'ملء الشاشة'}</span>
+          </button>
         </div>
       </div>
 
-      {/* Compact Top Notifications Stack (small, top-anchored, auto-disappears in 3s) */}
+      {/* Smart Unified Notification Area (at most 1 priority toast at a time, plus active cutaway pills) */}
       <div className="fixed top-14 left-1/2 -translate-x-1/2 z-30 pointer-events-none flex flex-col items-center gap-1 w-auto max-w-[92vw]">
-        {hud.poiDiscoveredNotice && (
-          <div className="max-w-xs sm:max-w-sm bg-[#12221a]/92 border border-amber-400/55 rounded-lg px-3 py-1.5 shadow-lg text-right">
-            <div className="flex items-center justify-between gap-2 text-[11px]">
-              <span className="flex items-center gap-1 text-amber-200 font-bold truncate">
-                <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
-                {hud.poiDiscoveredNotice.titleAr}
-              </span>
-              <span className="font-mono-nums text-[10px] font-semibold text-emerald-300 shrink-0">
-                +{hud.poiDiscoveredNotice.xpReward} XP
-              </span>
+        {hud.smartNotifications.activeToast && (
+          <div
+            className={`pointer-events-auto max-w-xs sm:max-w-md rounded-xl px-3 py-1.5 shadow-xl border text-right flex items-start gap-2 ${
+              hud.smartNotifications.activeToast.category === 'critical'
+                ? 'bg-[#2a1114]/95 border-rose-400/60 text-rose-100'
+                : hud.smartNotifications.activeToast.category === 'achievement'
+                  ? 'bg-[#10251c]/95 border-emerald-400/55 text-emerald-100'
+                  : hud.smartNotifications.activeToast.category === 'rival'
+                    ? 'bg-[#24190d]/95 border-amber-400/55 text-amber-100'
+                    : 'bg-[#0d2028]/95 border-cyan-400/50 text-cyan-100'
+            }`}
+          >
+            {hud.smartNotifications.activeToast.category === 'critical' ? (
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0 mt-0.5" />
+            ) : hud.smartNotifications.activeToast.category === 'achievement' ? (
+              <Sparkles className="w-3.5 h-3.5 text-emerald-300 shrink-0 mt-0.5" />
+            ) : hud.smartNotifications.activeToast.category === 'rival' ? (
+              <Swords className="w-3.5 h-3.5 text-amber-300 shrink-0 mt-0.5" />
+            ) : (
+              <Cpu className="w-3.5 h-3.5 text-cyan-300 shrink-0 mt-0.5" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] font-bold leading-snug">
+                {hud.smartNotifications.activeToast.titleAr}
+                {hud.smartNotifications.activeToast.repeatCount > 1 && (
+                  <span className="mr-1.5 font-mono-nums text-[10px] opacity-85">
+                    ×{hud.smartNotifications.activeToast.repeatCount}
+                  </span>
+                )}
+              </div>
+              {hud.smartNotifications.activeToast.detailAr && (
+                <p className="text-[10px] opacity-85 leading-snug line-clamp-2 mt-0.5">
+                  {hud.smartNotifications.activeToast.detailAr}
+                </p>
+              )}
             </div>
-            <p className="text-[10px] text-stone-200 leading-snug line-clamp-2 mt-0.5">
-              {hud.poiDiscoveredNotice.storyAr}
-            </p>
+            <button
+              type="button"
+              onClick={onDismissNotification}
+              aria-label="إغلاق الإشعار"
+              className="p-0.5 rounded hover:bg-white/10 opacity-75 hover:opacity-100 shrink-0"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         )}
 
-        {hud.isOnBoat && hud.nearbyPoiName && !hud.poiDiscoveredNotice && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d24]/88 border border-amber-400/35 text-amber-100 text-[11px] shadow-md">
+        {hud.isOnBoat && hud.nearbyPoiName && !hud.smartNotifications.activeToast && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d24]/92 border border-amber-400/35 text-amber-100 text-[11px] shadow-md">
             <Compass className="w-3 h-3 text-amber-300 shrink-0" />
             <span>معلم قريب: {hud.nearbyPoiName}</span>
           </div>
         )}
 
         {hud.isSailing && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d26]/90 border border-sky-400/40 text-sky-100 text-[11px] font-medium shadow-md">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d26]/92 border border-sky-400/40 text-sky-100 text-[11px] font-medium shadow-md">
             <Waves className="w-3 h-3 text-sky-300 shrink-0" />
             <span>جاري الإبحار ({hud.regionNameAr}) · العمق {hud.waterDepthUnderPlayer}م</span>
           </div>
         )}
 
         {hud.playerBasketCutawayActive && (
-          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#101c16]/90 border border-emerald-400/45 text-stone-100 text-[11px] shadow-md">
+          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#101c16]/92 border border-emerald-400/45 text-stone-100 text-[11px] shadow-md">
             <Film className="w-3 h-3 text-emerald-300 shrink-0" />
             <span>
               وضع الصيد في السبت
@@ -914,7 +1250,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         )}
 
         {hud.rivalCutawayActive && !hud.playerBasketCutawayActive && (
-          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#18120c]/90 border border-amber-400/45 text-stone-100 text-[11px] shadow-md">
+          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#18120c]/92 border border-amber-400/45 text-stone-100 text-[11px] shadow-md">
             <Film className="w-3 h-3 text-amber-300 shrink-0" />
             <span>
               أبو علي يضع صيداً في السبت
@@ -931,7 +1267,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         )}
 
         {hud.cinematicActive && !hud.playerBasketCutawayActive && !hud.rivalCutawayActive && (
-          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#0d171c]/88 border border-emerald-400/35 text-stone-100 text-[11px] shadow-md">
+          <div className="pointer-events-auto flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#0d171c]/92 border border-emerald-400/35 text-stone-100 text-[11px] shadow-md">
             <Film className="w-3 h-3 text-emerald-300 shrink-0" />
             <span>وضع اللقطة السينمائية</span>
             <button
@@ -944,45 +1280,187 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
           </div>
         )}
 
-        {hud.challengeCompletedNotice && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1d220e]/92 border border-amber-400/45 text-amber-100 text-[11px] font-medium shadow-md">
-            <Target className="w-3 h-3 text-amber-300 shrink-0" />
-            <span>{hud.challengeCompletedNotice}</span>
-          </div>
-        )}
-
-        {hud.newlyUnlockedNotice && (
-          <div className="px-2.5 py-1 rounded-lg bg-[#112622]/92 border border-emerald-400/40 text-emerald-100 text-[11px] font-medium shadow-md">
-            {hud.newlyUnlockedNotice}
-          </div>
-        )}
-
         {radioError && (!settingsOpen || activeTab !== 'radio') && (
           <div className="px-2.5 py-1 rounded-lg bg-[#2b1414]/92 border border-rose-400/40 text-rose-100 text-[11px] font-medium shadow-md">
             {radioError}
           </div>
         )}
-
-        {hud.lineSnappedNotice && (
-          <div className="px-2.5 py-1 rounded-lg bg-[#2b1414]/92 border border-rose-400/40 text-rose-100 text-[11px] font-medium shadow-md">
-            {hud.lineSnappedNotice}
-          </div>
-        )}
-
-        {hud.recordBrokenNotice && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#241d0a]/92 border border-amber-400/55 text-amber-100 text-[11px] font-semibold shadow-md">
-            <Trophy className="w-3 h-3 text-amber-300 shrink-0" />
-            <span>{hud.recordBrokenNotice}</span>
-          </div>
-        )}
-
-        {hud.rivalNotice && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#22190f]/92 border border-amber-400/45 text-amber-100 text-[11px] font-medium shadow-md">
-            <Swords className="w-3 h-3 text-amber-300 shrink-0" />
-            <span>{hud.rivalNotice}</span>
-          </div>
-        )}
       </div>
+
+      {/* Vintage 3D Radio Options Popover (opens when clicking the retro radio in front of the player) */}
+      {vintageRadioOpen && (
+        <div
+          ref={vintageRadioRef}
+          role="dialog"
+          aria-label="اختيارات الراديو القديم"
+          className="pointer-events-auto fixed bottom-20 left-4 sm:left-8 z-40 w-[min(92vw,370px)] rounded-2xl bg-[#18100a]/96 border border-amber-500/45 shadow-2xl overflow-hidden text-right"
+        >
+          {/* Classic Tube-Dial Header */}
+          <div className="px-3.5 py-2.5 border-b border-amber-500/25 bg-[#24160b] space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0">
+                  <Radio className="w-4 h-4 text-amber-300" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-amber-100 truncate">الراديو الكلاسيكي القديم</div>
+                  <div className="text-[10px] text-amber-300/85 truncate">
+                    {radioStatus === 'loading'
+                      ? 'جاري موالفة الموجة...'
+                      : radioPlaying
+                        ? isCustomActive
+                          ? 'بث مباشر مخصص يعمل'
+                          : `${activeStation?.nameAr ?? 'إذاعة متصلة'}`
+                        : 'اضغط على محطة للتشغيل'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleToggleRadioPlay}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
+                    radioPlaying || radioStatus === 'loading'
+                      ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                  }`}
+                >
+                  {radioPlaying || radioStatus === 'loading' ? (
+                    <Pause className="w-3 h-3" />
+                  ) : (
+                    <Play className="w-3 h-3" />
+                  )}
+                  <span>{radioStatus === 'loading' ? 'إلغاء' : radioPlaying ? 'إيقاف' : 'تشغيل'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVintageRadioOpen(false)}
+                  aria-label="إغلاق قائمة الراديو"
+                  className="p-1 rounded-lg bg-white/8 hover:bg-white/15 text-stone-300 hover:text-white transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Dial Frequency Scale Indicator + Volume */}
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <div className="flex items-center gap-1 bg-black/40 p-0.5 rounded-lg border border-amber-500/20">
+                {[
+                  { id: 'all' as const, label: 'الكل' },
+                  { id: 'arabic' as const, label: 'أغاني وعربي' },
+                  { id: 'chill' as const, label: 'هادئة' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setRadioFilter(tab.id)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors whitespace-nowrap ${
+                      radioFilter === tab.id
+                        ? 'bg-amber-500/30 text-amber-100 border border-amber-400/40'
+                        : 'text-stone-400 hover:text-stone-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1.5 w-28 shrink-0">
+                <Volume2 className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={radioVolume}
+                  onChange={(e) => setRadioVolume(parseFloat(e.target.value))}
+                  aria-label="مستوى صوت الراديو القديم"
+                  className="w-full accent-amber-400 cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Station Options List */}
+          <div className="max-h-60 overflow-y-auto p-2 space-y-1">
+            {LIVE_RADIO_STATIONS.filter((s) => radioFilter === 'all' || s.category === radioFilter).map(
+              (station) => {
+                const selected = !isCustomActive && activeStation?.id === station.id;
+                const isActivePlaying = selected && radioPlaying;
+                const isActiveLoading = selected && radioStatus === 'loading';
+                return (
+                  <button
+                    key={station.id}
+                    type="button"
+                    onClick={() => handleSelectStation(station)}
+                    className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-right transition-colors ${
+                      isActivePlaying
+                        ? 'bg-emerald-600/25 border-emerald-400/70 text-emerald-100'
+                        : isActiveLoading
+                          ? 'bg-sky-500/20 border-sky-400/60 text-sky-100'
+                          : selected
+                            ? 'bg-amber-500/15 border-amber-400/45 text-amber-100'
+                            : 'bg-white/[0.03] border-transparent hover:bg-amber-500/10 hover:border-amber-500/25 text-stone-200'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold truncate">{station.nameAr}</div>
+                      <div className="text-[10px] text-stone-400 truncate">{station.genreAr}</div>
+                    </div>
+                    <span
+                      className={`shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold ${
+                        isActivePlaying
+                          ? 'bg-amber-500/25 text-amber-200'
+                          : isActiveLoading
+                            ? 'bg-sky-500/25 text-sky-200'
+                            : 'bg-white/8 text-stone-300'
+                      }`}
+                    >
+                      {isActivePlaying ? (
+                        <>
+                          <Pause className="w-2.5 h-2.5" />
+                          <span>إيقاف</span>
+                        </>
+                      ) : isActiveLoading ? (
+                        <span>اتصال...</span>
+                      ) : (
+                        <>
+                          <Play className="w-2.5 h-2.5" />
+                          <span>تشغيل</span>
+                        </>
+                      )}
+                    </span>
+                  </button>
+                );
+              },
+            )}
+          </div>
+
+          {/* Footer: Status & Custom Radio Stream Link */}
+          <div className="px-3 py-2 border-t border-amber-500/20 bg-black/35 flex items-center justify-between gap-2">
+            <span className="text-[10px] text-stone-300 truncate">
+              {radioError
+                ? radioError
+                : radioPlaying
+                  ? 'أنت تستمع الآن — بدّل المحطة في أي وقت'
+                  : 'اختر محطة إذاعية أو موسيقى هادئة'}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setVintageRadioOpen(false);
+                setActiveTab('radio');
+                setSettingsOpen(true);
+              }}
+              className="text-[10px] font-semibold text-amber-300 hover:text-amber-200 whitespace-nowrap shrink-0"
+            >
+              رابط مخصص وإعدادات الصوت
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Active Fishing Feedback (positioned gently toward lower-center so lake view stays open) */}
       <div className="pointer-events-none flex flex-col items-center justify-end gap-2 px-4 mt-auto mb-2">
@@ -1243,22 +1721,114 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
           />
         )}
 
-      {/* Minimal Bottom Action Strip (Attach Worm / Cast / Reel / Set Hook) */}
+      {/* Level-Adaptive Bait Dish Action Strip (Bait Picker / Attach / Cast / Reel / Set Hook) */}
       <div className="pointer-events-none flex items-center justify-center gap-2.5 pb-4 px-3">
-        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-[#0a1317]/82 border border-white/15 shadow-xl">
+        <div className="pointer-events-auto relative flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-[#0a1317]/90 border border-white/15 shadow-xl">
           {hud.phase === 'idle' && !hud.isSailing && (
-            <button
-              type="button"
-              onClick={onAttachWorm}
-              title="اضغط هنا أو على طبق الدود بجانبك لتعليق دودة في السنارة"
-              className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
-                hud.hookBaited
-                  ? 'bg-stone-800 hover:bg-stone-700 border border-white/15 text-stone-200'
-                  : 'bg-amber-600 hover:bg-amber-500 text-stone-950'
-              }`}
-            >
-              {hud.hookBaited ? 'تغيير الدودة' : 'علّق دودة من الطبق'}
-            </button>
+            <>
+              <div ref={baitDishRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRadioMenuOpen(false);
+                    setNotifMenuOpen(false);
+                    setBaitDishOpen((prev) => !prev);
+                  }}
+                  aria-expanded={baitDishOpen}
+                  title="طبق الطعوم المتكيف حسب مستواك"
+                  className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap ${
+                    baitDishOpen
+                      ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-100'
+                      : 'bg-white/5 hover:bg-white/10 border-white/15 text-stone-100'
+                  }`}
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/40"
+                    style={{ backgroundColor: hexColor(selectedBaitDef.color) }}
+                  />
+                  <span>طبق الطعوم · م{hud.progression.level}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-stone-300 transition-transform ${baitDishOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {baitDishOpen && (
+                  <div className="absolute bottom-full right-0 mb-2.5 w-72 sm:w-80 max-w-[calc(100vw-1.5rem)] rounded-xl bg-[#0a1418]/96 border border-white/15 shadow-2xl overflow-hidden z-40">
+                    <div className="p-2.5 border-b border-white/10 bg-white/[0.03] flex items-center justify-between gap-2">
+                      <div className="text-xs font-bold text-stone-100">
+                        طبق الطعوم المتكيف · المستوى {hud.progression.level}
+                      </div>
+                      <span className="font-mono-nums text-[10px] text-emerald-300">
+                        {hud.progression.unlockedBaits.length}/{BAIT_CATALOG.length} متاح
+                      </span>
+                    </div>
+                    <div className="p-1.5 space-y-1 max-h-64 overflow-y-auto">
+                      {BAIT_CATALOG.map((bait) => {
+                        const unlocked = hud.progression.unlockedBaits.includes(bait.id);
+                        const active = hud.selectedBait === bait.id;
+                        return (
+                          <button
+                            key={bait.id}
+                            type="button"
+                            disabled={!unlocked}
+                            onClick={() => {
+                              onSelectBait(bait.id);
+                              setBaitDishOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-right transition-colors ${
+                              active
+                                ? 'bg-emerald-600/25 border-emerald-400/70 text-emerald-100'
+                                : unlocked
+                                  ? 'bg-white/[0.04] hover:bg-white/10 border-white/10 text-stone-100'
+                                  : 'bg-black/30 border-white/5 text-stone-500 cursor-not-allowed'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span
+                                className={`w-3 h-3 rounded-full shrink-0 border ${
+                                  bait.glow ? 'border-cyan-200 shadow-[0_0_8px_rgba(34,211,238,0.8)]' : 'border-white/30'
+                                }`}
+                                style={{ backgroundColor: hexColor(bait.color), opacity: unlocked ? 1 : 0.35 }}
+                              />
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold truncate">{bait.nameAr}</div>
+                                <div className="text-[10px] text-stone-400 truncate">{bait.subtitleAr}</div>
+                              </div>
+                            </div>
+                            <div className="shrink-0 flex flex-col items-end font-mono-nums text-[10px]">
+                              {unlocked ? (
+                                active ? (
+                                  <span className="text-emerald-300 font-semibold">مجهز ✓</span>
+                                ) : (
+                                  <span className="text-amber-300">اختر وعلّق</span>
+                                )
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-stone-400">
+                                  <Lock className="w-3 h-3" />
+                                  <span>م{bait.unlockLevel}</span>
+                                </span>
+                              )}
+                              <span className="text-stone-400">عمق {bait.targetDepthOffset}م</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={onAttachWorm}
+                title={`اضغط هنا أو على طبق الطعوم بجانبك لتعليق (${selectedBaitDef.nameAr}) في السنارة`}
+                className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+                  hud.hookBaited
+                    ? 'bg-stone-800 hover:bg-stone-700 border border-white/15 text-stone-200'
+                    : 'bg-amber-600 hover:bg-amber-500 text-stone-950'
+                }`}
+              >
+                {hud.hookBaited ? `تجديد (${selectedBaitDef.nameAr})` : `علّق ${selectedBaitDef.nameAr} من الطبق`}
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -2192,6 +2762,93 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                         </div>
                       );
                     })}
+                  </div>
+
+                  {/* Adaptive AI Director & Self-Healing Safeguard Panel */}
+                  <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-xl bg-cyan-950/25 border border-cyan-400/25 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Cpu className="w-4 h-4 text-cyan-300 shrink-0" />
+                          <span className="font-semibold text-cyan-100">الذكاء التكيّفي وتطوير البحيرة</span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={hud.adaptiveBusy}
+                          onClick={onTriggerAiEvolution}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-100 text-[11px] font-medium transition-colors disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${hud.adaptiveBusy ? 'animate-spin' : ''}`} />
+                          <span>{hud.adaptiveBusy ? 'جاري التكيّف...' : 'توليد حدث ذكي جديد'}</span>
+                        </button>
+                      </div>
+
+                      <div className="rounded-lg bg-black/25 border border-white/10 p-2.5 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-stone-100">{hud.adaptiveEvent.titleAr}</span>
+                          <span className="text-[10px] text-cyan-300">
+                            {LAKE_ZONE_LABELS[hud.adaptiveEvent.targetZone]}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-stone-300 leading-relaxed">
+                          {hud.adaptiveEvent.descriptionAr}
+                        </p>
+                        <p className="text-[11px] text-amber-200/90 leading-snug">
+                          نصيحة تكتيكية: {hud.adaptiveEvent.coachingTipAr}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-[11px] font-mono-nums">
+                        <div className="rounded-md bg-white/5 px-2 py-1.5 text-center">
+                          <div className="text-stone-400 text-[10px]">سرعة الإقبال</div>
+                          <div className="text-emerald-300 font-semibold">×{hud.adaptiveStats.biteSpeedMult.toFixed(2)}</div>
+                        </div>
+                        <div className="rounded-md bg-white/5 px-2 py-1.5 text-center">
+                          <div className="text-stone-400 text-[10px]">توازن المقاومة</div>
+                          <div className="text-amber-300 font-semibold">×{hud.adaptiveStats.fishFightScale.toFixed(2)}</div>
+                        </div>
+                        <div className="rounded-md bg-white/5 px-2 py-1.5 text-center">
+                          <div className="text-stone-400 text-[10px]">فرصة النوادر</div>
+                          <div className="text-cyan-300 font-semibold">×{hud.adaptiveStats.rareSpawnBoost.toFixed(2)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-emerald-950/25 border border-emerald-400/25 flex flex-col justify-between gap-2.5">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <ShieldCheck className="w-4 h-4 text-emerald-300 shrink-0" />
+                            <span className="font-semibold text-emerald-100">الحماية الذاتية وإصلاح الأعطال</span>
+                          </div>
+                          <span className="text-[10px] font-mono-nums text-emerald-300">
+                            آخر فحص {hud.saveHealth.checkedAt}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-stone-300 leading-relaxed">
+                          تتحقق اللعبة تلقائياً من سلامة بيانات التقدّم والتحديات والرسوميات ثلاثية الأبعاد وتستعيد الجلسة عند أي خلل مفاجئ.
+                        </p>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono-nums">
+                          <div className="rounded-md bg-white/5 px-2.5 py-1.5">
+                            <span className="text-stone-400 block text-[10px]">ملفات تم إصلاحها</span>
+                            <span className="text-emerald-300 font-semibold">{hud.saveHealth.repairedCount}</span>
+                          </div>
+                          <div className="rounded-md bg-white/5 px-2.5 py-1.5">
+                            <span className="text-stone-400 block text-[10px]">استعادة WebGL</span>
+                            <span className="text-emerald-300 font-semibold">{hud.saveHealth.webglRecoveries}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={onRunSaveSelfCheck}
+                        className="w-full py-1.5 px-3 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-100 text-[11px] font-medium transition-colors flex items-center justify-center gap-1.5"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>فحص وإصلاح بيانات الحفظ الآن</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
