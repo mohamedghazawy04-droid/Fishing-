@@ -3,6 +3,7 @@ import type { WeatherType } from '../types/fishing';
 import type { RivalActiveFishTarget } from './rivalAnglers';
 
 import { groundHeightAt } from './environment';
+import { isClearOfLakeRocks } from './lakeRocks';
 
 export interface CrocodileUpdateResult {
   threatActive: boolean;
@@ -180,16 +181,17 @@ interface FrogInstance {
 }
 
 function isSafeCrocWater(x: number, z: number): boolean {
-  if (x < -70 || x > 70 || z < -90 || z > -4.5) return false;
+  if (x < -170 || x > 170 || z < -200 || z > -4.5) return false;
   if (Math.abs(x) < 4.8 && z > -11.0) return false; // main wooden dock clearance
   if (Math.hypot(x + 18.5, z + 3.5) < 4.8) return false; // Abu Ali platform clearance
   if (Math.hypot(x - 19.0, z + 4.2) < 4.8) return false; // Rami platform clearance
+  if (!isClearOfLakeRocks(x, z, 1.35)) return false;
   return groundHeightAt(x, z) < -0.78;
 }
 
 function pickCrocWanderTarget(croc: CrocInstance): void {
   const baseAngle = Math.atan2(croc.pos.z - croc.patrolCenter.y, croc.pos.x - croc.patrolCenter.x);
-  for (let attempt = 0; attempt < 12; attempt++) {
+  for (let attempt = 0; attempt < 14; attempt++) {
     const angOffset = (Math.random() < 0.5 ? 1 : -1) * (0.65 + Math.random() * 1.65);
     const angle = baseAngle + angOffset;
     const rad = croc.patrolRadius * (0.45 + Math.random() * 0.95);
@@ -201,10 +203,14 @@ function pickCrocWanderTarget(croc: CrocInstance): void {
       return;
     }
   }
-  croc.wanderTarget.set(
-    THREE.MathUtils.clamp(croc.patrolCenter.x, -42, 42),
-    THREE.MathUtils.clamp(croc.patrolCenter.y, -68, -20),
-  );
+  if (isSafeCrocWater(croc.patrolCenter.x, croc.patrolCenter.y)) {
+    croc.wanderTarget.set(croc.patrolCenter.x, croc.patrolCenter.y);
+  } else {
+    croc.wanderTarget.set(
+      THREE.MathUtils.clamp(croc.patrolCenter.x, -42, 42),
+      THREE.MathUtils.clamp(croc.patrolCenter.y, -68, -20),
+    );
+  }
   croc.wanderTimer = 6.0;
 }
 
@@ -476,12 +482,18 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     { cx: 21.5, cz: -23.5, radius: 10.5, scale: 1.08, angle: 2.3 },
     { cx: -4.5, cz: -36.0, radius: 13.0, scale: 1.24, angle: 4.5 },
     { cx: 15.0, cz: -49.0, radius: 12.0, scale: 1.12, angle: 1.2 },
+    { cx: -124.0, cz: -52.0, radius: 8.5, scale: 1.18, angle: 0.9 },
+    { cx: 142.0, cz: -136.0, radius: 8.5, scale: 1.14, angle: 3.1 },
   ];
 
   const crocs: CrocInstance[] = crocSpecs.map((spec, idx) => {
     const built = buildCrocodile(spec.scale);
-    const px = spec.cx + Math.cos(spec.angle) * spec.radius * 0.85;
-    const pz = spec.cz + Math.sin(spec.angle) * spec.radius * 0.85;
+    let px = spec.cx + Math.cos(spec.angle) * spec.radius * 0.7;
+    let pz = spec.cz + Math.sin(spec.angle) * spec.radius * 0.7;
+    if (!isSafeCrocWater(px, pz)) {
+      px = spec.cx;
+      pz = spec.cz;
+    }
     built.root.position.set(px, -0.075, pz);
     const croc: CrocInstance = {
       ...built,
@@ -661,7 +673,7 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     frogFrontLegGeo,
   );
 
-  const frogSpots: [number, number, boolean][] = [
+  const rawFrogSpots: [number, number, boolean][] = [
     [-9.5, -6.8, true],
     [-16.2, -13.5, false],
     [10.2, -7.2, true],
@@ -674,7 +686,18 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
     [22.5, -11.2, false],
     [-36.5, -48.0, true],
     [37.0, -49.5, false],
+    // Outer rocky cove & fjord lily pads
+    [-154.0, -100.0, true],
+    [-128.0, -136.0, false],
+    [2.0, -184.0, true],
+    [26.0, -176.0, false],
+    [150.0, -118.0, true],
+    [130.0, -142.0, false],
   ];
+
+  const frogSpots: [number, number, boolean][] = rawFrogSpots.filter(
+    ([fx, fz]) => groundHeightAt(fx, fz) < -0.18 && isClearOfLakeRocks(fx, fz, 0.75),
+  );
 
   const frogs: FrogInstance[] = frogSpots.map(([fx, fz, withLotus], idx) => {
     const padRoot = new THREE.Group();
@@ -810,6 +833,27 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
               playerHunter = c;
             }
           }
+          // Stage initial ambush clearly across open water (~13-16m lateral flank) so player sees it charging in
+          if (playerHunter && (bestDist > 21.0 || playerHunter.pos.z > hookedFishPos.z + 5.0)) {
+            const side = playerHunter.pos.x >= hookedFishPos.x ? 1 : -1;
+            const candidates: [number, number][] = [
+              [hookedFishPos.x + side * 12.5, hookedFishPos.z - 8.5],
+              [hookedFishPos.x - side * 12.5, hookedFishPos.z - 8.5],
+              [hookedFishPos.x + side * 14.5, hookedFishPos.z - 4.5],
+              [hookedFishPos.x, hookedFishPos.z - 15.0],
+            ];
+            for (const [sx, sz] of candidates) {
+              if (isSafeCrocWater(sx, sz)) {
+                playerHunter.pos.set(sx, -0.02, sz);
+                playerHunter.heading = Math.atan2(hookedFishPos.x - sx, hookedFishPos.z - sz);
+                playerHunter.smoothSpeed = 2.1;
+                playerHunter.bodySubmergeY = 0.02;
+                onSplash(sx, sz, 1.1);
+                onCrocAttackSlap?.(THREE.MathUtils.clamp(sx / 20, -0.88, 0.88), 0.55);
+                break;
+              }
+            }
+          }
         }
         if (playerHunter) {
           usedCrocs.add(playerHunter);
@@ -907,26 +951,26 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           threatActive = true;
           distanceToFish = dist;
 
-          // Fair chase balance: fast intercept from very far (>22m), stealthy/surging close-in
-          if (dist > 22.0) {
-            desiredSpeed = 4.15;
-            desiredDepthY = -0.035;
+          // Surface charge visible from dock/boat: if player reels fast, reeling outpaces croc; if hesitant, croc closes fast
+          if (dist > 20.0) {
+            desiredSpeed = 3.85;
+            desiredDepthY = 0.025;
           } else if (playerReeling) {
-            desiredSpeed = weather === 'storm' ? 2.48 : 2.15;
-            desiredDepthY = dist < 11.0 ? 0.025 : -0.03;
+            desiredSpeed = weather === 'storm' ? 1.95 : 1.72;
+            desiredDepthY = 0.038;
           } else {
-            desiredSpeed = weather === 'storm' ? 3.72 : 3.38;
-            desiredDepthY = dist < 12.5 ? 0.03 : -0.025;
+            desiredSpeed = weather === 'storm' ? 3.18 : 2.85;
+            desiredDepthY = 0.042;
           }
 
-          activeChaseBurst = dist < 14.5;
-          desiredJaw = dist < 10.5 ? THREE.MathUtils.clamp((10.5 - dist) / 5.5, 0.16, 0.88) : 0.12;
+          activeChaseBurst = dist < 17.5;
+          desiredJaw = dist < 13.5 ? THREE.MathUtils.clamp((13.5 - dist) / 6.5, 0.22, 0.90) : 0.16;
 
-          // Light water surface slap as croc lunges into close strike range
-          if (dist < 4.8 && dist > 1.75 && croc.attackSlapCooldown <= 0) {
-            croc.attackSlapCooldown = 2.6;
-            onCrocAttackSlap?.(crocPan, 0.62);
-            onSplash(croc.pos.x, croc.pos.z, 0.85);
+          // Visible surface slap as croc charges into close strike range
+          if (dist < 6.5 && dist > 1.75 && croc.attackSlapCooldown <= 0) {
+            croc.attackSlapCooldown = 2.2;
+            onCrocAttackSlap?.(crocPan, 0.68);
+            onSplash(croc.pos.x, croc.pos.z, 0.95);
           }
 
           if (dist <= 1.55 && hookedFishDistToDock > 3.1) {
@@ -1123,16 +1167,18 @@ export function createCrocodilesAndFrogs(): CrocodilesAndFrogsSystem {
           tmpSteer.set(Math.sin(croc.heading), Math.cos(croc.heading));
         }
 
-        // Look-ahead shoreline & dock avoidance when roaming/satiated (or gentle boundary keep-out)
+        // Look-ahead shoreline & rock avoidance when roaming/satiated (or gentle boundary keep-out)
         const aheadX = croc.pos.x + Math.sin(croc.heading) * 3.4;
         const aheadZ = croc.pos.z + Math.cos(croc.heading) * 3.4;
         if (!isSafeCrocWater(aheadX, aheadZ)) {
-          // Steer smoothly back toward deeper central lake
-          const toDeepX = -croc.pos.x;
-          const toDeepZ = -40 - croc.pos.z;
+          // Steer smoothly back toward patrol sector center (or central basin when chasing near shore)
+          const safeAimX = croc.state === 'patrol' ? croc.patrolCenter.x : 0;
+          const safeAimZ = croc.state === 'patrol' ? croc.patrolCenter.y : -40;
+          const toDeepX = safeAimX - croc.pos.x;
+          const toDeepZ = safeAimZ - croc.pos.z;
           const toDeepLen = Math.max(0.01, Math.hypot(toDeepX, toDeepZ));
-          tmpSteer.x += (toDeepX / toDeepLen) * 1.65;
-          tmpSteer.y += (toDeepZ / toDeepLen) * 1.65;
+          tmpSteer.x += (toDeepX / toDeepLen) * 1.75;
+          tmpSteer.y += (toDeepZ / toDeepLen) * 1.75;
           if (croc.state === 'patrol' && croc.patrolMode !== 'stalk_wild') {
             pickCrocWanderTarget(croc);
           }

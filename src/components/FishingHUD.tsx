@@ -29,6 +29,7 @@ import {
   ChevronDown,
   Volume2,
   Music2,
+  Users,
 } from 'lucide-react';
 import {
   BAIT_CATALOG,
@@ -267,6 +268,12 @@ interface FishingHUDProps {
   onCancelRivalCutaway: () => void;
   onCancelPlayerCutaway: () => void;
   onResolveCatch: (release: boolean) => void;
+  onToggleUnderwaterCam: () => void;
+  onAttachWorm: () => void;
+  characterName: string;
+  multiplayerRoomCode: string | null;
+  multiplayerPlayersCount: number;
+  onOpenMultiplayer: () => void;
 }
 
 type SettingsTab =
@@ -309,6 +316,12 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   onCancelRivalCutaway,
   onCancelPlayerCutaway,
   onResolveCatch,
+  onToggleUnderwaterCam,
+  onAttachWorm,
+  characterName,
+  multiplayerRoomCode,
+  multiplayerPlayersCount,
+  onOpenMultiplayer,
 }) => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('fishing');
@@ -524,7 +537,9 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
   const primaryLabel = hud.isSailing
     ? 'جاري الإبحار...'
     : hud.phase === 'idle'
-      ? 'اضغط مطولاً لرمي الصنارة'
+      ? hud.hookBaited
+        ? 'اضغط مطولاً لرمي الصنارة'
+        : 'علّق الدودة أولاً للرمي'
       : hud.phase === 'charging'
         ? 'أفلت للرمي الآن'
         : hud.phase === 'casting'
@@ -534,18 +549,27 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
             : hud.phase === 'biting'
               ? 'ثبّت الخطاف الآن!'
               : hud.phase === 'reeling'
-                ? 'اضغط مطولاً للسحب'
+                ? hud.crocThreatActive && hud.crocDistanceMeters < 16
+                  ? 'اسحب بسرعة! التمساح يقترب!'
+                  : 'اضغط مطولاً للسحب'
                 : 'تم الصيد';
 
   const currentLocationLabel =
     hud.currentLocationId === 'pier'
       ? 'الرصيف'
       : hud.currentLocationId === 'free_roam'
-        ? `تجول حر بالقارب (${hud.waterDepthUnderPlayer}م)`
-        : `${currentSpot?.nameAr ?? 'البحيرة'} (${hud.waterDepthUnderPlayer}م)`;
+        ? `${hud.regionNameAr} (${hud.waterDepthUnderPlayer}م)`
+        : `${currentSpot?.nameAr ?? hud.regionNameAr} (${hud.waterDepthUnderPlayer}م)`;
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between">
+      <div
+        dir="ltr"
+        className="fixed top-3.5 left-4 z-10 pointer-events-none select-none text-[11px] sm:text-xs font-medium tracking-wider text-white/40 drop-shadow-[0_1px_4px_rgba(0,0,0,0.45)]"
+      >
+        inspired by eman elshimy
+      </div>
+
       {/* Persistent HTML5 audio stream player (stays mounted regardless of Settings state) */}
       <audio
         ref={audioRef}
@@ -614,6 +638,27 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
           >
             <Sailboat className={`w-4 h-4 shrink-0 ${hud.isOnBoat ? 'text-sky-200' : 'text-sky-300'}`} />
             <span>{hud.isOnBoat ? 'العودة للرصيف' : 'تجول بالقارب'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setRadioMenuOpen(false);
+              onOpenMultiplayer();
+            }}
+            title="اللعب أونلاين (لاعبان) واختيار اسم الشخصية والشات"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium shadow-lg transition-colors whitespace-nowrap ${
+              multiplayerRoomCode
+                ? 'bg-emerald-500/25 hover:bg-emerald-500/35 border-emerald-400/60 text-emerald-100'
+                : 'bg-[#0a1317]/82 hover:bg-[#122026]/95 border-white/15 text-stone-100'
+            }`}
+          >
+            <Users className={`w-4 h-4 shrink-0 ${multiplayerRoomCode ? 'text-emerald-300' : 'text-emerald-300'}`} />
+            <span>
+              {multiplayerRoomCode
+                ? `غرفة ${multiplayerRoomCode} (${multiplayerPlayersCount}/2)`
+                : `أونلاين · ${characterName}`}
+            </span>
           </button>
 
           {/* Radio Button + Dropdown List of Songs & Radio Stations */}
@@ -847,7 +892,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
         {hud.isSailing && (
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0d1d26]/90 border border-sky-400/40 text-sky-100 text-[11px] font-medium shadow-md">
             <Waves className="w-3 h-3 text-sky-300 shrink-0" />
-            <span>جاري الإبحار... العمق {hud.waterDepthUnderPlayer}م</span>
+            <span>جاري الإبحار ({hud.regionNameAr}) · العمق {hud.waterDepthUnderPlayer}م</span>
           </div>
         )}
 
@@ -1051,6 +1096,28 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
               <div className="h-1.5 w-full bg-stone-800 rounded overflow-hidden">
                 <div className="h-full bg-sky-400" style={{ width: `${Math.round(hud.fishStamina * 100)}%` }} />
               </div>
+              <div className="mt-2.5 flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+                <span className="text-[10px] text-stone-400">
+                  {hud.underwaterCamActive ? 'اسحب الشاشة لتدوير الكاميرا تحت الماء' : 'منظور سطح البحيرة'}
+                </span>
+                <button
+                  type="button"
+                  onClick={onToggleUnderwaterCam}
+                  className="pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-sky-500/20 hover:bg-sky-500/35 border border-sky-300/40 text-[11px] font-medium text-sky-100 transition-colors shrink-0"
+                >
+                  {hud.underwaterCamActive ? (
+                    <>
+                      <Eye className="w-3.5 h-3.5 text-sky-200 shrink-0" />
+                      <span>العودة لمنظور فوق الماء</span>
+                    </>
+                  ) : (
+                    <>
+                      <Waves className="w-3.5 h-3.5 text-sky-200 shrink-0" />
+                      <span>رؤية السمكة تحت الماء</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1176,9 +1243,23 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
           />
         )}
 
-      {/* Minimal Bottom Action Strip (Cast / Reel / Set Hook) */}
+      {/* Minimal Bottom Action Strip (Attach Worm / Cast / Reel / Set Hook) */}
       <div className="pointer-events-none flex items-center justify-center gap-2.5 pb-4 px-3">
         <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-[#0a1317]/82 border border-white/15 shadow-xl">
+          {hud.phase === 'idle' && !hud.isSailing && (
+            <button
+              type="button"
+              onClick={onAttachWorm}
+              title="اضغط هنا أو على طبق الدود بجانبك لتعليق دودة في السنارة"
+              className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+                hud.hookBaited
+                  ? 'bg-stone-800 hover:bg-stone-700 border border-white/15 text-stone-200'
+                  : 'bg-amber-600 hover:bg-amber-500 text-stone-950'
+              }`}
+            >
+              {hud.hookBaited ? 'تغيير الدودة' : 'علّق دودة من الطبق'}
+            </button>
+          )}
           <button
             type="button"
             onPointerDown={onPrimaryPress}
@@ -1186,12 +1267,14 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
             onPointerLeave={() => {
               if (hud.phase === 'charging' || hud.phase === 'reeling') onPrimaryRelease();
             }}
-            disabled={hud.isSailing || hud.phase === 'casting' || hud.phase === 'caught'}
+            disabled={hud.isSailing || hud.phase === 'casting' || hud.phase === 'caught' || (hud.phase === 'idle' && !hud.hookBaited)}
             className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
               hud.phase === 'biting'
                 ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
                 : hud.phase === 'reeling'
-                  ? 'bg-sky-600 hover:bg-sky-500 text-white'
+                  ? hud.crocThreatActive && hud.crocDistanceMeters < 16
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
+                    : 'bg-sky-600 hover:bg-sky-500 text-white'
                   : 'bg-emerald-600 hover:bg-emerald-500 disabled:bg-stone-700 disabled:text-stone-400 text-white'
             }`}
           >
@@ -1576,7 +1659,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                           <span>مواقع الصيد العميقة</span>
                         </span>
                         <span className="font-mono-nums text-[11px] text-sky-300">
-                          العمق تحتك: {hud.waterDepthUnderPlayer} م
+                          {hud.regionNameAr} · العمق تحتك: {hud.waterDepthUnderPlayer} م
                         </span>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
@@ -1642,7 +1725,7 @@ export const FishingHUD: React.FC<FishingHUDProps> = ({
                         <span>نقاط الاهتمام والمعالم السرية حول البحيرة</span>
                       </div>
                       <span className="font-mono-nums text-amber-300 text-[11px]">
-                        المكتشف: {discoveredPoisCount} / {hud.pois.length || 5}
+                        المكتشف: {discoveredPoisCount} / {hud.pois.length || 8}
                       </span>
                     </div>
 

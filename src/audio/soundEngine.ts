@@ -1,4 +1,4 @@
-import type { AmbienceMix, WeatherType } from '../types/fishing';
+import type { AmbienceMix, SeasonId, WeatherType } from '../types/fishing';
 
 export interface AudioLocationContext {
   isOnBoat: boolean;
@@ -7,6 +7,15 @@ export interface AudioLocationContext {
   waterDepthMeters: number;
   shoreProximity: number; // 0 (open center lake) .. 1 (wooden pier / shoreline)
   nearCaveOrRock: number; // 0..1 proximity to cave / rocky cliffs
+}
+
+export interface WeatherSoundContext {
+  season: SeasonId;
+  coldIntensity: number; // 0..1 smooth frost/winter chill
+  stormApproach: number; // 0..1 gradual buildup when storm is approaching or overhead
+  rainIntensity: number; // 0..1 liquid rainfall intensity
+  snowIntensity: number; // 0..1 quiet snowfall intensity
+  mistDensity: number; // 0..1 fog/mist acoustic stillness
 }
 
 export class NatureSoundEngine {
@@ -27,6 +36,13 @@ export class NatureSoundEngine {
   private treeRustleLeftFilter: BiquadFilterNode | null = null;
   private treeRustleRightFilter: BiquadFilterNode | null = null;
   private rainGain: GainNode | null = null;
+  private rainFilter: BiquadFilterNode | null = null;
+  private snowHushGain: GainNode | null = null;
+  private snowHushFilter: BiquadFilterNode | null = null;
+  private frostWindGain: GainNode | null = null;
+  private frostWindFilter: BiquadFilterNode | null = null;
+  private stormRumbleGain: GainNode | null = null;
+  private stormRumbleFilter: BiquadFilterNode | null = null;
 
   private muted = false;
   private initialized = false;
@@ -37,6 +53,13 @@ export class NatureSoundEngine {
     frogs: 0.76,
   };
 
+  private lastAmbienceElapsed = -1;
+  private smoothRain = 0;
+  private smoothSnow = 0;
+  private smoothStorm = 0;
+  private smoothMist = 0;
+  private smoothCold = 0;
+
   private lastBirdTime = 0;
   private nextBirdInterval = 3.2;
   private lastFrogTime = 0;
@@ -46,6 +69,11 @@ export class NatureSoundEngine {
   private lastBubbleTime = 0;
   private lastHullWaveTime = 0;
   private nextHullWaveInterval = 1.8;
+  private lastDistantThunderTime = 0;
+  private nextDistantThunderInterval = 6.5;
+  private lastSnowShimmerTime = 0;
+  private nextSnowShimmerInterval = 2.0;
+  private lastMistDropTime = 0;
   private lastReelClickTime = 0;
 
   public unlock(): void {
@@ -207,7 +235,7 @@ export class NatureSoundEngine {
       this.treeRustleRightGain = treeGainR;
       this.treeRustleRightFilter = treeFilterR;
 
-      // 4. Rain Patter Layer
+      // 4. Rain Patter Layer (warmly crossfaded with rain intensity)
       const rainSrc = ctx.createBufferSource();
       rainSrc.buffer = pinkBuffer;
       rainSrc.loop = true;
@@ -221,6 +249,58 @@ export class NatureSoundEngine {
       rainGain.connect(master);
       rainSrc.start();
       this.rainGain = rainGain;
+      this.rainFilter = rainFilter;
+
+      // 5. Quiet Falling Snow Velvet Hush (صوت تساقط الثلوج الهادئ في الأجواء الباردة)
+      const snowSrc = ctx.createBufferSource();
+      snowSrc.buffer = pinkBuffer;
+      snowSrc.loop = true;
+      const snowHushFilter = ctx.createBiquadFilter();
+      snowHushFilter.type = 'bandpass';
+      snowHushFilter.frequency.value = 2350;
+      snowHushFilter.Q.value = 0.55;
+      const snowHushGain = ctx.createGain();
+      snowHushGain.gain.value = 0;
+      snowSrc.connect(snowHushFilter);
+      snowHushFilter.connect(snowHushGain);
+      snowHushGain.connect(master);
+      snowSrc.start(0, 1.6);
+      this.snowHushGain = snowHushGain;
+      this.snowHushFilter = snowHushFilter;
+
+      // 6. Crisp Winter Frost Breeze Shimmer (نسيم الصقيع البارد)
+      const frostSrc = ctx.createBufferSource();
+      frostSrc.buffer = pinkBuffer;
+      frostSrc.loop = true;
+      const frostWindFilter = ctx.createBiquadFilter();
+      frostWindFilter.type = 'bandpass';
+      frostWindFilter.frequency.value = 540;
+      frostWindFilter.Q.value = 2.6;
+      const frostWindGain = ctx.createGain();
+      frostWindGain.gain.value = 0;
+      frostSrc.connect(frostWindFilter);
+      frostWindFilter.connect(frostWindGain);
+      frostWindGain.connect(master);
+      frostSrc.start(0, 3.1);
+      this.frostWindGain = frostWindGain;
+      this.frostWindFilter = frostWindFilter;
+
+      // 7. Distant Approaching Storm Sub-Rumble Bed (هدير العاصفة المقتربة)
+      const stormSrc = ctx.createBufferSource();
+      stormSrc.buffer = brownBuffer;
+      stormSrc.loop = true;
+      const stormRumbleFilter = ctx.createBiquadFilter();
+      stormRumbleFilter.type = 'lowpass';
+      stormRumbleFilter.frequency.value = 88;
+      stormRumbleFilter.Q.value = 1.35;
+      const stormRumbleGain = ctx.createGain();
+      stormRumbleGain.gain.value = 0;
+      stormSrc.connect(stormRumbleFilter);
+      stormRumbleFilter.connect(stormRumbleGain);
+      stormRumbleGain.connect(master);
+      stormSrc.start(0, 2.5);
+      this.stormRumbleGain = stormRumbleGain;
+      this.stormRumbleFilter = stormRumbleFilter;
 
       this.initialized = true;
     } catch {
@@ -313,9 +393,51 @@ export class NatureSoundEngine {
       shoreProximity: 1,
       nearCaveOrRock: 0,
     },
+    weatherCtx?: WeatherSoundContext,
   ): void {
     if (!this.initialized || !this.ctx) return;
     const now = this.ctx.currentTime;
+    const dt =
+      this.lastAmbienceElapsed >= 0
+        ? Math.max(0.001, Math.min(0.25, elapsed - this.lastAmbienceElapsed))
+        : 0.016;
+    this.lastAmbienceElapsed = elapsed;
+
+    // Smooth internal weather envelope crossfading (~2.2s natural fade on weather transitions)
+    const isWinter = weatherCtx?.season === 'winter';
+    const targetCold = weatherCtx ? weatherCtx.coldIntensity : 0;
+    const rawPrecip = weather === 'storm' ? 1.0 : weather === 'rain' ? 0.68 : 0;
+    const targetSnow = weatherCtx
+      ? weatherCtx.snowIntensity
+      : isWinter
+        ? rawPrecip
+        : 0;
+    const targetRain = weatherCtx
+      ? weatherCtx.rainIntensity
+      : isWinter
+        ? 0
+        : rawPrecip;
+    const targetStorm = weatherCtx
+      ? weatherCtx.stormApproach
+      : weather === 'storm'
+        ? 1.0
+        : weather === 'rain'
+          ? 0.25
+          : 0;
+    const targetMist = weatherCtx
+      ? weatherCtx.mistDensity
+      : weather === 'mist'
+        ? 1.0
+        : weather === 'cloudy'
+          ? 0.3
+          : 0;
+
+    const fadeAlpha = 1 - Math.exp(-dt * 0.55);
+    this.smoothRain += (targetRain - this.smoothRain) * fadeAlpha;
+    this.smoothSnow += (targetSnow - this.smoothSnow) * fadeAlpha;
+    this.smoothStorm += (targetStorm - this.smoothStorm) * fadeAlpha;
+    this.smoothMist += (targetMist - this.smoothMist) * fadeAlpha;
+    this.smoothCold += (targetCold - this.smoothCold) * fadeAlpha;
 
     const windNorm = Math.max(0, Math.min(1.2, windSpeedKmh / 35));
     const shore = Math.max(0, Math.min(1, location.shoreProximity));
@@ -326,13 +448,18 @@ export class NatureSoundEngine {
     const gustL = 0.65 + 0.35 * Math.sin(elapsed * 0.28 + Math.sin(elapsed * 0.11));
     const gustR = 0.65 + 0.35 * Math.sin(elapsed * 0.24 + 1.4 + Math.cos(elapsed * 0.13));
 
+    // Snowfall & cold frost gently mute sharp splash treble for natural winter hush
+    const winterMuteFactor = 1 - this.smoothSnow * 0.34 - this.smoothCold * 0.12 - this.smoothMist * 0.14;
+
     // Crashing & lapping waves intensify significantly when aboard the boat & in open/deep lake waters
     const boatBoost = location.isOnBoat ? 1.65 + openWater * 0.45 + boatMove * 0.35 : 1.0;
     const waveCycleFreq = location.isOnBoat ? 0.92 : 0.66;
     const waveSwell = (location.isOnBoat ? 0.62 : 0.74) + (location.isOnBoat ? 0.38 : 0.26) * Math.sin(elapsed * waveCycleFreq);
-    const waterBase = (0.11 + windNorm * 0.15 + (weather === 'storm' ? 0.06 : 0)) * waveSwell * boatBoost;
+    const waterBase = (0.11 + windNorm * 0.15 + this.smoothStorm * 0.06) * waveSwell * boatBoost * winterMuteFactor;
     const waterTarget = waterBase * this.mix.water;
-    const waterFreq = (location.isOnBoat ? 320 : 250) + windNorm * 230 + openWater * 75 + Math.sin(elapsed * waveCycleFreq) * 85;
+    const waterFreq =
+      ((location.isOnBoat ? 320 : 250) + windNorm * 230 + openWater * 75 + Math.sin(elapsed * waveCycleFreq) * 85) *
+      (1 - this.smoothSnow * 0.28 - this.smoothMist * 0.18);
 
     // Deep hull wave surge & bow wake hiss (audible only on boat / deep open water)
     const hullSwell = 0.55 + 0.45 * Math.sin(elapsed * 1.15 + 0.8);
@@ -342,37 +469,88 @@ export class NatureSoundEngine {
     const boatWaveFreq = 165 + windNorm * 140 + boatMove * 180 + Math.sin(elapsed * 1.15) * 55;
     const wakeTarget = location.isOnBoat ? boatMove * (0.075 + windNorm * 0.03) * this.mix.water : 0;
 
-    // Shoreline trees & forest foliage rustle (strongest on pier & near shoreline, softer on open lake)
+    // Shoreline trees & forest foliage rustle (softened slightly in snowy winter hush)
     const shoreTreeScale = 0.36 + 0.74 * shore;
     const openWindBoost = 1.0 + 0.36 * openWater;
-    const windLowTarget = (0.045 + windNorm * 0.21 + (weather === 'storm' ? 0.07 : 0)) * openWindBoost * this.mix.trees;
-    const rustleBase = (0.015 + windNorm * 0.088) * shoreTreeScale * this.mix.trees;
-    const rustleFreq = 920 + windNorm * 880;
+    const windLowTarget =
+      (0.045 + windNorm * 0.21 + this.smoothStorm * 0.075) * openWindBoost * this.mix.trees;
+    const rustleBase =
+      (0.015 + windNorm * 0.088) * shoreTreeScale * (1 - this.smoothSnow * 0.38) * this.mix.trees;
+    const rustleFreq = (920 + windNorm * 880) * (1 - this.smoothSnow * 0.22);
 
-    // Valley/Cave acoustic reflection depth
-    const echoTarget = 0.24 + Math.max(location.nearCaveOrRock * 0.22, openWater * 0.14);
-    this.valleyEchoSend?.gain.setTargetAtTime(echoTarget, now, 0.5);
+    // Valley/Cave/Mist acoustic reflection depth
+    const echoTarget = 0.24 + Math.max(location.nearCaveOrRock * 0.22, openWater * 0.14, this.smoothMist * 0.16);
+    this.valleyEchoSend?.gain.setTargetAtTime(echoTarget, now, 0.9);
 
-    const rainTarget = weather === 'storm' ? 0.24 : weather === 'rain' ? 0.15 : 0;
+    // Gradual weather-specific acoustic beds: liquid rain vs quiet falling snow vs storm rumble vs frost breeze
+    const rainTarget = this.smoothRain * 0.23 * (1 - this.smoothSnow * 0.9);
+    const rainCutoff = 1650 - this.smoothRain * 420 - this.smoothStorm * 180;
+    const snowHushTarget =
+      (this.smoothSnow * 0.068 + Math.max(0, this.smoothCold - 0.35) * 0.022 * (0.35 + windNorm * 0.65)) *
+      (0.75 + 0.25 * Math.sin(elapsed * 0.42));
+    const snowHushFreq = 2150 + Math.sin(elapsed * 0.31) * 240 + windNorm * 320;
+    const frostWindTarget =
+      Math.max(0, this.smoothCold - 0.28) * (0.014 + windNorm * 0.032) * (0.6 + 0.4 * Math.sin(elapsed * 0.37));
+    const frostWindFreq = 480 + windNorm * 260 + Math.sin(elapsed * 0.45) * 75;
+    const stormRumbleTarget =
+      this.smoothStorm > 0.05
+        ? Math.pow(this.smoothStorm, 1.35) * (0.075 + 0.035 * Math.sin(elapsed * 0.52))
+        : 0;
+    const stormRumbleFreq = 72 + this.smoothStorm * 42;
 
-    this.waterGain?.gain.setTargetAtTime(waterTarget, now, 0.3);
-    this.waterFilter?.frequency.setTargetAtTime(waterFreq, now, 0.3);
+    this.waterGain?.gain.setTargetAtTime(waterTarget, now, 0.55);
+    this.waterFilter?.frequency.setTargetAtTime(waterFreq, now, 0.55);
 
-    this.boatWaveGain?.gain.setTargetAtTime(boatWaveTarget, now, 0.28);
-    this.boatWaveFilter?.frequency.setTargetAtTime(boatWaveFreq, now, 0.28);
-    this.boatWakeGain?.gain.setTargetAtTime(wakeTarget, now, 0.25);
+    this.boatWaveGain?.gain.setTargetAtTime(boatWaveTarget, now, 0.4);
+    this.boatWaveFilter?.frequency.setTargetAtTime(boatWaveFreq, now, 0.4);
+    this.boatWakeGain?.gain.setTargetAtTime(wakeTarget, now, 0.35);
 
-    this.windLowGain?.gain.setTargetAtTime(windLowTarget, now, 0.45);
-    this.windLowFilter?.frequency.setTargetAtTime(240 + windNorm * 420, now, 0.45);
+    this.windLowGain?.gain.setTargetAtTime(windLowTarget, now, 0.8);
+    this.windLowFilter?.frequency.setTargetAtTime(240 + windNorm * 420, now, 0.8);
 
-    this.treeRustleLeftGain?.gain.setTargetAtTime(rustleBase * gustL, now, 0.45);
-    this.treeRustleRightGain?.gain.setTargetAtTime(rustleBase * gustR, now, 0.45);
-    this.treeRustleLeftFilter?.frequency.setTargetAtTime(rustleFreq * (0.92 + gustL * 0.16), now, 0.45);
-    this.treeRustleRightFilter?.frequency.setTargetAtTime(rustleFreq * (0.94 + gustR * 0.16), now, 0.45);
+    this.treeRustleLeftGain?.gain.setTargetAtTime(rustleBase * gustL, now, 0.7);
+    this.treeRustleRightGain?.gain.setTargetAtTime(rustleBase * gustR, now, 0.7);
+    this.treeRustleLeftFilter?.frequency.setTargetAtTime(rustleFreq * (0.92 + gustL * 0.16), now, 0.7);
+    this.treeRustleRightFilter?.frequency.setTargetAtTime(rustleFreq * (0.94 + gustR * 0.16), now, 0.7);
 
-    this.rainGain?.gain.setTargetAtTime(rainTarget, now, 0.6);
+    this.rainGain?.gain.setTargetAtTime(rainTarget, now, 1.15);
+    this.rainFilter?.frequency.setTargetAtTime(Math.max(850, rainCutoff), now, 1.15);
+
+    this.snowHushGain?.gain.setTargetAtTime(snowHushTarget, now, 1.25);
+    this.snowHushFilter?.frequency.setTargetAtTime(snowHushFreq, now, 1.25);
+
+    this.frostWindGain?.gain.setTargetAtTime(frostWindTarget, now, 1.2);
+    this.frostWindFilter?.frequency.setTargetAtTime(frostWindFreq, now, 1.2);
+
+    this.stormRumbleGain?.gain.setTargetAtTime(stormRumbleTarget, now, 1.35);
+    this.stormRumbleFilter?.frequency.setTargetAtTime(stormRumbleFreq, now, 1.35);
 
     if (!this.muted) {
+      // Faint Distant Rolling Thunder when storm approaches or rumbles afar between lightning strikes
+      if (this.smoothStorm > 0.16 && elapsed - this.lastDistantThunderTime > this.nextDistantThunderInterval) {
+        this.lastDistantThunderTime = elapsed;
+        const intervalBase = weather === 'storm' ? 8.5 : 13.5 - this.smoothStorm * 6.0;
+        this.nextDistantThunderInterval = Math.max(4.5, intervalBase + Math.random() * 6.5);
+        const distantAmp = 0.25 + this.smoothStorm * 0.55;
+        this.playDistantThunder(distantAmp, (Math.random() - 0.5) * 1.45);
+      }
+
+      // Delicate crystalline snowflake / frost whisper in cold snowy weather
+      if (
+        (this.smoothSnow > 0.18 || this.smoothCold > 0.52) &&
+        elapsed - this.lastSnowShimmerTime > this.nextSnowShimmerInterval
+      ) {
+        this.lastSnowShimmerTime = elapsed;
+        this.nextSnowShimmerInterval = 1.4 + Math.random() * 2.2 - this.smoothSnow * 0.55;
+        this.playSnowFlakeShimmer(Math.max(this.smoothSnow, this.smoothCold * 0.55), (Math.random() - 0.5) * 1.4);
+      }
+
+      // Soft misty dew droplets echoing across calm foggy water
+      if (this.smoothMist > 0.35 && elapsed - this.lastMistDropTime > 1.8 + Math.random() * 2.4) {
+        this.lastMistDropTime = elapsed;
+        this.playWaterDrip((Math.random() - 0.5) * 1.25, 0.55 * this.smoothMist);
+      }
+
       // Pier / shallow shoreline water babble vs Rhythmic Boat Hull Wave Slaps
       if (location.isOnBoat && this.mix.water > 0.05 && elapsed - this.lastHullWaveTime > this.nextHullWaveInterval) {
         this.lastHullWaveTime = elapsed;
@@ -382,19 +560,20 @@ export class NatureSoundEngine {
 
       if (this.mix.water > 0.05 && elapsed - this.lastBubbleTime > (0.55 + Math.random() * 1.15) * (1.5 - shore * 0.65)) {
         this.lastBubbleTime = elapsed;
-        this.playWaterBabbleBubble(0.55 + shore * 0.65);
+        this.playWaterBabbleBubble((0.55 + shore * 0.65) * winterMuteFactor);
       }
 
-      // Intermittent soothing mountain birds (stronger near shore trees; distant hawk echoes on open lake)
-      const birdProximityGain = 0.42 + 0.68 * shore;
+      // Intermittent soothing mountain birds (quieter in cold snow, rain, and storm)
+      const birdProximityGain = (0.42 + 0.68 * shore) * (1 - this.smoothSnow * 0.45);
       if (this.mix.birds > 0.05 && elapsed - this.lastBirdTime > this.nextBirdInterval) {
         this.lastBirdTime = elapsed;
-        const quietFactor = weather === 'storm' ? 2.6 : weather === 'rain' ? 1.8 : 1.0;
+        const quietFactor =
+          (weather === 'storm' ? 2.6 : weather === 'rain' ? 1.8 : 1.0) * (1 + this.smoothSnow * 0.85);
         const shoreFreqMult = 1.38 - shore * 0.38;
         this.nextBirdInterval = (3.4 + Math.random() * 4.8) * quietFactor * shoreFreqMult;
 
         if (hour >= 4.8 && hour <= 19.6) {
-          if (weather !== 'storm') {
+          if (weather !== 'storm' && this.smoothSnow < 0.72) {
             const roll = Math.random();
             if (roll < 0.38) {
               this.playFluteThrush(birdProximityGain);
@@ -404,7 +583,7 @@ export class NatureSoundEngine {
               this.playMountainDove(birdProximityGain);
             }
           }
-        } else if (weather !== 'storm' && weather !== 'rain') {
+        } else if (weather !== 'storm' && weather !== 'rain' && this.smoothCold < 0.75) {
           if (Math.random() < 0.35) {
             this.playNightOwl(0.7 + shore * 0.3);
           } else {
@@ -419,19 +598,25 @@ export class NatureSoundEngine {
         hour >= 6.5 &&
         hour <= 18.2 &&
         weather !== 'storm' &&
+        this.smoothSnow < 0.5 &&
         elapsed - this.lastHawkTime > (16 + Math.random() * 14) * (1.15 - openWater * 0.3)
       ) {
         this.lastHawkTime = elapsed;
         this.playDistantHawkCall(0.85 + openWater * 0.4);
       }
 
-      // Shoreline & lily-pad frog croaks (louder on pier / shore reeds, softer out in deep open water)
-      if (this.mix.frogs > 0.05 && weather !== 'storm' && elapsed - this.lastFrogTime > this.nextFrogInterval) {
+      // Shoreline & lily-pad frog croaks (hibernates in winter snow/frost)
+      if (
+        this.mix.frogs > 0.05 &&
+        weather !== 'storm' &&
+        this.smoothCold < 0.65 &&
+        elapsed - this.lastFrogTime > this.nextFrogInterval
+      ) {
         this.lastFrogTime = elapsed;
         const nightOrRainBoost = hour < 7.2 || hour > 17.5 || weather === 'rain' || weather === 'mist' ? 0.72 : 1.05;
         const distWaitMult = 1.65 - shore * 0.65;
         this.nextFrogInterval = (4.5 + Math.random() * 5.2) * nightOrRainBoost * distWaitMult;
-        this.playFrogCroak((Math.random() - 0.5) * 1.35, 0.32 + 0.72 * shore);
+        this.playFrogCroak((Math.random() - 0.5) * 1.35, (0.32 + 0.72 * shore) * (1 - this.smoothCold * 0.65));
       }
     }
   }
@@ -843,6 +1028,61 @@ export class NatureSoundEngine {
     oscSafeStop(src, now + 2.45);
   }
 
+  /** Faint rolling mountain thunder heard gradually as a storm approaches */
+  public playDistantThunder(intensity = 0.5, pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    const dur = 2.6 + Math.random() * 0.9;
+    const buf = this.createBrownNoiseBuffer(this.ctx, dur);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(105 + intensity * 35, now);
+    filter.frequency.exponentialRampToValueAtTime(38, now + dur * 0.9);
+
+    const amp = Math.min(0.16, 0.05 + intensity * 0.095);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(amp, now + 0.42);
+    gain.gain.exponentialRampToValueAtTime(amp * 0.55, now + dur * 0.45);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    src.connect(filter);
+    filter.connect(gain);
+    this.routeAmbientVoice(gain, pan, 0.65);
+    src.start(now);
+    oscSafeStop(src, now + dur + 0.05);
+  }
+
+  /** Delicate snow-crystal hush & icy frost breeze puff in snowy/cold conditions */
+  private playSnowFlakeShimmer(intensity = 0.6, pan = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    const dur = 0.24 + Math.random() * 0.16;
+    const buf = this.createPinkNoiseBuffer(this.ctx, dur);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(2450 + Math.random() * 850, now);
+    bp.Q.value = 3.2;
+
+    const amp = Math.min(0.022, 0.008 + intensity * 0.012);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(amp, now + dur * 0.35);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    src.connect(bp);
+    bp.connect(gain);
+    this.routeAmbientVoice(gain, pan, 0.28);
+    src.start(now);
+    oscSafeStop(src, now + dur + 0.02);
+  }
+
   /** Light wet tail/snout slap on the water surface when a crocodile lunges or attacks */
   public playCrocWaterSlap(pan = 0, intensity = 0.72): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
@@ -1085,6 +1325,32 @@ export class NatureSoundEngine {
     this.routeAmbientVoice(gain, pan, 0.18);
     osc.start(now + 0.04);
     osc.stop(now + 0.23);
+  }
+
+  /** Muffled wooden hull thud + light splash when nudging rocks or canyon banks */
+  public playBoatRockBump(intensity = 0.65): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const now = this.ctx.currentTime;
+    const clInt = Math.max(0.2, Math.min(1.0, intensity));
+
+    const osc = this.ctx.createOscillator();
+    const lp = this.ctx.createBiquadFilter();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(118 + Math.random() * 18, now);
+    osc.frequency.exponentialRampToValueAtTime(48, now + 0.14);
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(240, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.11 * clInt, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+
+    osc.connect(lp);
+    lp.connect(gain);
+    this.routeAmbientVoice(gain, 0, 0.18);
+    osc.start(now);
+    osc.stop(now + 0.18);
   }
 
   public dispose(): void {

@@ -14,6 +14,7 @@ import {
   type WeatherType,
 } from '../types/fishing';
 import { groundHeightAt } from './environment';
+import { isClearOfLakeRocks } from './lakeRocks';
 
 export type FishAIState = 'patrol' | 'curious' | 'nibbling' | 'biting' | 'hooked' | 'spooked';
 
@@ -23,6 +24,7 @@ export interface ActiveFish {
   mesh: THREE.Group;
   tailPivot: THREE.Group;
   bodyMat: THREE.MeshStandardMaterial;
+  hookedUniform: { value: number };
   lengthScale: number;
   position: THREE.Vector3;
   velocity: THREE.Vector3;
@@ -75,13 +77,32 @@ function getZoneTargetCenter(zone: LakeZoneId): { x: number; z: number; spreadX:
   switch (zone) {
     case 'dock_shade':
       return { x: 0, z: -7.5, spreadX: 9.5, spreadZ: 5.5 };
-    case 'shore_reeds':
-      return { x: Math.random() < 0.5 ? -46 : 46, z: -36, spreadX: 14, spreadZ: 22 };
-    case 'rocky_ledge':
-      return { x: (Math.random() - 0.5) * 52, z: -24, spreadX: 16, spreadZ: 12 };
-    case 'deep_basin':
-      return { x: (Math.random() - 0.5) * 56, z: -42, spreadX: 20, spreadZ: 15 };
+    case 'shore_reeds': {
+      const r = Math.random();
+      if (r < 0.34) return { x: -46, z: -36, spreadX: 14, spreadZ: 22 };
+      if (r < 0.68) return { x: 46, z: -36, spreadX: 14, spreadZ: 22 };
+      if (r < 0.84) return { x: -96, z: -36, spreadX: 12, spreadZ: 12 };
+      return { x: 98, z: -44, spreadX: 12, spreadZ: 12 };
+    }
+    case 'rocky_ledge': {
+      const r = Math.random();
+      if (r < 0.36) return { x: (Math.random() - 0.5) * 52, z: -24, spreadX: 16, spreadZ: 12 };
+      if (r < 0.56) return { x: -120, z: -56, spreadX: 14, spreadZ: 14 };
+      if (r < 0.74) return { x: -144, z: -116, spreadX: 14, spreadZ: 14 };
+      if (r < 0.88) return { x: 130, z: -72, spreadX: 14, spreadZ: 14 };
+      return { x: 140, z: -132, spreadX: 14, spreadZ: 14 };
+    }
+    case 'deep_basin': {
+      const r = Math.random();
+      if (r < 0.52) return { x: (Math.random() - 0.5) * 56, z: -42, spreadX: 20, spreadZ: 15 };
+      if (r < 0.72) return { x: -146, z: -114, spreadX: 14, spreadZ: 12 };
+      if (r < 0.88) return { x: 142, z: -130, spreadX: 14, spreadZ: 12 };
+      return { x: -12, z: -142, spreadX: 16, spreadZ: 12 };
+    }
     case 'alpine_abyss':
+      if (Math.random() < 0.38) {
+        return { x: 14, z: -182, spreadX: 14, spreadZ: 12 };
+      }
       return { x: (Math.random() - 0.5) * 44, z: -58, spreadX: 18, spreadZ: 14 };
   }
 }
@@ -243,10 +264,18 @@ export function createSpeciesScaleTexture(species: FishSpecies): THREE.CanvasTex
   return tex;
 }
 
-function applySubmergedFishShader(mat: THREE.MeshStandardMaterial, withSwim: boolean): void {
+export const underwaterCameraBlendUniform = { value: 0 };
+
+function applySubmergedFishShader(
+  mat: THREE.MeshStandardMaterial,
+  withSwim: boolean,
+  hookedUniform: { value: number },
+): void {
   mat.transparent = true;
-  mat.customProgramCacheKey = () => (withSwim ? 'fish_body_submerged_swim_v1' : 'fish_part_submerged_v1');
+  mat.customProgramCacheKey = () => (withSwim ? 'fish_body_submerged_swim_v3' : 'fish_part_submerged_v3');
   mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uUnderwaterCam = underwaterCameraBlendUniform;
+    shader.uniforms.uIsHooked = hookedUniform;
     if (withSwim) {
       shader.uniforms.uSwimPhase = { value: 0 };
       shader.uniforms.uSwimAmp = { value: 0.045 };
@@ -271,15 +300,19 @@ function applySubmergedFishShader(mat: THREE.MeshStandardMaterial, withSwim: boo
     shader.vertexShader = vs;
 
     shader.fragmentShader =
-      `varying float vFishWorldY;\n` +
+      `varying float vFishWorldY;\nuniform float uUnderwaterCam;\nuniform float uIsHooked;\n` +
       shader.fragmentShader.replace(
         '#include <color_fragment>',
         `#include <color_fragment>
+         float uwCam = clamp(uUnderwaterCam, 0.0, 1.0);
+         float clarity = max(uwCam, clamp(uIsHooked, 0.0, 1.0));
          float submergedMask = smoothstep(-0.04, -0.18, vFishWorldY);
          float depthHaze = smoothstep(-0.15, -5.8, vFishWorldY);
          vec3 waterTint = vec3(0.05, 0.22, 0.31);
-         diffuseColor.rgb = mix(diffuseColor.rgb, waterTint, submergedMask * (0.36 + depthHaze * 0.48));
-         diffuseColor.a *= mix(1.0, mix(0.76, 0.22, depthHaze), submergedMask);`,
+         float surfaceWash = submergedMask * (1.0 - clarity * 0.88);
+         diffuseColor.rgb = mix(diffuseColor.rgb, waterTint, surfaceWash * (0.36 + depthHaze * 0.48));
+         float surfaceAlpha = mix(0.76, 0.22, depthHaze);
+         diffuseColor.a *= mix(1.0, mix(surfaceAlpha, 0.99, clarity), submergedMask);`,
       );
   };
 }
@@ -290,7 +323,8 @@ function buildProceduralFishMesh(
   scaleTex: THREE.CanvasTexture,
   sharedGeos: THREE.BufferGeometry[],
   sharedMats: THREE.Material[],
-): { root: THREE.Group; tailPivot: THREE.Group; bodyMat: THREE.MeshStandardMaterial } {
+): { root: THREE.Group; tailPivot: THREE.Group; bodyMat: THREE.MeshStandardMaterial; hookedUniform: { value: number } } {
+  const hookedUniform = { value: 0 };
   const root = new THREE.Group();
 
   // Streamlined anatomical fish profile (tail at -0.48 -> nose at +0.48)
@@ -316,7 +350,7 @@ function buildProceduralFishMesh(
     roughness: 0.22,
     metalness: 0.32,
   });
-  applySubmergedFishShader(bodyMat, true);
+  applySubmergedFishShader(bodyMat, true, hookedUniform);
   sharedMats.push(bodyMat);
 
   const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
@@ -331,7 +365,7 @@ function buildProceduralFishMesh(
     opacity: 0.86,
     side: THREE.DoubleSide,
   });
-  applySubmergedFishShader(finMat, false);
+  applySubmergedFishShader(finMat, false, hookedUniform);
   sharedMats.push(finMat);
 
   // Dorsal Fin
@@ -397,8 +431,8 @@ function buildProceduralFishMesh(
   sharedGeos.push(irisGeo, pupilGeo);
   const irisMat = new THREE.MeshStandardMaterial({ color: 0xd9b86c, roughness: 0.2, metalness: 0.35 });
   const pupilMat = new THREE.MeshStandardMaterial({ color: 0x0b0e11, roughness: 0.05, metalness: 0.4 });
-  applySubmergedFishShader(irisMat, false);
-  applySubmergedFishShader(pupilMat, false);
+  applySubmergedFishShader(irisMat, false, hookedUniform);
+  applySubmergedFishShader(pupilMat, false, hookedUniform);
   sharedMats.push(irisMat, pupilMat);
   for (const side of [-1, 1]) {
     const iris = new THREE.Mesh(irisGeo, irisMat);
@@ -416,7 +450,7 @@ function buildProceduralFishMesh(
     }
   });
   root.scale.setScalar(lengthScale);
-  return { root, tailPivot, bodyMat };
+  return { root, tailPivot, bodyMat, hookedUniform };
 }
 
 export function createFishSystem(): FishSystem {
@@ -456,16 +490,27 @@ export function createFishSystem(): FishSystem {
     }
 
     let bedY = groundHeightAt(sx, sz);
-    for (let t = 0; t < 10 && bedY > -0.65; t++) {
-      sx *= 0.82;
-      sz = THREE.MathUtils.lerp(sz, -40, 0.25);
+    for (let t = 0; t < 10 && (bedY > -0.65 || !isClearOfLakeRocks(sx, sz, 1.0)); t++) {
+      if (t < 4) {
+        sx = THREE.MathUtils.lerp(sx, center.x, 0.38);
+        sz = THREE.MathUtils.lerp(sz, center.z, 0.38);
+      } else {
+        sx *= 0.82;
+        sz = THREE.MathUtils.lerp(sz, -40, 0.25);
+      }
       bedY = groundHeightAt(sx, sz);
     }
 
     const avgLen = (species.minLengthCm + species.maxLengthCm) * 0.5;
     const lengthScale = (avgLen / 40) * (0.78 + Math.random() * 0.62);
     const scaleTex = speciesTextures.get(species.id)!;
-    const { root, tailPivot, bodyMat } = buildProceduralFishMesh(species, lengthScale, scaleTex, sharedGeos, sharedMats);
+    const { root, tailPivot, bodyMat, hookedUniform } = buildProceduralFishMesh(
+      species,
+      lengthScale,
+      scaleTex,
+      sharedGeos,
+      sharedMats,
+    );
 
     const prefDepth = THREE.MathUtils.lerp(species.preferredDepth[0], species.preferredDepth[1], Math.random());
     const sy = Math.max(bedY + 0.28, Math.min(-0.35, -prefDepth));
@@ -482,6 +527,7 @@ export function createFishSystem(): FishSystem {
       mesh: root,
       tailPivot,
       bodyMat,
+      hookedUniform,
       lengthScale,
       position: new THREE.Vector3(sx, sy, sz),
       velocity: new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading)).multiplyScalar(0.6),
@@ -516,9 +562,14 @@ export function createFishSystem(): FishSystem {
     }
 
     let bedY = groundHeightAt(tx, tz);
-    if (bedY > -0.55) {
-      tx = THREE.MathUtils.lerp(tx, 0, 0.5);
-      tz = THREE.MathUtils.lerp(tz, -40, 0.5);
+    for (let attempt = 0; attempt < 6 && (bedY > -0.55 || !isClearOfLakeRocks(tx, tz, 1.0)); attempt++) {
+      if (attempt < 3) {
+        tx = THREE.MathUtils.lerp(tx, center.x, 0.45);
+        tz = THREE.MathUtils.lerp(tz, center.z, 0.45);
+      } else {
+        tx = THREE.MathUtils.lerp(tx, 0, 0.5);
+        tz = THREE.MathUtils.lerp(tz, -40, 0.5);
+      }
       bedY = groundHeightAt(tx, tz);
     }
 
@@ -591,7 +642,9 @@ export function createFishSystem(): FishSystem {
     hookBitingFish: () => {
       const biting = fishes.find((f) => f.aiState === 'biting');
       if (!biting) return null;
+      for (const f of fishes) f.hookedUniform.value = 0;
       biting.aiState = 'hooked';
+      biting.hookedUniform.value = 1;
       biting.stamina = 1.0;
       biting.surgeTimer = 0.8;
       biting.surgeDir = Math.random() < 0.5 ? -1 : 1;
@@ -601,6 +654,7 @@ export function createFishSystem(): FishSystem {
       for (const f of fishes) {
         if (f.aiState === 'hooked' || f.aiState === 'biting' || f.aiState === 'nibbling') {
           f.aiState = 'spooked';
+          f.hookedUniform.value = 0;
           f.stateTimer = 3.2;
           f.mesh.visible = true;
           f.mesh.scale.setScalar(f.lengthScale);
@@ -612,6 +666,7 @@ export function createFishSystem(): FishSystem {
       for (const f of fishes) {
         if (f.aiState === 'hooked') {
           f.aiState = 'spooked';
+          f.hookedUniform.value = 0;
           f.stateTimer = 6.0;
           f.mesh.scale.setScalar(f.lengthScale);
           f.mesh.rotation.set(0, f.heading, 0);
@@ -672,12 +727,12 @@ export function createFishSystem(): FishSystem {
 
       for (const fish of fishes) {
         if (fish.aiState === 'hooked') {
-          fish.swimPhase += dt * 16.0;
-          fish.tailPivot.rotation.y = Math.sin(fish.swimPhase) * 0.48;
+          fish.swimPhase += dt * 18.0;
+          fish.tailPivot.rotation.y = Math.sin(fish.swimPhase) * 0.54;
           const fShader = fish.bodyMat.userData.shader;
           if (fShader) {
             fShader.uniforms.uSwimPhase.value = fish.swimPhase;
-            fShader.uniforms.uSwimAmp.value = 0.085;
+            fShader.uniforms.uSwimAmp.value = 0.095;
           }
           continue;
         }
@@ -814,9 +869,12 @@ export function createFishSystem(): FishSystem {
         fish.position.addScaledVector(fish.velocity, dt);
 
         const bedY = groundHeightAt(fish.position.x, fish.position.z);
-        if (bedY > -0.35) {
-          fish.position.x = THREE.MathUtils.lerp(fish.position.x, 0, dt * 1.4);
-          fish.position.z = THREE.MathUtils.lerp(fish.position.z, -40, dt * 1.4);
+        const rockClear = isClearOfLakeRocks(fish.position.x, fish.position.z, 0.85);
+        if (bedY > -0.35 || !rockClear) {
+          const safePullX = groundHeightAt(fish.targetPos.x, fish.targetPos.z) < -0.5 ? fish.targetPos.x : 0;
+          const safePullZ = groundHeightAt(fish.targetPos.x, fish.targetPos.z) < -0.5 ? fish.targetPos.z : -40;
+          fish.position.x = THREE.MathUtils.lerp(fish.position.x, safePullX, dt * 1.8);
+          fish.position.z = THREE.MathUtils.lerp(fish.position.z, safePullZ, dt * 1.8);
           pickPatrolPoint(fish);
         }
         const safeFloor = groundHeightAt(fish.position.x, fish.position.z) + 0.22;

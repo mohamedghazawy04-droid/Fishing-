@@ -703,6 +703,229 @@ export function createPointsOfInterest(textures: ProceduralTextureSet): PointsOf
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // 6. Western Arch Grotto & Camp (Far Western Secluded Lagoon)
+  // ---------------------------------------------------------------------------
+  {
+    const def = defMap.get('western_arch_grotto')!;
+    const worldX = -161.5;
+    const worldZ = -110.5;
+    const approachX = -151.0;
+    const approachZ = -110.5;
+    const baseY = Math.max(-0.2, groundHeightAt(worldX, worldZ));
+    const root = new THREE.Group();
+    root.position.set(worldX, baseY - 0.15, worldZ);
+    root.rotation.y = Math.atan2(-146 - worldX, -110 - worldZ);
+
+    const grottoRockGeo = trackGeo(new THREE.DodecahedronGeometry(1.0, 1));
+    const archBoulders: [number, number, number, number, number, number][] = [
+      [-2.1, 1.1, 0.2, 1.5, 2.0, 1.5],
+      [2.1, 1.1, 0.2, 1.5, 2.0, 1.5],
+      [0.0, 2.9, -0.1, 2.5, 1.1, 1.6],
+      [-2.8, 0.4, 1.1, 1.2, 0.9, 1.1],
+      [2.7, 0.5, 1.0, 1.3, 1.0, 1.2],
+    ];
+    archBoulders.forEach(([bx, by, bz, sx, sy, sz], idx) => {
+      const m = new THREE.Mesh(grottoRockGeo, graniteRockMat);
+      m.position.set(bx, by, bz);
+      m.scale.set(sx, sy, sz);
+      m.rotation.set(idx * 0.35, idx * 0.9, idx * 0.2);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      root.add(m);
+    });
+
+    // Hanging explorer rope-lantern + small weathered pier dock edge
+    const post = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(0.08, 0.1, 2.4, 7)), darkTimberMat);
+    post.position.set(0.95, 1.15, 1.45);
+    post.castShadow = true;
+    const arm = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.65, 0.08, 0.08)), oldWoodMat);
+    arm.position.set(0.66, 2.24, 1.45);
+    const housing = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(0.13, 0.15, 0.28, 6)), rustyIronMat);
+    housing.position.set(0.38, 1.98, 1.45);
+    const core = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.085, 8, 8)), warmAmberGlowMat);
+    core.position.set(0.38, 1.96, 1.45);
+    const grottoLight = new THREE.PointLight(0xffb454, 1.4, 18, 1.6);
+    grottoLight.position.set(0.38, 1.95, 1.55);
+
+    const crystalGeo = trackGeo(new THREE.ConeGeometry(0.16, 0.72, 5));
+    for (const [cx, cy, cz, rz] of [
+      [-0.75, 0.7, 0.4, 0.22],
+      [0.45, 0.65, 0.15, -0.25],
+      [-0.1, 0.85, -0.25, 0.1],
+    ]) {
+      const cr = new THREE.Mesh(crystalGeo, crystalGlowMat);
+      cr.position.set(cx, cy, cz);
+      cr.rotation.z = rz;
+      root.add(cr);
+    }
+
+    const banner = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(0.36, 0.68)), tatteredClothMat);
+    banner.position.set(-0.95, 1.75, 1.2);
+    root.add(post, arm, housing, core, grottoLight, banner);
+
+    const { beaconGroup, motes } = createDiscoveryBeacon(3.9);
+    root.add(beaconGroup);
+    group.add(root);
+    poiNodes.push({
+      def,
+      root,
+      worldX,
+      worldZ,
+      approachX,
+      approachZ,
+      discovered: false,
+      beaconGroup,
+      beaconMotes: motes,
+      lanternLights: [grottoLight],
+      swayPart: banner,
+      waterfallRippleTimer: 0,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7. Northern Fjord Twin Falls (Deep Northern Canyon Lagoon)
+  // ---------------------------------------------------------------------------
+  {
+    const def = defMap.get('northern_fjord_falls')!;
+    const worldX = 16.0;
+    const worldZ = -196.5;
+    const approachX = 15.0;
+    const approachZ = -185.0;
+    const baseY = Math.max(-0.2, groundHeightAt(worldX, worldZ));
+    const root = new THREE.Group();
+    root.position.set(worldX, baseY - 0.35, worldZ);
+    root.rotation.y = Math.atan2(14 - worldX, -180 - worldZ);
+
+    const cliffGeo = trackGeo(new THREE.DodecahedronGeometry(1.0, 1));
+    const cliffBlocks: [number, number, number, number, number, number][] = [
+      [-2.6, 2.4, -0.6, 2.2, 3.2, 2.0],
+      [2.6, 2.4, -0.6, 2.2, 3.2, 2.0],
+      [0.0, 3.5, -1.6, 3.4, 3.4, 2.1],
+      [-1.7, 0.8, 1.2, 1.4, 1.1, 1.3],
+      [1.8, 0.9, 1.1, 1.5, 1.2, 1.3],
+    ];
+    cliffBlocks.forEach(([bx, by, bz, sx, sy, sz], idx) => {
+      const m = new THREE.Mesh(cliffGeo, graniteRockMat);
+      m.position.set(bx, by, bz);
+      m.scale.set(sx, sy, sz);
+      m.rotation.set(idx * 0.28, idx * 0.75, idx * 0.18);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      root.add(m);
+    });
+
+    const wfGeo = trackGeo(new THREE.PlaneGeometry(1.35, 4.6, 4, 8));
+    const waterfallPlanes: THREE.Mesh[] = [];
+    for (const [wx, wy, wz] of [
+      [-0.78, 2.25, 0.45],
+      [0.72, 2.15, 0.52],
+    ]) {
+      const wf = new THREE.Mesh(wfGeo, waterfallMat);
+      wf.position.set(wx, wy, wz);
+      wf.rotation.x = -0.14;
+      root.add(wf);
+      waterfallPlanes.push(wf);
+    }
+
+    const mossPad = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.9, 7, 6)), mossMat);
+    mossPad.position.set(0, 5.2, -0.8);
+    mossPad.scale.set(2.4, 0.45, 1.3);
+    root.add(mossPad);
+
+    const crystal = new THREE.Mesh(trackGeo(new THREE.ConeGeometry(0.24, 1.05, 5)), crystalGlowMat);
+    crystal.position.set(0, 1.55, 0.35);
+    const fjordLight = new THREE.PointLight(0x5eead4, 1.8, 20, 1.5);
+    fjordLight.position.set(0, 1.9, 1.0);
+    root.add(crystal, fjordLight);
+
+    const { beaconGroup, motes } = createDiscoveryBeacon(5.8);
+    root.add(beaconGroup);
+    group.add(root);
+    poiNodes.push({
+      def,
+      root,
+      worldX,
+      worldZ,
+      approachX,
+      approachZ,
+      discovered: false,
+      beaconGroup,
+      beaconMotes: motes,
+      lanternLights: [fjordLight],
+      waterfallPlanes,
+      waterfallRippleTimer: 0.35,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8. Eastern Rocky Reef Beacon Tower (Eastern Reef Lagoon Headland)
+  // ---------------------------------------------------------------------------
+  {
+    const def = defMap.get('eastern_reef_beacon')!;
+    const worldX = 157.5;
+    const worldZ = -132.5;
+    const approachX = 147.0;
+    const approachZ = -130.5;
+    const baseY = Math.max(-0.15, groundHeightAt(worldX, worldZ));
+    const root = new THREE.Group();
+    root.position.set(worldX, baseY - 0.15, worldZ);
+    root.rotation.y = Math.atan2(142 - worldX, -130 - worldZ);
+
+    // Stacked stone lighthouse pedestal + timber gallery + glowing brass brazier
+    const plinth = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(1.45, 1.85, 1.4, 8)), graniteRockMat);
+    plinth.position.set(0, 0.6, 0);
+    plinth.castShadow = true;
+    plinth.receiveShadow = true;
+    const towerBody = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(0.85, 1.25, 3.1, 8)), graniteRockMat);
+    towerBody.position.set(0, 2.75, 0);
+    towerBody.castShadow = true;
+    towerBody.receiveShadow = true;
+
+    const deckRing = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(1.18, 1.05, 0.25, 8)), darkTimberMat);
+    deckRing.position.set(0, 4.35, 0);
+    deckRing.castShadow = true;
+
+    const pillarGeo = trackGeo(new THREE.CylinderGeometry(0.06, 0.06, 1.15, 6));
+    for (let p = 0; p < 4; p++) {
+      const ang = (p / 4) * Math.PI * 2 + Math.PI * 0.25;
+      const pil = new THREE.Mesh(pillarGeo, rustyIronMat);
+      pil.position.set(Math.cos(ang) * 0.72, 4.95, Math.sin(ang) * 0.72);
+      root.add(pil);
+    }
+
+    const lanternCore = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.32, 10, 10)), warmAmberGlowMat);
+    lanternCore.position.set(0, 4.92, 0);
+    const roof = new THREE.Mesh(trackGeo(new THREE.ConeGeometry(1.15, 0.95, 8)), agedBronzeMat);
+    roof.position.set(0, 5.75, 0);
+    roof.castShadow = true;
+
+    const beaconLight = new THREE.PointLight(0xffb347, 1.6, 24, 1.5);
+    beaconLight.position.set(0, 4.95, 0.35);
+
+    const charm = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(0.34, 0.62)), tatteredClothMat);
+    charm.position.set(0.9, 3.85, 0.35);
+    root.add(plinth, towerBody, deckRing, lanternCore, roof, beaconLight, charm);
+
+    const { beaconGroup, motes } = createDiscoveryBeacon(6.7);
+    root.add(beaconGroup);
+    group.add(root);
+    poiNodes.push({
+      def,
+      root,
+      worldX,
+      worldZ,
+      approachX,
+      approachZ,
+      discovered: false,
+      beaconGroup,
+      beaconMotes: motes,
+      lanternLights: [beaconLight],
+      swayPart: charm,
+      waterfallRippleTimer: 0,
+    });
+  }
+
   function applyDiscoveredVisual(node: InternalPoiNode): void {
     const targetMat = node.discovered ? discoveredMoteMat : beaconMoteMat;
     for (const m of node.beaconMotes) {
@@ -755,8 +978,13 @@ export function createPointsOfInterest(textures: ProceduralTextureSet): PointsOf
 
         // Lantern & crystal glow boosts gracefully at dusk/night
         for (const l of node.lanternLights) {
-          const baseInt = node.def.id === 'hidden_cave' ? 1.55 : 0.45;
-          const nightBoost = node.def.id === 'hidden_cave' ? 2.4 : 2.2;
+          const baseInt =
+            node.def.id === 'hidden_cave' || node.def.id === 'northern_fjord_falls'
+              ? 1.55
+              : node.def.id === 'eastern_reef_beacon'
+                ? 0.85
+                : 0.45;
+          const nightBoost = node.def.id === 'eastern_reef_beacon' ? 3.1 : 2.35;
           l.intensity = THREE.MathUtils.lerp(baseInt, nightBoost, nightFactor) + Math.sin(elapsed * 3.1 + i) * 0.12;
         }
 
@@ -770,10 +998,11 @@ export function createPointsOfInterest(textures: ProceduralTextureSet): PointsOf
           }
         }
 
-        // Hidden cave waterfall shimmer & water cove ripples
+        // Hidden cave & fjord waterfall shimmer & water cove ripples
         if (node.waterfallPlanes) {
           node.waterfallPlanes.forEach((wf, wIdx) => {
-            wf.position.y = 1.65 + Math.sin(elapsed * 9.0 + wIdx * 2.1) * 0.045;
+            const baseWfY = node.def.id === 'northern_fjord_falls' ? 2.2 : 1.65;
+            wf.position.y = baseWfY + Math.sin(elapsed * 9.0 + wIdx * 2.1) * 0.045;
           });
           node.waterfallRippleTimer -= dt;
           if (node.waterfallRippleTimer <= 0) {

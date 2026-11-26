@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { groundHeightAt } from './environment';
+import { isClearOfLakeRocks, resolveRockCollision } from './lakeRocks';
 import type { ProceduralTextureSet } from './textures';
 import { BOAT_CATALOG, LAKE_ANCHOR_SPOTS, type LakeSpotId } from '../types/fishing';
 
@@ -28,6 +29,7 @@ export interface BoatSystem {
     getWaterSurfaceY: (x: number, z: number) => number;
     onRipple: (x: number, z: number, strength: number) => void;
     onSplash: (x: number, z: number, intensity: number) => void;
+    onRockBump?: (intensity: number) => void;
   }) => { arrivedSpotId: LakeSpotId | 'free_roam' | null };
   dispose: () => void;
 }
@@ -581,14 +583,150 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
   let steerForward = 0;
   let steerTurn = 0;
   let currentSpeed = 0;
+  let bumpCooldown = 0;
+  let bumpRollImpulse = 0;
+  const routeQueue: { x: number; z: number }[] = [];
 
   const tmpRopeA = new THREE.Vector3();
   const tmpRopeB = new THREE.Vector3(-1.18, 1.02, -0.35);
   const tmpRopePt = new THREE.Vector3();
+  const tmpRockPush = { x: 0, z: 0 };
 
-  function canBoatOccupy(px: number, pz: number): boolean {
+  // Navigable water graph covering main basin, arches, winding gorges & outer lagoons
+  const WATER_WAYPOINTS: { x: number; z: number; neighbors: number[] }[] = [
+    /* 0: Pier approach */ { x: -4.0, z: -12.0, neighbors: [1] },
+    /* 1: Central Lake */ { x: 0.0, z: -44.0, neighbors: [0, 2, 10, 15] },
+    /* 2: West Mouth */ { x: -64.0, z: -38.0, neighbors: [1, 3] },
+    /* 3: West Bend 1 */ { x: -96.0, z: -34.0, neighbors: [2, 4] },
+    /* 4: West Arch */ { x: -109.0, z: -43.0, neighbors: [3, 5] },
+    /* 5: West Bend 2 */ { x: -124.0, z: -52.0, neighbors: [4, 6] },
+    /* 6: West Bend 3 */ { x: -114.0, z: -84.0, neighbors: [5, 7] },
+    /* 7: West Lagoon */ { x: -148.0, z: -112.0, neighbors: [6, 8] },
+    /* 8: NW Exit */ { x: -122.0, z: -142.0, neighbors: [7, 9] },
+    /* 9: NW Bend */ { x: -74.0, z: -152.0, neighbors: [8, 13] },
+    /* 10: North Mouth */ { x: 0.0, z: -90.0, neighbors: [1, 11] },
+    /* 11: North Bend 1 */ { x: 16.0, z: -118.0, neighbors: [10, 12] },
+    /* 12: North Arch */ { x: -3.0, z: -130.0, neighbors: [11, 13] },
+    /* 13: North Junction */ { x: -26.0, z: -162.0, neighbors: [9, 12, 14] },
+    /* 14: North Fjord */ { x: 14.0, z: -183.0, neighbors: [13, 21] },
+    /* 15: East Mouth */ { x: 64.0, z: -50.0, neighbors: [1, 16] },
+    /* 16: East Bend 1 */ { x: 98.0, z: -42.0, neighbors: [15, 17] },
+    /* 17: East Bend 2 */ { x: 134.0, z: -64.0, neighbors: [16, 18] },
+    /* 18: East Arch */ { x: 125.0, z: -81.0, neighbors: [17, 19] },
+    /* 19: East Bend 3 */ { x: 116.0, z: -98.0, neighbors: [18, 20] },
+    /* 20: East Lagoon */ { x: 144.0, z: -132.0, neighbors: [19, 22] },
+    /* 21: NE Junction */ { x: 58.0, z: -166.0, neighbors: [14, 22] },
+    /* 22: NE Bend */ { x: 104.0, z: -156.0, neighbors: [20, 21] },
+  ];
+
+  function isLineOfWaterClear(x1: number, z1: number, x2: number, z2: number): boolean {
+    const dist = Math.hypot(x2 - x1, z2 - z1);
+    const steps = Math.max(4, Math.min(36, Math.ceil(dist / 3.2)));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const sx = x1 + (x2 - x1) * t;
+      const sz = z1 + (z2 - z1) * t;
+      if (Math.abs(sx) < 2.1 && sz > -1.2) return false;
+      if (groundHeightAt(sx, sz) > -0.62) return false;
+      if (!isClearOfLakeRocks(sx, sz, 1.35)) return false;
+    }
+    return true;
+  }
+
+  function buildWaterRoute(startX: number, startZ: number, goalX: number, goalZ: number): void {
+    routeQueue.length = 0;
+    if (isLineOfWaterClear(startX, startZ, goalX, goalZ)) {
+      routeQueue.push({ x: goalX, z: goalZ });
+      return;
+    }
+
+    const n = WATER_WAYPOINTS.length;
+    let startIdx = 0;
+    let goalIdx = 0;
+    let bestStartScore = Infinity;
+    let bestGoalScore = Infinity;
+
+    for (let i = 0; i < n; i++) {
+      const wp = WATER_WAYPOINTS[i];
+      const dS = Math.hypot(wp.x - startX, wp.z - startZ);
+      const clearS = isLineOfWaterClear(startX, startZ, wp.x, wp.z) ? 0 : 250;
+      if (dS + clearS < bestStartScore) {
+        bestStartScore = dS + clearS;
+        startIdx = i;
+      }
+      const dG = Math.hypot(wp.x - goalX, wp.z - goalZ);
+      const clearG = isLineOfWaterClear(wp.x, wp.z, goalX, goalZ) ? 0 : 250;
+      if (dG + clearG < bestGoalScore) {
+        bestGoalScore = dG + clearG;
+        goalIdx = i;
+      }
+    }
+
+    // Dijkstra across waypoint graph
+    const dists = new Array<number>(n).fill(Infinity);
+    const prev = new Array<number>(n).fill(-1);
+    const visited = new Array<boolean>(n).fill(false);
+    dists[startIdx] = 0;
+
+    for (let iter = 0; iter < n; iter++) {
+      let u = -1;
+      let best = Infinity;
+      for (let i = 0; i < n; i++) {
+        if (!visited[i] && dists[i] < best) {
+          best = dists[i];
+          u = i;
+        }
+      }
+      if (u === -1 || u === goalIdx) break;
+      visited[u] = true;
+      const wpU = WATER_WAYPOINTS[u];
+      for (const v of wpU.neighbors) {
+        if (visited[v]) continue;
+        const wpV = WATER_WAYPOINTS[v];
+        const w = Math.hypot(wpV.x - wpU.x, wpV.z - wpU.z);
+        if (dists[u] + w < dists[v]) {
+          dists[v] = dists[u] + w;
+          prev[v] = u;
+        }
+      }
+    }
+
+    const chain: number[] = [];
+    let cur = goalIdx;
+    while (cur !== -1) {
+      chain.push(cur);
+      if (cur === startIdx) break;
+      cur = prev[cur];
+    }
+    chain.reverse();
+
+    for (const idx of chain) {
+      const wp = WATER_WAYPOINTS[idx];
+      if (Math.hypot(wp.x - startX, wp.z - startZ) > 3.5) {
+        routeQueue.push({ x: wp.x, z: wp.z });
+      }
+    }
+    routeQueue.push({ x: goalX, z: goalZ });
+  }
+
+  function isHullPointClear(px: number, pz: number, rockClearance = 1.05): boolean {
     if (Math.abs(px) < 2.15 && pz > -1.4) return false;
-    return groundHeightAt(px, pz) < -0.58;
+    if (groundHeightAt(px, pz) >= -0.48) return false;
+    return isClearOfLakeRocks(px, pz, rockClearance);
+  }
+
+  function canBoatOccupy(px: number, pz: number, yaw = boatYaw): boolean {
+    if (!isHullPointClear(px, pz, 1.15)) return false;
+    const sinY = Math.sin(yaw);
+    const cosY = Math.cos(yaw);
+    // Check bow (-1.45 fwd) and stern (+1.15 aft) hull ends
+    const bowX = px - sinY * 1.45;
+    const bowZ = pz - cosY * 1.45;
+    if (!isHullPointClear(bowX, bowZ, 0.88)) return false;
+    const sternX = px + sinY * 1.15;
+    const sternZ = pz + cosY * 1.15;
+    if (!isHullPointClear(sternX, sternZ, 0.88)) return false;
+    return true;
   }
 
   function applyBoatTierVisuals(level: number): void {
@@ -645,11 +783,13 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
       }
 
       if (immediate) {
+        routeQueue.length = 0;
         boatPos.copy(targetPos);
         currentLocationId = spotId;
         sailing = false;
         boatYaw = spotId === 'pier' ? 0.18 : 0;
       } else {
+        buildWaterRoute(boatPos.x, boatPos.z, targetPos.x, targetPos.z);
         sailing = true;
       }
     },
@@ -658,6 +798,7 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
       currentSpeed = 0;
       onBoat = true;
       targetPos.set(x, 0, z);
+      buildWaterRoute(boatPos.x, boatPos.z, x, z);
       sailing = true;
     },
     boardForFreeRoam: () => {
@@ -666,6 +807,7 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
         currentLocationId = 'free_roam';
         targetLocationId = 'free_roam';
         sailing = false;
+        routeQueue.length = 0;
         if (boatPos.z > -3.5) {
           boatPos.set(-3.2, boatPos.y, -4.5);
           boatYaw = 0.08;
@@ -697,8 +839,11 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
       getWaterSurfaceY,
       onRipple,
       onSplash,
+      onRockBump,
     }) => {
       frostUniform.value = THREE.MathUtils.lerp(frostUniform.value, THREE.MathUtils.clamp(coldSnowFactor, 0, 1), 0.04);
+      if (bumpCooldown > 0) bumpCooldown = Math.max(0, bumpCooldown - dt);
+      bumpRollImpulse = THREE.MathUtils.damp(bumpRollImpulse, 0, 6.5, dt);
 
       const tierDef = BOAT_CATALOG.find((b) => b.level === currentBoatLevel) ?? BOAT_CATALOG[0];
       let arrivedSpotId: LakeSpotId | 'free_roam' | null = null;
@@ -707,22 +852,30 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
       const hasManualSteer = Math.abs(steerForward) > 0.05 || Math.abs(steerTurn) > 0.05;
       if (hasManualSteer && onBoat) {
         sailing = false;
+        routeQueue.length = 0;
         currentLocationId = 'free_roam';
       }
 
       if (sailing) {
-        const dx = targetPos.x - boatPos.x;
-        const dz = targetPos.z - boatPos.z;
+        const activeWp = routeQueue.length > 0 ? routeQueue[0] : targetPos;
+        const dx = activeWp.x - boatPos.x;
+        const dz = activeWp.z - boatPos.z;
         const dist = Math.hypot(dx, dz);
+        const isFinalLeg = routeQueue.length <= 1;
 
-        if (dist < 0.25) {
-          boatPos.x = targetPos.x;
-          boatPos.z = targetPos.z;
-          sailing = false;
-          currentLocationId = targetLocationId;
-          onBoat = targetLocationId !== 'pier';
-          arrivedSpotId = targetLocationId;
-          onRipple(boatPos.x, boatPos.z, 1.0);
+        if (dist < (isFinalLeg ? 0.25 : 2.6)) {
+          if (!isFinalLeg) {
+            routeQueue.shift();
+          } else {
+            boatPos.x = targetPos.x;
+            boatPos.z = targetPos.z;
+            routeQueue.length = 0;
+            sailing = false;
+            currentLocationId = targetLocationId;
+            onBoat = targetLocationId !== 'pier';
+            arrivedSpotId = targetLocationId;
+            onRipple(boatPos.x, boatPos.z, 1.0);
+          }
         } else {
           const step = Math.min(dist, tierDef.speedMps * dt);
           boatPos.x += (dx / dist) * step;
@@ -730,11 +883,11 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
 
           // Turn smoothly toward travel direction (or face shore slightly when docking at pier)
           const travelHeading =
-            targetLocationId === 'pier' && dist < 5.0
+            isFinalLeg && targetLocationId === 'pier' && dist < 5.0
               ? 0.18
               : Math.atan2(-dx, -dz);
           const yawDiff = Math.atan2(Math.sin(travelHeading - boatYaw), Math.cos(travelHeading - boatYaw));
-          boatYaw += yawDiff * Math.min(1, dt * 3.8);
+          boatYaw += yawDiff * Math.min(1, dt * 4.2);
 
           wakeTimer -= dt;
           if (wakeTimer <= 0) {
@@ -746,9 +899,14 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
           }
         }
       } else if (onBoat) {
-        // Free-roaming helm physics & shoreline sliding
+        // Free-roaming helm physics, rock deflection & canyon-wall sliding
         if (Math.abs(steerTurn) > 0.05) {
-          boatYaw += steerTurn * 1.32 * dt;
+          const nextYaw = boatYaw + steerTurn * 1.38 * dt;
+          if (canBoatOccupy(boatPos.x, boatPos.z, nextYaw)) {
+            boatYaw = nextYaw;
+          } else {
+            boatYaw += steerTurn * 0.55 * dt;
+          }
         }
         const desiredSpeed = steerForward * tierDef.speedMps * (steerForward < 0 ? 0.55 : 1.0);
         currentSpeed = THREE.MathUtils.damp(currentSpeed, desiredSpeed, 4.2, dt);
@@ -759,17 +917,60 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
           const nx = boatPos.x + moveX;
           const nz = boatPos.z + moveZ;
 
-          if (canBoatOccupy(nx, nz)) {
+          let hitObstacle = false;
+          if (canBoatOccupy(nx, nz, boatYaw)) {
             boatPos.x = nx;
             boatPos.z = nz;
-          } else if (canBoatOccupy(nx, boatPos.z)) {
-            boatPos.x = nx;
-            currentSpeed *= 0.65;
-          } else if (canBoatOccupy(boatPos.x, nz)) {
-            boatPos.z = nz;
-            currentSpeed *= 0.65;
           } else {
-            currentSpeed = 0;
+            hitObstacle = true;
+            // Push gently out of rock colliders along normal so sliding feels crisp
+            if (resolveRockCollision(nx, nz, 1.18, tmpRockPush)) {
+              const px = nx + tmpRockPush.x;
+              const pz = nz + tmpRockPush.z;
+              if (canBoatOccupy(px, pz, boatYaw)) {
+                boatPos.x = px;
+                boatPos.z = pz;
+                currentSpeed *= 0.72;
+              } else if (canBoatOccupy(nx, boatPos.z, boatYaw)) {
+                boatPos.x = nx;
+                currentSpeed *= 0.65;
+              } else if (canBoatOccupy(boatPos.x, nz, boatYaw)) {
+                boatPos.z = nz;
+                currentSpeed *= 0.65;
+              } else {
+                currentSpeed *= 0.25;
+              }
+            } else if (canBoatOccupy(nx, boatPos.z, boatYaw)) {
+              boatPos.x = nx;
+              currentSpeed *= 0.72;
+            } else if (canBoatOccupy(boatPos.x, nz, boatYaw)) {
+              boatPos.z = nz;
+              currentSpeed *= 0.72;
+            } else {
+              // Diagonal wall slide helper for curved shorelines
+              const len = Math.hypot(moveX, moveZ) || 0.01;
+              const sideX = (-moveZ / len) * Math.abs(currentSpeed) * 0.65 * dt;
+              const sideZ = (moveX / len) * Math.abs(currentSpeed) * 0.65 * dt;
+              if (canBoatOccupy(boatPos.x + sideX, boatPos.z + sideZ, boatYaw)) {
+                boatPos.x += sideX;
+                boatPos.z += sideZ;
+                currentSpeed *= 0.6;
+              } else if (canBoatOccupy(boatPos.x - sideX, boatPos.z - sideZ, boatYaw)) {
+                boatPos.x -= sideX;
+                boatPos.z -= sideZ;
+                currentSpeed *= 0.6;
+              } else {
+                currentSpeed = 0;
+              }
+            }
+          }
+
+          if (hitObstacle && Math.abs(currentSpeed) > 0.8 && bumpCooldown <= 0) {
+            bumpCooldown = 0.62;
+            const hitInt = THREE.MathUtils.clamp(Math.abs(currentSpeed) / 5.5, 0.25, 0.95);
+            bumpRollImpulse = (steerTurn >= 0 ? 1 : -1) * 0.085 * hitInt;
+            onSplash(boatPos.x - Math.sin(boatYaw) * 1.4, boatPos.z - Math.cos(boatYaw) * 1.4, 0.55 * hitInt);
+            onRockBump?.(hitInt);
           }
 
           if (Math.abs(currentSpeed) > 0.4) {
@@ -807,6 +1008,7 @@ export function createBoatSystem(textures: ProceduralTextureSet): BoatSystem {
       const targetRoll =
         Math.atan2(hPort - hStbd, 1.3) +
         steerTurn * 0.045 +
+        bumpRollImpulse +
         Math.cos(elapsed * 1.3) * waveAmpExtra;
 
       boatPos.y = THREE.MathUtils.damp(boatPos.y, targetY, 8.0, dt);

@@ -4,7 +4,11 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { NatureSoundEngine, type AudioLocationContext } from '../audio/soundEngine';
+import {
+  NatureSoundEngine,
+  type AudioLocationContext,
+  type WeatherSoundContext,
+} from '../audio/soundEngine';
 import {
   BAIT_CATALOG,
   BOAT_CATALOG,
@@ -18,6 +22,7 @@ import {
   computeLevelFromXp,
   formatHourToClock,
   generateDailyChallenges,
+  getLakeSectorNameAr,
   getPresetFromHour,
   getSkillUpgradeCost,
   getTodayDateKey,
@@ -44,7 +49,8 @@ import { createBoatSystem } from './boatSystem';
 import { createCrocodilesAndFrogs } from './crocodilesAndFrogs';
 import { createDockAndRig } from './dockAndRig';
 import { createEnvironment, groundHeightAt, type NightSkyMoodUniforms } from './environment';
-import { createFishSystem, type ActiveFish } from './fishSystem';
+import { createFishSystem, underwaterCameraBlendUniform, type ActiveFish } from './fishSystem';
+import { createLakeRocksSystem, getNearestRockProximity, isClearOfLakeRocks, resolveRockCollision } from './lakeRocks';
 import { createPointsOfInterest } from './pointsOfInterest';
 import { createRivalAnglers } from './rivalAnglers';
 import { createProceduralTextures } from './textures';
@@ -52,6 +58,8 @@ import { createCrystalWater, type WaterNightReflectionUniforms } from './water';
 import { createWildlifeSystem } from './wildlife';
 import { createPerchingBirdSystem } from './perchingBird';
 import { createFishDripAndKeepnetSystem } from './fishDripAndKeepnet';
+import { createRemotePlayerSystem } from './remotePlayer';
+import type { LocalPlayerSnapshot, PlayerSyncState } from '../types/multiplayer';
 
 const STORAGE_KEY = 'serene_valley_angler_save_v1';
 const DAILY_STORAGE_KEY = 'serene_valley_daily_challenges_v1';
@@ -245,6 +253,7 @@ export class FishingSceneManager {
 
   private textures: ReturnType<typeof createProceduralTextures>;
   private environment: ReturnType<typeof createEnvironment>;
+  private lakeRocks: ReturnType<typeof createLakeRocksSystem>;
   private water: ReturnType<typeof createCrystalWater>;
   private fishSystem: ReturnType<typeof createFishSystem>;
   private dockRig: ReturnType<typeof createDockAndRig>;
@@ -255,6 +264,10 @@ export class FishingSceneManager {
   private fishDripAndKeepnet: ReturnType<typeof createFishDripAndKeepnetSystem>;
   private crocsAndFrogs: ReturnType<typeof createCrocodilesAndFrogs>;
   private rivalAnglers: ReturnType<typeof createRivalAnglers>;
+  private remotePlayerSystem: ReturnType<typeof createRemotePlayerSystem>;
+  private remotePlayerState: PlayerSyncState | null = null;
+  private onCatchBroadcast: ((speciesName: string, weightKg: number) => void) | null = null;
+  private onStateFrame: ((snapshot: LocalPlayerSnapshot) => void) | null = null;
   private sound = new NatureSoundEngine();
 
   private sunLight: THREE.DirectionalLight;
@@ -287,6 +300,15 @@ export class FishingSceneManager {
   private breathAlphas: Float32Array;
   private breathBurstTimer = 1.4;
   private breathCursor = 0;
+  private bubblePoints: THREE.Points;
+  private bubbleGeo: THREE.BufferGeometry;
+  private bubbleMat: THREE.PointsMaterial;
+  private bubblePositions: Float32Array;
+  private bubbleVelocities: Float32Array;
+  private bubbleAges: Float32Array;
+  private bubbleMaxAges: Float32Array;
+  private bubbleCursor = 0;
+  private bubbleSpawnTimer = 0;
 
   // Seated Camera Look Controls + Screen Press-and-Hold Disambiguation
   private targetYaw = 0; // 0 looks straight across lake (-Z)
@@ -323,6 +345,7 @@ export class FishingSceneManager {
   private autoTimeCycle = true;
   private season: SeasonId = 'spring';
   private weather: WeatherType = 'clear';
+  private upcomingWeather: WeatherType = 'cloudy';
   private autoWeather = true;
   private autoWind = true;
   private manualWindKmh = 10;
@@ -330,6 +353,7 @@ export class FishingSceneManager {
   private soundMuted = false;
   private nightReflectionMood: NightReflectionMoodId = loadSavedNightMood();
   private weatherChangeTimer = 160;
+  private smoothStormApproach = 0;
   private lightningAlpha = 0;
   private nextLightningTimer = 10;
   private rainDropTimer = 0;
@@ -356,7 +380,7 @@ export class FishingSceneManager {
   private catchInspectTilt = 0.06;
   private activeCatch: CaughtFishRecord | null = null;
   private catchHistory: CaughtFishRecord[] = [];
-  private statusMessage = 'اضغط مطولاً على الشاشة للرمي أو السحب · اسحب للتلفت حول البحيرة والكرسي';
+  private statusMessage = 'اضغط على طبق الدود بجانبك أو زر «علّق دودة من الطبق» لتجهيز السنارة ثم ارمِ الخيط';
   private lineSnappedNotice: string | null = null;
   private lineSnapTimer = 0;
   private newlyUnlockedNotice: string | null = null;
@@ -400,6 +424,14 @@ export class FishingSceneManager {
     shoreProximity: 1,
     nearCaveOrRock: 0,
   };
+  private _weatherSoundCtx: WeatherSoundContext = {
+    season: 'spring',
+    coldIntensity: 0,
+    stormApproach: 0,
+    rainIntensity: 0,
+    snowIntensity: 0,
+    mistDensity: 0,
+  };
   private speciesRecords: Record<string, SpeciesRecordEntry>;
   private recordBrokenNotice: string | null = null;
   private recordNoticeTimer = 0;
@@ -442,6 +474,25 @@ export class FishingSceneManager {
   private _playerAnchorOffset = new THREE.Vector3();
   private _boatWorldPos = new THREE.Vector3();
   private _landingPoint = new THREE.Vector3();
+  private _raycaster = new THREE.Raycaster();
+  private _pointerNdc = new THREE.Vector2();
+  private hookBaited = false;
+  private baitingAnimTimer = 0;
+  private readonly baitingDuration = 0.78;
+
+  // Underwater Hook-Cam state (optional dive camera during reeling; player starts above water by default)
+  private underwaterCamEnabled = false;
+  private underwaterCamBlend = 0;
+  private underwaterCamWasActive = false;
+  private underwaterOrbitYaw = 1.12;
+  private underwaterOrbitPitch = -0.08;
+  private _underwaterCamPos = new THREE.Vector3();
+  private _underwaterLookAt = new THREE.Vector3();
+  private _underwaterQuat = new THREE.Quaternion();
+  private _underwaterRockPush = { x: 0, z: 0 };
+  private _underwaterFogColor = new THREE.Color(0x0b4c5f);
+  private _underwaterNightFogColor = new THREE.Color(0x041a26);
+  private _underwaterFogMix = new THREE.Color();
 
   // Night reflection mood smoothed state & zero-GC shader payloads
   private _moonDir = new THREE.Vector3(-0.22, 0.44, -0.87).normalize();
@@ -567,6 +618,7 @@ export class FishingSceneManager {
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     this.textures = createProceduralTextures(maxAniso);
     this.environment = createEnvironment(this.textures, this.isSoftwareGl);
+    this.lakeRocks = createLakeRocksSystem(this.textures);
     this.water = createCrystalWater(this.isSoftwareGl);
     this.fishSystem = createFishSystem();
     this.dockRig = createDockAndRig(this.textures);
@@ -580,11 +632,14 @@ export class FishingSceneManager {
     this.fishDripAndKeepnet = createFishDripAndKeepnetSystem(this.textures);
     this.crocsAndFrogs = createCrocodilesAndFrogs();
     this.rivalAnglers = createRivalAnglers();
+    this.remotePlayerSystem = createRemotePlayerSystem();
 
     this.scene.add(this.environment.group);
+    this.scene.add(this.lakeRocks.group);
     this.scene.add(this.dockRig.group);
     this.scene.add(this.boatSystem.group);
     this.boatSystem.boatRoot.add(this.fishDripAndKeepnet.boatKeepnetGroup);
+    this.boatSystem.boatRoot.add(this.dockRig.boatWormDishGroup);
     this.scene.add(this.poiSystem.group);
     this.scene.add(this.fishSystem.group);
     this.scene.add(this.water.group);
@@ -593,6 +648,7 @@ export class FishingSceneManager {
     this.scene.add(this.fishDripAndKeepnet.group);
     this.scene.add(this.crocsAndFrogs.group);
     this.scene.add(this.rivalAnglers.group);
+    this.scene.add(this.remotePlayerSystem.group);
 
     // Rain / Snow Particles
     const rainCount = 950;
@@ -749,6 +805,29 @@ export class FishingSceneManager {
     this.breathPoints.frustumCulled = false;
     this.scene.add(this.breathPoints);
 
+    // Underwater Hooked-Fish Bubble Emitter Pool
+    const bubbleCount = 44;
+    this.bubbleGeo = new THREE.BufferGeometry();
+    this.bubblePositions = new Float32Array(bubbleCount * 3);
+    this.bubbleVelocities = new Float32Array(bubbleCount * 3);
+    this.bubbleAges = new Float32Array(bubbleCount).fill(99);
+    this.bubbleMaxAges = new Float32Array(bubbleCount).fill(1.2);
+    for (let i = 0; i < bubbleCount; i++) {
+      this.bubblePositions[i * 3 + 1] = -999;
+    }
+    this.bubbleGeo.setAttribute('position', new THREE.BufferAttribute(this.bubblePositions, 3));
+    this.bubbleMat = new THREE.PointsMaterial({
+      color: 0xdff7ff,
+      size: 0.055,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
+    this.bubblePoints = new THREE.Points(this.bubbleGeo, this.bubbleMat);
+    this.bubblePoints.frustumCulled = false;
+    this.bubblePoints.renderOrder = 3;
+    this.scene.add(this.bubblePoints);
+
     if (!this.isSoftwareGl) {
       this.composer = new EffectComposer(this.renderer);
       this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -880,6 +959,9 @@ export class FishingSceneManager {
     if (this.phase === 'caught') {
       this.catchInspectAngle += dx * 0.012;
       this.catchInspectTilt = THREE.MathUtils.clamp(this.catchInspectTilt + dy * 0.006, -0.45, 0.45);
+    } else if (this.phase === 'reeling' && this.underwaterCamBlend > 0.35) {
+      this.underwaterOrbitYaw -= dx * 0.006;
+      this.underwaterOrbitPitch = THREE.MathUtils.clamp(this.underwaterOrbitPitch + dy * 0.004, -0.52, 0.42);
     } else {
       const rigYaw = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
       const nextYaw = this.targetYaw - dx * 0.0045;
@@ -890,12 +972,32 @@ export class FishingSceneManager {
     this.markUserActivity(true);
   };
 
-  private onPointerUp = (): void => {
+  private onPointerUp = (e: PointerEvent): void => {
     this.clearHoldTimer();
     if (this.holdTriggered) {
       this.handlePrimaryActionRelease();
-    } else if (this.pointerDown && !this.pointerMoved && this.phase === 'biting') {
-      this.attemptHookSet();
+    } else if (this.pointerDown && !this.pointerMoved) {
+      if (this.phase === 'biting') {
+        this.attemptHookSet();
+      } else if (this.phase === 'idle' && !this.boatSystem.isSailing()) {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          this._pointerNdc.set(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1,
+          );
+          this._raycaster.setFromCamera(this._pointerNdc, this.camera);
+          const hits = this._raycaster.intersectObjects(this.dockRig.wormDishHitTargets, true);
+          if (hits.length > 0) {
+            this.attachBaitToHook(true);
+          } else if (!this.hookBaited) {
+            const hookHits = this._raycaster.intersectObject(this.dockRig.baitMesh, true);
+            if (hookHits.length > 0) {
+              this.attachBaitToHook(true);
+            }
+          }
+        }
+      }
     }
     this.pointerDown = false;
     this.isDragging = false;
@@ -955,6 +1057,69 @@ export class FishingSceneManager {
     }
   };
 
+  public setRemotePlayerState(player: PlayerSyncState | null): void {
+    this.remotePlayerState = player;
+  }
+
+  public setCatchBroadcastHandler(cb: ((speciesName: string, weightKg: number) => void) | null): void {
+    this.onCatchBroadcast = cb;
+  }
+
+  public setStateFrameHandler(cb: ((snapshot: LocalPlayerSnapshot) => void) | null): void {
+    this.onStateFrame = cb;
+  }
+
+  public getMultiplayerSnapshot(): LocalPlayerSnapshot {
+    const isOnBoat = this.boatSystem.isOnBoat();
+    this.boatSystem.getBoatPosition(this._boatWorldPos);
+    const bobberVisible =
+      this.phase === 'casting' ||
+      this.phase === 'waiting' ||
+      this.phase === 'nibbling' ||
+      this.phase === 'biting' ||
+      this.phase === 'reeling';
+    return {
+      level: this.progression.level,
+      boatLevel: this.progression.boatLevel,
+      isOnBoat,
+      x: isOnBoat ? this._boatWorldPos.x : 0,
+      y: isOnBoat ? this._boatWorldPos.y : 0.72,
+      z: isOnBoat ? this._boatWorldPos.z : 2.3,
+      yaw: isOnBoat ? this.boatSystem.getBoatYaw() : this.currentYaw,
+      phase: this.phase,
+      bobberVisible,
+      bobberX: this.bobberPos.x,
+      bobberY: this.bobberPos.y,
+      bobberZ: this.bobberPos.z,
+      lureY: this.lurePos.y,
+      reeling: this.phase === 'reeling' && this.reelHeld,
+      castPower: this.castPower,
+      lineTension: this.lineTension,
+      hookedSpeciesName: this.hookedFish ? this.hookedFish.species.nameAr : null,
+      catchesCount: this.catchHistory.length,
+    };
+  }
+
+  public attachBaitToHook(useWorm = true): void {
+    this.sound.unlock();
+    this.markUserActivity(true);
+    if (this.phase !== 'idle' || this.boatSystem.isSailing()) return;
+    if (useWorm) {
+      this.selectedBait = 'worm';
+      this.dockRig.setActiveBaitVisual('worm');
+      this.lineDepthMeters = BAIT_CATALOG[0].targetDepthOffset;
+    }
+    this.hookBaited = true;
+    this.baitingAnimTimer = this.baitingDuration;
+    this.sound.playNibble();
+    const baitDef = BAIT_CATALOG.find((x) => x.id === this.selectedBait);
+    this.statusMessage =
+      this.selectedBait === 'worm'
+        ? 'تم تعليق دودة طازجة في السنارة! اضغط مطولاً لرمي الصنارة'
+        : `تم تعليق الطعم (${baitDef?.nameAr ?? ''}) في السنارة! اضغط مطولاً للرمي`;
+    this.emitHudState(true);
+  }
+
   // --- Public Controls called by React HUD ---
   public handlePrimaryActionPress(): void {
     this.sound.unlock();
@@ -965,6 +1130,11 @@ export class FishingSceneManager {
       return;
     }
     if (this.phase === 'idle') {
+      if (!this.hookBaited) {
+        this.statusMessage = 'السنارة فارغة! اضغط على طبق الدود أو زر «علّق دودة» لتعليق الدودة أولاً';
+        this.emitHudState(true);
+        return;
+      }
       if (this.playerCutawayTimer > 0) {
         this.playerCutawayTimer = 0;
         this.playerCutawaySpeciesName = null;
@@ -979,8 +1149,8 @@ export class FishingSceneManager {
     } else if (this.phase === 'biting') {
       this.attemptHookSet();
     } else if (this.phase === 'waiting' || this.phase === 'nibbling') {
-      // Retrieve line back to idle
-      this.resetToIdle('تم سحب الخيط بنجاح — اختر نقطة جديدة وارمِ الصنارة');
+      // Retrieve line back to idle (bait stays attached unless eaten/caught)
+      this.resetToIdle('تم سحب الخيط بنجاح — اختر نقطة جديدة وارمِ الصنارة', false);
     } else if (this.phase === 'reeling') {
       this.reelHeld = true;
       this.emitHudState(true);
@@ -1001,10 +1171,16 @@ export class FishingSceneManager {
     if (!this.progression.unlockedBaits.includes(baitId)) return;
     this.selectedBait = baitId;
     this.dockRig.setActiveBaitVisual(baitId);
+    if (this.phase === 'idle') {
+      this.hookBaited = true;
+      if (baitId === 'worm') {
+        this.baitingAnimTimer = this.baitingDuration;
+      }
+    }
     const b = BAIT_CATALOG.find((x) => x.id === baitId);
     if (b) {
       this.lineDepthMeters = b.targetDepthOffset;
-      this.statusMessage = `تم تجهيز الطعم: ${b.nameAr}`;
+      this.statusMessage = `تم تعليق الطعم: ${b.nameAr}`;
     }
     this.emitHudState(true);
   }
@@ -1074,7 +1250,21 @@ export class FishingSceneManager {
 
   public setSeason(season: SeasonId): void {
     this.season = season;
+    const seasonDef = SEASON_CATALOG.find((s) => s.id === season);
+    if (seasonDef) {
+      this.upcomingWeather = this.pickWeightedWeather(seasonDef.preferredWeatherWeights);
+    }
     this.emitHudState(true);
+  }
+
+  private pickWeightedWeather(weights: Record<WeatherType, number>): WeatherType {
+    const totalW = Object.values(weights).reduce((a, b) => a + b, 0);
+    let r = Math.random() * totalW;
+    for (const opt of WEATHER_OPTIONS) {
+      r -= weights[opt.id];
+      if (r <= 0) return opt.id;
+    }
+    return 'clear';
   }
 
   public setSoundMuted(muted: boolean): void {
@@ -1107,6 +1297,12 @@ export class FishingSceneManager {
     if (!enabled) {
       this.lastActivityTime = this.elapsed;
     }
+    this.emitHudState(true);
+  }
+
+  public toggleUnderwaterCam(): void {
+    if (this.phase !== 'reeling') return;
+    this.underwaterCamEnabled = !this.underwaterCamEnabled;
     this.emitHudState(true);
   }
 
@@ -1291,6 +1487,7 @@ export class FishingSceneManager {
       this.hookedFish = null;
     }
     this.fishSystem.releaseHookedFish();
+    this.hookBaited = false;
     this.phase = 'idle';
     this.emitHudState(true);
   }
@@ -1334,13 +1531,15 @@ export class FishingSceneManager {
     let tx = originX - Math.sin(castYaw) * baseDist + windDriftX;
     let tz = originZ - Math.cos(castYaw) * baseDist;
 
-    // Clamp target into valid expanded lake water
-    tx = THREE.MathUtils.clamp(tx, -74, 74);
-    tz = THREE.MathUtils.clamp(tz, -92, 4.0);
+    // Clamp target into valid expanded lake water & rocky channels
+    tx = THREE.MathUtils.clamp(tx, -178, 178);
+    tz = THREE.MathUtils.clamp(tz, -206, 8.0);
+    const pullTargetX = onBoat ? originX : 0;
+    const pullTargetZ = onBoat ? originZ : -10;
     let bedY = groundHeightAt(tx, tz);
-    for (let i = 0; i < 10 && bedY > -0.45; i++) {
-      tx = THREE.MathUtils.lerp(tx, 0, 0.22);
-      tz = THREE.MathUtils.lerp(tz, -44, 0.25);
+    for (let i = 0; i < 12 && (bedY > -0.45 || !isClearOfLakeRocks(tx, tz, 0.85)); i++) {
+      tx = THREE.MathUtils.lerp(tx, pullTargetX, 0.25);
+      tz = THREE.MathUtils.lerp(tz, pullTargetZ, 0.25);
       bedY = groundHeightAt(tx, tz);
     }
 
@@ -1377,15 +1576,23 @@ export class FishingSceneManager {
     this.crocSurfaceSplashPending = true;
     this.rivalWonThisCatch = false;
     this.rivalAnglers.resetContest();
+    this.underwaterCamEnabled = false;
+    this.underwaterOrbitYaw = (Math.random() < 0.5 ? 1 : -1) * 1.12;
+    this.underwaterOrbitPitch = -0.08;
+    if (this.targetPitch > -0.26) {
+      this.targetPitch = -0.26;
+    }
+    const hookedBedY = groundHeightAt(hooked.position.x, hooked.position.z);
+    hooked.position.y = THREE.MathUtils.clamp(Math.max(hooked.position.y, -0.45), Math.max(hookedBedY + 0.25, -9.5), -0.24);
     this.sound.playSplash(1.1);
     this.water.spawnSplash(hooked.position.x, hooked.position.z, 1.15 + this.heavyFishFactor * 0.45);
     this.statusMessage = this.isHeavyHookedFish
-      ? `سمكة ثقيلة جداً (${hooked.species.nameAr})! راقب إجهاد الخيط واهتزازه!`
-      : `علقت ${hooked.species.nameAr}! اسحب بحذر وراقب التماسيح والمنافسين`;
+      ? `سمكة ثقيلة جداً (${hooked.species.nameAr})! شاهدها في الصنارة تحت الماء واسحب بحذر!`
+      : `علقت ${hooked.species.nameAr} بالصنارة! شاهدها تحت الماء أثناء السحب`;
     this.emitHudState(true);
   }
 
-  private resetToIdle(message: string): void {
+  private resetToIdle(message: string, consumeBait = false): void {
     this.phase = 'idle';
     this.castPower = 0;
     this.lineTension = 0;
@@ -1401,6 +1608,9 @@ export class FishingSceneManager {
     this.rivalName = null;
     this.rivalWonThisCatch = false;
     this.rivalAnglers.resetContest();
+    if (consumeBait) {
+      this.hookBaited = false;
+    }
     if (this.hookedFish) {
       this.hookedFish.mesh.scale.setScalar(this.hookedFish.lengthScale);
       this.hookedFish.mesh.rotation.set(0, this.hookedFish.heading, 0);
@@ -1538,6 +1748,7 @@ export class FishingSceneManager {
       totalBonus > 0
         ? `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} XP + ${totalBonus} مكافأة!)`
         : `مفاجأة الصيد! ${sp.nameAr} (+${xpEarned} نقطة خبرة)`;
+    this.onCatchBroadcast?.(sp.nameAr, weightKg);
     this.emitHudState(true);
   }
 
@@ -1612,16 +1823,8 @@ export class FishingSceneManager {
       this.weatherChangeTimer -= dt;
       if (this.weatherChangeTimer <= 0) {
         this.weatherChangeTimer = 160 + Math.random() * 110;
-        const weights = seasonDef.preferredWeatherWeights;
-        const totalW = Object.values(weights).reduce((a, b) => a + b, 0);
-        let r = Math.random() * totalW;
-        for (const opt of WEATHER_OPTIONS) {
-          r -= weights[opt.id];
-          if (r <= 0) {
-            this.weather = opt.id;
-            break;
-          }
-        }
+        this.weather = this.upcomingWeather;
+        this.upcomingWeather = this.pickWeightedWeather(seasonDef.preferredWeatherWeights);
       }
     }
 
@@ -1758,10 +1961,37 @@ export class FishingSceneManager {
       : Math.round(this.manualWindKmh);
     this.currentWindSpeedKmh = windSpeedKmh;
 
-    // Sync Scene Fog & Background
+    // Sync Scene Fog & Background (and blend into crystal underwater teal when underwater hook-cam is active)
     this._fogColor.copy(this._skyHorizon);
+    if (this.phase === 'reeling' && this.hookedFish) {
+      this.getPlayerLandingAnchor(this._landingPoint);
+    }
+    const shouldUnderwaterAtm =
+      this.phase === 'reeling' &&
+      this.underwaterCamEnabled &&
+      this.hookedFish !== null &&
+      Math.hypot(this.hookedFish.position.x - this._landingPoint.x, this.hookedFish.position.z - this._landingPoint.z) > 4.2;
+    this.underwaterCamBlend = THREE.MathUtils.damp(
+      this.underwaterCamBlend,
+      shouldUnderwaterAtm ? 1 : 0,
+      shouldUnderwaterAtm ? 3.8 : 4.8,
+      dt,
+    );
+    underwaterCameraBlendUniform.value = this.underwaterCamBlend;
+
+    const uwActiveNow = this.underwaterCamBlend > 0.25;
+    if (uwActiveNow !== this.underwaterCamWasActive) {
+      this.underwaterCamWasActive = uwActiveNow;
+      this.emitHudState(true);
+    }
+
+    if (this.underwaterCamBlend > 0.005) {
+      this._underwaterFogMix.copy(this._underwaterFogColor).lerp(this._underwaterNightFogColor, nightFactor * 0.85);
+      this._fogColor.lerp(this._underwaterFogMix, this.underwaterCamBlend);
+    }
     this.fog.color.copy(this._fogColor);
-    this.fog.density = THREE.MathUtils.damp(this.fog.density, targetFogDensity, 2.5, dt);
+    const desiredFogDensity = THREE.MathUtils.lerp(targetFogDensity, 0.026, this.underwaterCamBlend);
+    this.fog.density = THREE.MathUtils.damp(this.fog.density, desiredFogDensity, 4.5, dt);
 
     // Sync Directional Sun/Moon Light
     const weatherDim =
@@ -1789,8 +2019,15 @@ export class FishingSceneManager {
     this.hemiLight.groundColor.copy(this._hemiGround);
     this.hemiLight.intensity = THREE.MathUtils.lerp(0.28, 0.78, daylight) * (0.65 + weatherDim * 0.35);
 
-    // Update Rain or Snow particles
-    const precipitating = this.weather === 'rain' || this.weather === 'storm';
+    const onBoatWeather = this.boatSystem.isOnBoat();
+    if (onBoatWeather) {
+      this.boatSystem.getBoatPosition(this._boatWorldPos);
+    }
+    const weatherAnchorX = onBoatWeather ? this._boatWorldPos.x : 0;
+    const weatherAnchorZ = onBoatWeather ? this._boatWorldPos.z : -16;
+
+    // Update Rain or Snow particles (hidden when underwater camera dives below surface)
+    const precipitating = (this.weather === 'rain' || this.weather === 'storm') && this.underwaterCamBlend < 0.35;
     this.rainPoints.visible = precipitating;
     if (precipitating) {
       const isWinterSnow = this.season === 'winter';
@@ -1803,22 +2040,26 @@ export class FishingSceneManager {
       for (let i = 0; i < this.rainPositions.length; i += 3) {
         this.rainPositions[i] += windX * dt;
         this.rainPositions[i + 1] -= fallSpeed * dt;
-        if (this.rainPositions[i + 1] < 0) {
-          this.rainPositions[i] = (Math.random() - 0.5) * 60;
+        if (
+          this.rainPositions[i + 1] < 0 ||
+          Math.abs(this.rainPositions[i] - weatherAnchorX) > 36 ||
+          Math.abs(this.rainPositions[i + 2] - weatherAnchorZ) > 36
+        ) {
+          this.rainPositions[i] = weatherAnchorX + (Math.random() - 0.5) * 60;
           this.rainPositions[i + 1] = 18 + Math.random() * 6;
-          this.rainPositions[i + 2] = (Math.random() - 0.5) * 60 - 16;
+          this.rainPositions[i + 2] = weatherAnchorZ + (Math.random() - 0.5) * 60;
         }
       }
       this.rainGeo.attributes.position.needsUpdate = true;
 
-      // Raindrop rings across the clear lake surface (skip for soft snow)
+      // Raindrop rings across the lake surface around the player/boat
       if (!isWinterSnow) {
         this.rainDropTimer -= dt;
         if (this.rainDropTimer <= 0) {
           this.rainDropTimer = this.weather === 'storm' ? 0.08 : 0.16;
-          const rx = (Math.random() - 0.5) * 90;
-          const rz = -3 - Math.random() * 76;
-          if (groundHeightAt(rx, rz) < -0.2) {
+          const rx = weatherAnchorX + (Math.random() - 0.5) * 84;
+          const rz = weatherAnchorZ + (Math.random() - 0.5) * 76;
+          if (groundHeightAt(rx, rz) < -0.2 && isClearOfLakeRocks(rx, rz, 0.8)) {
             this.water.addRipple(rx, rz, 0.42);
           }
         }
@@ -1853,7 +2094,7 @@ export class FishingSceneManager {
       this.weather === 'storm' ? 0.06 : this.weather === 'rain' ? 0.18 : this.weather === 'cloudy' ? 0.52 : 1.0;
     const pollenAlpha = goldenAirStrength * weatherPollenDim * (this.season === 'winter' ? 0.42 : 0.88);
 
-    this.pollenPoints.visible = pollenAlpha > 0.03;
+    this.pollenPoints.visible = pollenAlpha > 0.03 && this.underwaterCamBlend < 0.35;
     if (this.pollenPoints.visible) {
       this.pollenMat.uniforms.uTime.value = this.elapsed;
       this.pollenMat.uniforms.uOpacity.value = pollenAlpha;
@@ -1871,12 +2112,12 @@ export class FishingSceneManager {
         let py = this.pollenPositions[idx + 1] + (Math.sin(this.elapsed * 1.15 + s * 22.0) * 0.24 + (s - 0.45) * 0.12) * dt;
         let pz = this.pollenPositions[idx + 2] + (windDriftZ + Math.cos(this.elapsed * 0.65 + s * 18.0) * 0.2) * dt;
 
-        if (px > 29) px = -29;
-        if (px < -29) px = 29;
+        if (px > weatherAnchorX + 30) px = weatherAnchorX - 30;
+        if (px < weatherAnchorX - 30) px = weatherAnchorX + 30;
         if (py > 10.0) py = 0.5;
         if (py < 0.45) py = 9.5;
-        if (pz > 6) pz = -36;
-        if (pz < -36) pz = 6;
+        if (pz > weatherAnchorZ + 28) pz = weatherAnchorZ - 28;
+        if (pz < weatherAnchorZ - 28) pz = weatherAnchorZ + 28;
 
         this.pollenPositions[idx] = px;
         this.pollenPositions[idx + 1] = py;
@@ -1896,8 +2137,8 @@ export class FishingSceneManager {
     }
     this.coldIntensity = THREE.MathUtils.damp(this.coldIntensity, targetCold, 0.18, dt);
 
-    const canBreathe = this.coldIntensity > 0.32 && this.cinematicBlend < 0.25;
-    this.breathPoints.visible = this.coldIntensity > 0.2 && this.cinematicBlend < 0.35;
+    const canBreathe = this.coldIntensity > 0.32 && this.cinematicBlend < 0.25 && this.underwaterCamBlend < 0.35;
+    this.breathPoints.visible = this.coldIntensity > 0.2 && this.cinematicBlend < 0.35 && this.underwaterCamBlend < 0.35;
     if (canBreathe) {
       this.breathBurstTimer -= dt;
       if (this.breathBurstTimer <= 0) {
@@ -1985,6 +2226,7 @@ export class FishingSceneManager {
       effectiveWindMult,
       this._skyMoodPayload,
     );
+    this.lakeRocks.update(this.elapsed, this.coldIntensity);
 
     this._waterNightPayload.nightFactor = nightFactor;
     this._waterNightPayload.moonSize = this.smoothMoonSize;
@@ -2005,6 +2247,8 @@ export class FishingSceneManager {
       this._fogColor,
       this.fog.density,
       this._waterNightPayload,
+      this.underwaterCamBlend,
+      this.phase === 'reeling' && this.hookedFish ? this.hookedFish.position : null,
     );
 
     const isOnBoatAudio = this.boatSystem.isOnBoat();
@@ -2027,15 +2271,24 @@ export class FishingSceneManager {
     const playerX = isOnBoatAudio ? this._boatWorldPos.x : 0;
     const playerZ = isOnBoatAudio ? this._boatWorldPos.z : 2.3;
     const depthHere = Math.max(0.5, -groundHeightAt(playerX, playerZ));
-    // Open center lake around (0, -44) -> shoreProximity = 0; wooden pier / shoreline -> shoreProximity = 1
+    // Open center lake around (0, -44) -> shoreProximity = 0; narrow rocky gorges or pier -> higher shoreProximity
+    const inOuterGorge = Math.abs(playerX) > 65 || playerZ < -85;
     const distFromCenter = Math.hypot(playerX / 62, (playerZ + 44) / 40);
     const shoreProx = isOnBoatAudio
-      ? THREE.MathUtils.clamp(0.15 + Math.max(0, distFromCenter - 0.35) * 1.15 - (depthHere - 2.0) * 0.05, 0.08, 0.88)
+      ? inOuterGorge
+        ? THREE.MathUtils.clamp(0.42 + (5.5 - Math.min(5.5, depthHere)) * 0.1, 0.25, 0.88)
+        : THREE.MathUtils.clamp(0.15 + Math.max(0, distFromCenter - 0.35) * 1.15 - (depthHere - 2.0) * 0.05, 0.08, 0.88)
       : 1.0;
 
-    let nearCaveOrRock = 0;
+    let nearCaveOrRock = getNearestRockProximity(playerX, playerZ);
     for (const info of this.poiSystem.getPoiInfos()) {
-      if (info.definition.id === 'hidden_cave' || info.definition.id === 'wrecked_skiff_cove') {
+      if (
+        info.definition.id === 'hidden_cave' ||
+        info.definition.id === 'wrecked_skiff_cove' ||
+        info.definition.id === 'western_arch_grotto' ||
+        info.definition.id === 'northern_fjord_falls' ||
+        info.definition.id === 'eastern_reef_beacon'
+      ) {
         const dPoi = Math.hypot(info.worldX - playerX, info.worldZ - playerZ);
         if (dPoi < 22) {
           nearCaveOrRock = Math.max(nearCaveOrRock, THREE.MathUtils.clamp(1 - dPoi / 22, 0, 1));
@@ -2050,7 +2303,50 @@ export class FishingSceneManager {
     this._audioLocation.shoreProximity = shoreProx;
     this._audioLocation.nearCaveOrRock = nearCaveOrRock;
 
-    this.sound.updateAmbience(this.weather, this.timeOfDay, this.elapsed, windSpeedKmh, this._audioLocation);
+    // Dynamic Weather Soundscape Metrics (approaching storm rumble, winter snowfall hush, mist stillness)
+    let targetStormApproach = 0;
+    if (this.weather === 'storm') {
+      targetStormApproach = 1.0;
+    } else {
+      if (this.autoWeather && this.upcomingWeather === 'storm' && this.weatherChangeTimer < 48) {
+        targetStormApproach = Math.max(
+          targetStormApproach,
+          THREE.MathUtils.clamp((48 - this.weatherChangeTimer) / 48, 0, 0.72),
+        );
+      }
+      if (this.weather === 'rain' && windSpeedKmh >= 17) {
+        targetStormApproach = Math.max(targetStormApproach, 0.24 + Math.min(0.22, (windSpeedKmh - 17) * 0.02));
+      } else if (this.weather === 'cloudy' && windSpeedKmh >= 14) {
+        targetStormApproach = Math.max(targetStormApproach, 0.16);
+      }
+    }
+    this.smoothStormApproach = THREE.MathUtils.damp(this.smoothStormApproach, targetStormApproach, 0.45, dt);
+
+    const isWinterWeather = this.season === 'winter';
+    const precipWeight = this.weather === 'storm' ? 1.0 : this.weather === 'rain' ? 0.68 : 0.0;
+    const snowIntensity = isWinterWeather
+      ? Math.max(precipWeight, this.weather === 'mist' ? 0.28 : 0.12) * Math.max(0.45, this.coldIntensity)
+      : this.coldIntensity > 0.7 && precipWeight > 0
+        ? precipWeight * 0.25
+        : 0;
+    const rainIntensity = isWinterWeather ? 0 : precipWeight;
+    const mistDensity = this.weather === 'mist' ? 1.0 : this.weather === 'cloudy' ? 0.28 : 0;
+
+    this._weatherSoundCtx.season = this.season;
+    this._weatherSoundCtx.coldIntensity = this.coldIntensity;
+    this._weatherSoundCtx.stormApproach = this.smoothStormApproach;
+    this._weatherSoundCtx.rainIntensity = rainIntensity;
+    this._weatherSoundCtx.snowIntensity = snowIntensity;
+    this._weatherSoundCtx.mistDensity = mistDensity;
+
+    this.sound.updateAmbience(
+      this.weather,
+      this.timeOfDay,
+      this.elapsed,
+      windSpeedKmh,
+      this._audioLocation,
+      this._weatherSoundCtx,
+    );
 
     let conditionLabel = 'جيد للصيد';
     if (this.weather === 'storm') conditionLabel = 'عاصف · فرص نادرة لأسماك العمق';
@@ -2126,6 +2422,7 @@ export class FishingSceneManager {
       getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
       onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
       onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
+      onRockBump: (intensity) => this.sound.playBoatRockBump(intensity),
     });
 
     // Update Lake Points of Interest (POIs) & Check Boat Exploration Discovery
@@ -2401,8 +2698,9 @@ export class FishingSceneManager {
 
       if (this.reelHeld) {
         this.sound.playReelTick(this.elapsed);
-        const pullSpeed = 3.2 * reelSkill - fightForce * 1.15;
-        f.position.addScaledVector(dockPos, Math.max(0.42, pullSpeed) * dt);
+        const crocAdrenalineBoost = this.crocThreatActive && this.crocDistanceMeters < 18 ? 1.28 : 1.0;
+        const pullSpeed = 3.2 * reelSkill * crocAdrenalineBoost - fightForce * (crocAdrenalineBoost > 1 ? 0.92 : 1.15);
+        f.position.addScaledVector(dockPos, Math.max(crocAdrenalineBoost > 1 ? 1.25 : 0.42, pullSpeed) * dt);
         f.position.addScaledVector(this._rightVec, fightForce * 1.15 * dt);
         f.stamina = Math.max(0, f.stamina - (dt * 0.22 * reelSkill) / (1 + this.heavyFishFactor * 0.25));
 
@@ -2424,19 +2722,39 @@ export class FishingSceneManager {
         this.water.spawnSplash(f.position.x, f.position.z, 1.35);
       }
 
-      // Clamp hooked fish inside deepened lake water basin (up to ~12m)
+      // Guide hooked fish smoothly just below the crystal-clear surface so it stays clearly visible from above & on the hook
       const bedY = groundHeightAt(f.position.x, f.position.z);
-      f.position.y = THREE.MathUtils.clamp(f.position.y, Math.max(bedY + 0.22, -11.0), distToDock <= 7.0 ? -0.14 : -0.35);
+      const targetSubmergedY = this.underwaterCamEnabled
+        ? (distToDock <= 5.0 ? -0.18 : -0.58)
+        : (distToDock <= 5.0 ? -0.14 : -0.25);
+      f.position.y = THREE.MathUtils.damp(f.position.y, targetSubmergedY, 3.8, dt);
+      f.position.y = THREE.MathUtils.clamp(f.position.y, Math.max(bedY + 0.25, -10.5), -0.12);
       f.mesh.position.copy(f.position);
-      f.mesh.rotation.y = Math.atan2(
+
+      const targetFishHeading = Math.atan2(
         this.reelHeld ? -dockPos.x : this._rightVec.x,
         this.reelHeld ? -dockPos.z : this._rightVec.z,
       );
+      let hDiff = targetFishHeading - f.heading;
+      while (hDiff > Math.PI) hDiff -= Math.PI * 2;
+      while (hDiff < -Math.PI) hDiff += Math.PI * 2;
+      f.heading += hDiff * Math.min(1, dt * 6.5);
+      f.mesh.rotation.y = f.heading;
+      f.mesh.rotation.z = Math.sin(this.elapsed * 9.5 + f.id) * 0.11;
 
-      this.bobberPos.set(f.position.x, this.water.getSurfaceHeightAt(f.position.x, f.position.z) - 0.04, f.position.z);
-      this.lurePos.copy(f.position);
-      if (Math.random() < dt * 3.5) {
-        this.water.addRipple(f.position.x, f.position.z, 0.75);
+      const mouthOffset = 0.43 * f.lengthScale;
+      const mouthX = f.position.x + Math.sin(f.heading) * mouthOffset;
+      const mouthZ = f.position.z + Math.cos(f.heading) * mouthOffset;
+      this.lurePos.set(mouthX, f.position.y + 0.02, mouthZ);
+      this.dockRig.baitMesh.rotation.set(0, f.heading + Math.PI * 0.5, 0);
+
+      // Offset bobber slightly ahead toward the player so it rides the surface without hiding the hook & fish head
+      const bobLead = Math.min(0.55, distToDock * 0.18);
+      const bobX = mouthX + dockPos.x * bobLead;
+      const bobZ = mouthZ + dockPos.z * bobLead;
+      this.bobberPos.set(bobX, this.water.getSurfaceHeightAt(bobX, bobZ) - 0.03, bobZ);
+      if (Math.random() < dt * 3.8) {
+        this.water.addRipple(mouthX, mouthZ, 0.8);
       }
 
       this.rodBend = THREE.MathUtils.damp(this.rodBend, 0.35 + this.lineTension * 0.65, 9, dt);
@@ -2445,7 +2763,7 @@ export class FishingSceneManager {
       if (this.lineTension >= 0.99) {
         this.lineSnappedNotice = 'انقطع الخيط بسبب الشد الزائد! خفّف السحب عند الاحمرار.';
         this.lineSnapTimer = 3.0;
-        this.resetToIdle('انقطع الخيط! اضغط للرمي مجدداً');
+        this.resetToIdle('انقطع الخيط! علّق دودة جديدة وارمِ مجدداً', true);
       } else if (distToDock <= 2.9) {
         this.completeCatch(f);
       }
@@ -2619,7 +2937,7 @@ export class FishingSceneManager {
       this.hookedFish = null;
       this.lineSnappedNotice = 'التهم التمساح السمكة! اسحب بسرعة أكبر قبل اقترابه.';
       this.lineSnapTimer = 3.0;
-      this.resetToIdle('التهم التمساح السمكة! ارمِ الصنارة من جديد');
+      this.resetToIdle('التهم التمساح السمكة! علّق دودة جديدة وارمِ الصنارة', true);
     }
 
     const reelSkillFactor = 1 + (this.progression.skills.reelSpeed - 1) * 0.14;
@@ -2748,6 +3066,87 @@ export class FishingSceneManager {
       this.camera.quaternion.slerp(this._rivalCamQuat, this.rivalCutawayBlend);
     }
 
+    // Underwater Hooked-Fish Camera (frames fish's mouth biting the hook & line from beneath the water surface)
+    if (this.underwaterCamBlend > 0.002 && this.hookedFish) {
+      const f = this.hookedFish;
+      this._underwaterLookAt.set(
+        THREE.MathUtils.lerp(f.position.x, this.lurePos.x, 0.65),
+        THREE.MathUtils.lerp(f.position.y, this.lurePos.y, 0.65),
+        THREE.MathUtils.lerp(f.position.z, this.lurePos.z, 0.65),
+      );
+      const camDist = THREE.MathUtils.clamp(1.22 + f.lengthScale * 0.55, 1.4, 2.35);
+      const orbitAngle = f.heading + this.underwaterOrbitYaw;
+      const horizDist = Math.cos(this.underwaterOrbitPitch) * camDist;
+      let camX = this._underwaterLookAt.x + Math.sin(orbitAngle) * horizDist;
+      let camZ = this._underwaterLookAt.z + Math.cos(orbitAngle) * horizDist;
+
+      if (resolveRockCollision(camX, camZ, 0.65, this._underwaterRockPush)) {
+        camX += this._underwaterRockPush.x;
+        camZ += this._underwaterRockPush.z;
+      }
+
+      const surfY = this.water.getSurfaceHeightAt(camX, camZ);
+      const bedHere = groundHeightAt(camX, camZ);
+      const minCamY = bedHere + 0.34;
+      const maxCamY = surfY - 0.24;
+      const rawCamY = this._underwaterLookAt.y + Math.sin(this.underwaterOrbitPitch) * camDist - 0.05;
+      const camY = minCamY <= maxCamY ? THREE.MathUtils.clamp(rawCamY, minCamY, maxCamY) : (minCamY + maxCamY) * 0.5;
+
+      this._underwaterCamPos.set(camX, camY, camZ);
+      this._lookMatrix.lookAt(this._underwaterCamPos, this._underwaterLookAt, this._camUp);
+      this._underwaterQuat.setFromRotationMatrix(this._lookMatrix);
+      this.camera.position.lerp(this._underwaterCamPos, this.underwaterCamBlend);
+      this.camera.quaternion.slerp(this._underwaterQuat, this.underwaterCamBlend);
+    }
+
+    // Update Underwater Bubbles around hooked fish mouth & thrashing body
+    if (this.phase === 'reeling' && this.hookedFish) {
+      this.bubbleSpawnTimer -= dt;
+      if (this.bubbleSpawnTimer <= 0) {
+        this.bubbleSpawnTimer = this.reelHeld ? 0.045 : 0.085;
+        const bIdx = this.bubbleCursor;
+        this.bubbleCursor = (this.bubbleCursor + 1) % this.bubbleAges.length;
+        const pIdx = bIdx * 3;
+        const fromMouth = bIdx % 2 === 0;
+        const srcX = fromMouth ? this.lurePos.x : this.hookedFish.position.x;
+        const srcY = fromMouth ? this.lurePos.y : this.hookedFish.position.y;
+        const srcZ = fromMouth ? this.lurePos.z : this.hookedFish.position.z;
+        this.bubblePositions[pIdx] = srcX + (Math.random() - 0.5) * 0.14;
+        this.bubblePositions[pIdx + 1] = srcY + (Math.random() - 0.5) * 0.08;
+        this.bubblePositions[pIdx + 2] = srcZ + (Math.random() - 0.5) * 0.14;
+        this.bubbleVelocities[pIdx] = (Math.random() - 0.5) * 0.22;
+        this.bubbleVelocities[pIdx + 1] = 0.48 + Math.random() * 0.45;
+        this.bubbleVelocities[pIdx + 2] = (Math.random() - 0.5) * 0.22;
+        this.bubbleAges[bIdx] = 0;
+        this.bubbleMaxAges[bIdx] = 0.8 + Math.random() * 0.7;
+      }
+    }
+    let anyBubbleAlive = false;
+    for (let i = 0; i < this.bubbleAges.length; i++) {
+      if (this.bubbleAges[i] < this.bubbleMaxAges[i]) {
+        anyBubbleAlive = true;
+        this.bubbleAges[i] += dt;
+        const pIdx = i * 3;
+        this.bubblePositions[pIdx] += (this.bubbleVelocities[pIdx] + Math.sin(this.elapsed * 8 + i) * 0.08) * dt;
+        this.bubblePositions[pIdx + 1] += this.bubbleVelocities[pIdx + 1] * dt;
+        this.bubblePositions[pIdx + 2] += (this.bubbleVelocities[pIdx + 2] + Math.cos(this.elapsed * 7 + i) * 0.08) * dt;
+        if (this.bubbleAges[i] >= this.bubbleMaxAges[i] || this.bubblePositions[pIdx + 1] >= -0.04) {
+          this.bubbleAges[i] = 99;
+          this.bubblePositions[pIdx + 1] = -999;
+        }
+      }
+    }
+    this.bubblePoints.visible = anyBubbleAlive;
+    if (anyBubbleAlive) {
+      this.bubbleGeo.attributes.position.needsUpdate = true;
+    }
+
+    if (this.baitingAnimTimer > 0) {
+      this.baitingAnimTimer = Math.max(0, this.baitingAnimTimer - dt);
+    }
+    const baitingProgress =
+      this.baitingAnimTimer > 0 ? 1 - this.baitingAnimTimer / this.baitingDuration : -1;
+
     const rigYawForRod = this.boatSystem.isOnBoat() ? this.boatSystem.getBoatYaw() : 0;
     const relRodYaw = Math.atan2(Math.sin(this.currentYaw - rigYawForRod), Math.cos(this.currentYaw - rigYawForRod));
 
@@ -2760,12 +3159,29 @@ export class FishingSceneManager {
       lurePos: this.lurePos,
       bobberVisible,
       reeling: this.phase === 'reeling' && this.reelHeld,
+      hooked: this.phase === 'reeling',
+      hookBaited: this.hookBaited,
+      isOnBoat: isOnBoatNow,
+      baitingProgress,
       nightFactor,
       windStrength: windSpeedKmh / 12,
       coldSnowFactor: this.coldIntensity,
       lineTension: this.lineTension,
       heavyFishFactor: this.phase === 'reeling' ? this.heavyFishFactor : 0,
     });
+
+    this.remotePlayerSystem.update({
+      dt,
+      elapsed: this.elapsed,
+      remote: this.remotePlayerState,
+      getWaterSurfaceY: (wx, wz) => this.water.getSurfaceHeightAt(wx, wz),
+      onRipple: (rx, rz, str) => this.water.addRipple(rx, rz, str),
+      onSplash: (sx, sz, inten) => this.water.spawnSplash(sx, sz, inten),
+    });
+
+    if (this.onStateFrame) {
+      this.onStateFrame(this.getMultiplayerSnapshot());
+    }
 
     // Periodic HUD refresh (15 Hz smooth meters without React spam)
     if (this.elapsed - this.lastHudEmit > 0.065) {
@@ -2856,6 +3272,7 @@ export class FishingSceneManager {
       fishStamina: this.hookedFish ? this.hookedFish.stamina : 0,
       biteUrgency: biting ? THREE.MathUtils.clamp(biting.stateTimer / 2.4, 0, 1) : 0,
       hookedSpeciesName: this.hookedFish ? this.hookedFish.species.nameAr : null,
+      underwaterCamActive: this.underwaterCamBlend > 0.25 || (this.phase === 'reeling' && this.underwaterCamEnabled),
       statusMessage: this.statusMessage,
       timeOfDay: this.timeOfDay,
       timePreset: getPresetFromHour(this.timeOfDay),
@@ -2874,6 +3291,7 @@ export class FishingSceneManager {
       fishVisibleCount: this.fishSystem.fishes.length,
       selectedBait: this.selectedBait,
       selectedHook: this.selectedHook,
+      hookBaited: this.hookBaited,
       lineDepthMeters: this.lineDepthMeters,
       currentCastZone: castZone,
       activeCatch: this.activeCatch,
@@ -2899,6 +3317,7 @@ export class FishingSceneManager {
       isHeavyHookedFish: this.phase === 'reeling' && this.isHeavyHookedFish,
       heavyFishStress: this.phase === 'reeling' ? THREE.MathUtils.clamp(Math.max(this.lineTension, this.heavyFishFactor * 0.68), 0, 1) : 0,
       currentLocationId: this.boatSystem.getCurrentLocationId(),
+      regionNameAr: getLakeSectorNameAr(playerDepthX, playerDepthZ),
       isOnBoat: this.boatSystem.isOnBoat(),
       isSailing: this.boatSystem.isSailing(),
       waterDepthUnderPlayer,
@@ -2926,6 +3345,7 @@ export class FishingSceneManager {
 
     this.sound.dispose();
     this.environment.dispose();
+    this.lakeRocks.dispose();
     this.water.dispose();
     this.fishSystem.dispose();
     this.dockRig.dispose();
@@ -2936,6 +3356,7 @@ export class FishingSceneManager {
     this.fishDripAndKeepnet.dispose();
     this.crocsAndFrogs.dispose();
     this.rivalAnglers.dispose();
+    this.remotePlayerSystem.dispose();
     this.textures.dispose();
     this.rainGeo.dispose();
     this.rainMat.dispose();
@@ -2945,6 +3366,8 @@ export class FishingSceneManager {
     this.pollenMat.dispose();
     this.breathGeo.dispose();
     this.breathMat.dispose();
+    this.bubbleGeo.dispose();
+    this.bubbleMat.dispose();
     this.pmremEnv.dispose();
     this.bloomPass?.dispose();
     this.composer?.dispose();

@@ -10,11 +10,13 @@ export interface DockAndRigSystem {
   reelCrankPivot: THREE.Group;
   bobberGroup: THREE.Group;
   bobberGlowMat: THREE.MeshStandardMaterial;
-  baitMesh: THREE.Mesh;
+  baitMesh: THREE.Group;
   baitMat: THREE.MeshStandardMaterial;
   fishingLine: THREE.Line;
   lanternLight: THREE.PointLight;
   lanternFlameMat: THREE.MeshStandardMaterial;
+  boatWormDishGroup: THREE.Group;
+  wormDishHitTargets: THREE.Object3D[];
   setActiveBaitVisual: (baitId: BaitId) => void;
   setPlayerRigTransform: (offset: THREE.Vector3, pitch: number, roll: number, yaw?: number) => void;
   updateRodAndLine: (params: {
@@ -26,6 +28,10 @@ export interface DockAndRigSystem {
     lurePos: THREE.Vector3;
     bobberVisible: boolean;
     reeling: boolean;
+    hooked?: boolean;
+    hookBaited?: boolean;
+    isOnBoat?: boolean;
+    baitingProgress?: number; // -1 inactive, 0..1 threading worm from dish to hook
     nightFactor: number;
     windStrength: number;
     coldSnowFactor: number;
@@ -369,6 +375,137 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   boxShadow.position.y = 0.004;
   tackleBox.add(tbBody, tbLid, tbLatch, boxShadow);
   group.add(tackleBox);
+
+  // 4b. Terracotta Worm Dish ("طبق الدود") on both Wooden Pier and Boat Forward Thwart
+  const bowlMat = new THREE.MeshStandardMaterial({
+    color: 0xa45438,
+    roughness: 0.42,
+    metalness: 0.06,
+    side: THREE.DoubleSide,
+  });
+  const soilMat = new THREE.MeshStandardMaterial({
+    color: 0x261a12,
+    roughness: 0.96,
+    metalness: 0.0,
+  });
+  const wormMat = new THREE.MeshStandardMaterial({
+    color: 0xc96b59,
+    roughness: 0.28,
+    metalness: 0.08,
+  });
+  const wormHighlightRingMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0.0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  enableColdFrostDusting(bowlMat, 0.55, 0.14);
+
+  const bowlProfile = [
+    new THREE.Vector2(0.0, 0.0),
+    new THREE.Vector2(0.095, 0.0),
+    new THREE.Vector2(0.135, 0.032),
+    new THREE.Vector2(0.148, 0.068),
+    new THREE.Vector2(0.156, 0.074),
+    new THREE.Vector2(0.142, 0.076),
+    new THREE.Vector2(0.130, 0.062),
+    new THREE.Vector2(0.092, 0.016),
+    new THREE.Vector2(0.0, 0.014),
+  ];
+  const bowlGeo = new THREE.LatheGeometry(bowlProfile, 22);
+  const soilGeo = new THREE.SphereGeometry(0.125, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  soilGeo.scale(1.0, 0.26, 1.0);
+
+  const dishWormCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.048, 0.0, 0.012),
+    new THREE.Vector3(-0.022, 0.008, -0.014),
+    new THREE.Vector3(0.008, 0.005, 0.016),
+    new THREE.Vector3(0.034, 0.009, -0.008),
+    new THREE.Vector3(0.056, 0.002, 0.014),
+  ]);
+  const dishWormGeo = new THREE.TubeGeometry(dishWormCurve, 16, 0.0075, 7, false);
+
+  const dishShadowGeo = new THREE.PlaneGeometry(0.38, 0.38);
+  dishShadowGeo.rotateX(-Math.PI / 2);
+  const dishRingGeo = new THREE.RingGeometry(0.165, 0.19, 28);
+  dishRingGeo.rotateX(-Math.PI / 2);
+
+  disposables.push(
+    bowlMat,
+    soilMat,
+    wormMat,
+    wormHighlightRingMat,
+    bowlGeo,
+    soilGeo,
+    dishWormGeo,
+    dishShadowGeo,
+    dishRingGeo,
+  );
+
+  interface DishWormAnim {
+    mesh: THREE.Mesh;
+    baseRotY: number;
+    baseX: number;
+    baseZ: number;
+    phase: number;
+  }
+  const dishWorms: DishWormAnim[] = [];
+  const dishRings: THREE.Mesh[] = [];
+
+  function buildWormDish(scale: number): THREE.Group {
+    const root = new THREE.Group();
+    const dShadow = new THREE.Mesh(dishShadowGeo, contactShadowMat);
+    dShadow.position.y = 0.003;
+    const ring = new THREE.Mesh(dishRingGeo, wormHighlightRingMat);
+    ring.position.y = 0.006;
+    dishRings.push(ring);
+
+    const bowl = new THREE.Mesh(bowlGeo, bowlMat);
+    bowl.castShadow = true;
+    bowl.receiveShadow = true;
+    const soil = new THREE.Mesh(soilGeo, soilMat);
+    soil.position.y = 0.024;
+    soil.receiveShadow = true;
+    root.add(dShadow, ring, bowl, soil);
+
+    const wormSpecs: [number, number, number, number][] = [
+      [-0.025, 0.052, 0.022, 0.25],
+      [0.028, 0.054, -0.018, 1.4],
+      [-0.010, 0.056, -0.036, 2.3],
+      [0.018, 0.055, 0.036, -0.9],
+      [-0.044, 0.048, -0.014, 0.85],
+      [0.045, 0.049, 0.010, 2.85],
+    ];
+    wormSpecs.forEach(([wx, wy, wz, rotY], idx) => {
+      const wMesh = new THREE.Mesh(dishWormGeo, wormMat);
+      wMesh.position.set(wx, wy, wz);
+      wMesh.rotation.y = rotY;
+      wMesh.castShadow = true;
+      root.add(wMesh);
+      dishWorms.push({
+        mesh: wMesh,
+        baseRotY: rotY,
+        baseX: wx,
+        baseZ: wz,
+        phase: idx * 1.45,
+      });
+    });
+
+    root.scale.setScalar(scale);
+    return root;
+  }
+
+  const pierWormDish = buildWormDish(1.0);
+  pierWormDish.position.set(0.48, pierTopY, 0.34);
+  group.add(pierWormDish);
+
+  const boatWormDishGroup = new THREE.Group();
+  const boatWormDish = buildWormDish(0.84);
+  boatWormDish.position.set(0.28, 0.228, -0.90);
+  boatWormDishGroup.add(boatWormDish);
+
+  const wormDishHitTargets: THREE.Object3D[] = [pierWormDish, boatWormDish];
 
   // 5. Realistic Anatomical First-Person Fisherman Forearms & Both Hands + Rod
   const rodRoot = new THREE.Group();
@@ -755,18 +892,61 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   bobberGroup.add(stem);
   group.add(bobberGroup);
 
-  // Underwater Bait & Hook assembly
-  const baitGeo = new THREE.CapsuleGeometry(0.024, 0.075, 4, 8);
+  // Underwater Bait & Hook assembly (Composite 4-part rig: swivel, shank, curved J-hook + barb, and bait)
+  const hookSteelMat = new THREE.MeshStandardMaterial({
+    color: 0xd0d9e0,
+    roughness: 0.18,
+    metalness: 0.9,
+  });
   const baitMat = new THREE.MeshStandardMaterial({
     color: BAIT_CATALOG[0].color,
-    roughness: 0.45,
+    roughness: 0.44,
     emissive: 0x000000,
     emissiveIntensity: 0.0,
   });
-  const baitMesh = new THREE.Mesh(baitGeo, baitMat);
+  const swivelGeo = new THREE.TorusGeometry(0.011, 0.0032, 6, 12);
+  const shankGeo = new THREE.CylinderGeometry(0.0042, 0.0042, 0.068, 8);
+  const hookBendGeo = new THREE.TorusGeometry(0.022, 0.0042, 8, 16, Math.PI * 1.15);
+  const barbGeo = new THREE.ConeGeometry(0.006, 0.018, 6);
+  const baitGeo = new THREE.CapsuleGeometry(0.022, 0.064, 6, 10);
+
+  const baitMesh = new THREE.Group();
+  const swivelMesh = new THREE.Mesh(swivelGeo, brassMat);
+  swivelMesh.position.set(0, 0.042, 0);
+  const shankMesh = new THREE.Mesh(shankGeo, hookSteelMat);
+  shankMesh.position.set(0, 0.004, 0);
+  const bendMesh = new THREE.Mesh(hookBendGeo, hookSteelMat);
+  bendMesh.position.set(0.022, -0.028, 0);
+  bendMesh.rotation.z = Math.PI;
+  const barbMesh = new THREE.Mesh(barbGeo, hookSteelMat);
+  barbMesh.position.set(0.043, -0.018, 0);
+  barbMesh.rotation.z = -0.18;
+  const baitCoreMesh = new THREE.Mesh(baitGeo, baitMat);
+  baitCoreMesh.position.set(0.016, -0.036, 0);
+  baitCoreMesh.rotation.z = 0.72;
+
+  // Curved segmented earthworm threaded directly along the J-hook bend & barb
+  const hookedWormCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.004, 0.012, 0.002),
+    new THREE.Vector3(0.004, -0.022, 0.006),
+    new THREE.Vector3(0.024, -0.044, 0.0),
+    new THREE.Vector3(0.043, -0.026, -0.004),
+    new THREE.Vector3(0.056, -0.004, 0.010),
+    new THREE.Vector3(0.068, 0.018, -0.006),
+  ]);
+  const hookedWormGeo = new THREE.TubeGeometry(hookedWormCurve, 18, 0.0095, 8, false);
+  const hookedWormMesh = new THREE.Mesh(hookedWormGeo, wormMat);
+
+  baitMesh.add(swivelMesh, shankMesh, bendMesh, barbMesh, baitCoreMesh, hookedWormMesh);
   baitMesh.visible = false;
-  disposables.push(baitGeo, baitMat);
+  disposables.push(hookSteelMat, baitMat, swivelGeo, shankGeo, hookBendGeo, barbGeo, baitGeo, hookedWormGeo);
   group.add(baitMesh);
+
+  // Flying/threading worm shown during the tactile worm-hooking animation from the dish onto the J-hook
+  const transferWormMesh = new THREE.Mesh(dishWormGeo, wormMat);
+  transferWormMesh.visible = false;
+  transferWormMesh.scale.setScalar(1.35);
+  group.add(transferWormMesh);
 
   // 7. Dynamic Fishing Line (Catmull-like multi-point polyline from rod tip -> bobber -> bait)
   const linePointsCount = 18;
@@ -787,11 +967,14 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
   const tmpPt = new THREE.Vector3();
   const tmpLineDir = new THREE.Vector3();
   const tmpLineSide = new THREE.Vector3();
+  const tmpDishWorld = new THREE.Vector3();
   const colNormal = new THREE.Color(0xdcebf2);
   const colWarn = new THREE.Color(0xf5b942);
   const colDanger = new THREE.Color(0xff3b30);
+  let activeBaitId: BaitId = 'worm';
 
   function setActiveBaitVisual(baitId: BaitId): void {
+    activeBaitId = baitId;
     const b = BAIT_CATALOG.find((item) => item.id === baitId) ?? BAIT_CATALOG[0];
     baitMat.color.setHex(b.color);
     if (b.glow) {
@@ -815,6 +998,8 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
     fishingLine,
     lanternLight,
     lanternFlameMat,
+    boatWormDishGroup,
+    wormDishHitTargets,
     setActiveBaitVisual,
     setPlayerRigTransform: (offset, pitch, roll, yaw = 0) => {
       playerRigGroup.position.copy(offset);
@@ -833,6 +1018,10 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
       lurePos,
       bobberVisible,
       reeling,
+      hooked = false,
+      hookBaited = true,
+      isOnBoat = false,
+      baitingProgress = -1,
       nightFactor,
       windStrength,
       coldSnowFactor,
@@ -915,10 +1104,39 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
         lineMat.opacity = 0.78;
       }
 
+      // Wriggle worms continuously inside the ceramic dish + gently pulse highlight when hook is empty
+      for (let wi = 0; wi < dishWorms.length; wi++) {
+        const dw = dishWorms[wi];
+        const sq = Math.sin(elapsed * 3.6 + dw.phase);
+        const sq2 = Math.cos(elapsed * 2.5 + dw.phase * 1.3);
+        dw.mesh.rotation.y = dw.baseRotY + sq * 0.14;
+        dw.mesh.rotation.z = sq2 * 0.08;
+        dw.mesh.position.x = dw.baseX + sq2 * 0.004;
+        dw.mesh.position.z = dw.baseZ + sq * 0.004;
+      }
+      const needBaitPulse = !bobberVisible && !hookBaited && baitingProgress < 0;
+      wormHighlightRingMat.opacity = needBaitPulse ? 0.35 + Math.sin(elapsed * 4.5) * 0.25 : 0.0;
+      for (let ri = 0; ri < dishRings.length; ri++) {
+        dishRings[ri].visible = needBaitPulse;
+      }
+
+      const isBaitingNow = baitingProgress >= 0 && baitingProgress <= 1;
+      const showBaitedVisual = hookBaited && !isBaitingNow;
+      hookedWormMesh.visible = showBaitedVisual && activeBaitId === 'worm';
+      baitCoreMesh.visible = showBaitedVisual && activeBaitId !== 'worm';
+      if (hookedWormMesh.visible) {
+        hookedWormMesh.rotation.x = Math.sin(elapsed * 7.2) * 0.14;
+        hookedWormMesh.rotation.z = Math.cos(elapsed * 5.8) * 0.10;
+      }
+
       if (bobberVisible) {
         bobberGroup.position.copy(bobberPos);
         baitMesh.position.copy(lurePos);
-        baitMesh.rotation.y = elapsed * 1.8;
+        baitMesh.scale.setScalar(hooked ? 1.75 : 1.0);
+        if (!hooked && !reeling) {
+          baitMesh.rotation.y = elapsed * 1.8;
+        }
+        transferWormMesh.visible = false;
 
         // First 14 points: taut catenary curve from rod tip to bobber + high-frequency stress vibration
         const sag = Math.max(0.005, 0.35 * (1 - Math.max(rodBend, stress)));
@@ -960,15 +1178,32 @@ export function createDockAndRig(textures: ProceduralTextureSet): DockAndRigSyst
           linePositions[i * 3 + 2] = tmpPt.z;
         }
       } else {
-        // Idle dangling bobber right beneath rod tip
+        // Idle dangling bobber & hook right beneath rod tip (tilts closer if actively baiting a worm)
+        const dipOffset = isBaitingNow ? Math.sin(baitingProgress * Math.PI) * 0.22 : 0;
         bobberGroup.visible = true;
-        bobberGroup.position.set(tmpTip.x, tmpTip.y - 0.55, tmpTip.z);
+        bobberGroup.position.set(tmpTip.x, tmpTip.y - 0.50 - dipOffset * 0.5, tmpTip.z);
         baitMesh.visible = true;
-        baitMesh.position.set(tmpTip.x, tmpTip.y - 0.85, tmpTip.z);
+        baitMesh.scale.setScalar(1.15);
+        baitMesh.position.set(tmpTip.x, tmpTip.y - 0.80 - dipOffset, tmpTip.z);
+        baitMesh.rotation.y = elapsed * 1.1;
+
+        if (isBaitingNow) {
+          const activeDish = isOnBoat ? boatWormDish : pierWormDish;
+          activeDish.getWorldPosition(tmpDishWorld);
+          tmpDishWorld.y += 0.06;
+          const easeT = baitingProgress * baitingProgress * (3 - 2 * baitingProgress);
+          transferWormMesh.visible = true;
+          transferWormMesh.position.lerpVectors(tmpDishWorld, baitMesh.position, easeT);
+          transferWormMesh.position.y += Math.sin(easeT * Math.PI) * 0.38;
+          transferWormMesh.rotation.y = elapsed * 10.0;
+          transferWormMesh.rotation.z = Math.sin(elapsed * 14.0) * 0.45;
+        } else {
+          transferWormMesh.visible = false;
+        }
 
         for (let i = 0; i < linePointsCount; i++) {
           const t = i / (linePointsCount - 1);
-          tmpPt.set(tmpTip.x, tmpTip.y - t * 0.85, tmpTip.z);
+          tmpPt.set(tmpTip.x, tmpTip.y - t * (0.80 + dipOffset), tmpTip.z);
           linePositions[i * 3] = tmpPt.x;
           linePositions[i * 3 + 1] = tmpPt.y;
           linePositions[i * 3 + 2] = tmpPt.z;

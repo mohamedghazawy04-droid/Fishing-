@@ -231,7 +231,10 @@ export type PoiId =
   | 'hidden_cave'
   | 'sunken_bell_tower'
   | 'ancient_lantern_shrine'
-  | 'wrecked_skiff_cove';
+  | 'wrecked_skiff_cove'
+  | 'western_arch_grotto'
+  | 'northern_fjord_falls'
+  | 'eastern_reef_beacon';
 
 export interface LakePoiDefinition {
   id: PoiId;
@@ -268,6 +271,7 @@ export interface FishingHudState {
   fishStamina: number; // 0..1
   biteUrgency: number; // 0..1
   hookedSpeciesName: string | null;
+  underwaterCamActive: boolean;
   statusMessage: string;
   timeOfDay: number; // 0..24 hours
   timePreset: TimePresetId;
@@ -286,6 +290,7 @@ export interface FishingHudState {
   fishVisibleCount: number;
   selectedBait: BaitId;
   selectedHook: HookId;
+  hookBaited: boolean;
   lineDepthMeters: number; // 0.6 | 1.6 | 2.8
   currentCastZone: LakeZoneId | null;
   activeCatch: CaughtFishRecord | null;
@@ -311,6 +316,7 @@ export interface FishingHudState {
   isHeavyHookedFish: boolean;
   heavyFishStress: number; // 0..1
   currentLocationId: LakeSpotId | 'free_roam';
+  regionNameAr: string;
   isOnBoat: boolean;
   isSailing: boolean;
   waterDepthUnderPlayer: number;
@@ -591,6 +597,39 @@ export const LAKE_POI_CATALOG: LakePoiDefinition[] = [
       'قارب خشبي قديم استقر على الرمال الضحلة وبجانبه صندوق رحالة برونزي تحرسه أعشاب الماء.',
     xpReward: 125,
     discoveryRadius: 14.5,
+  },
+  {
+    id: 'western_arch_grotto',
+    nameAr: 'خليج القوس الصخري الغربي',
+    mysteryTitleAr: 'بوابة صخرية ومنعطف ضيق في أقصى الغرب',
+    categoryAr: 'ممر صخري طبيعي',
+    hintAr: 'ادخل المضيق الغربي المتعرج واعبر تحت القوس الحجري نحو البحيرة الغربية المنعزلة.',
+    discoveryStoryAr:
+      'خليج صخري سري تحرسه أقواس الحجر الجيري ومنعطفات المياه الهادئة بعيداً عن ضوضاء الوادي.',
+    xpReward: 155,
+    discoveryRadius: 16.5,
+  },
+  {
+    id: 'northern_fjord_falls',
+    nameAr: 'مضيق الشلالات الشمالي العميق',
+    mysteryTitleAr: 'منحدر مائي متلألئ خلف الوادي الشمالي',
+    categoryAr: 'مضيق وشلالات',
+    hintAr: 'اسلك المنعطف الشمالي المتعرج بين الجروف الشاهقة لتصل إلى أقصى خليج في الشمال.',
+    discoveryStoryAr:
+      'أعمق مضيق جبلي في شمال البحيرة، تتدفق فيه شلالات المياه العذبة بين الجدران الصخرية الشاهقة.',
+    xpReward: 175,
+    discoveryRadius: 17.5,
+  },
+  {
+    id: 'eastern_reef_beacon',
+    nameAr: 'منارة الشعاب الصخرية الشرقية',
+    mysteryTitleAr: 'برج إرشاد حجري بين شعاب الشرق',
+    categoryAr: 'منارة ومتاهة صخرية',
+    hintAr: 'ناور عبر متاهة الشعاب الصخرية في الشرق للوصول إلى المنارة المضيئة على الرأس الصخري.',
+    discoveryStoryAr:
+      'منارة حجرية قديمة تضيء فوق متاهة من الصخور البارزة لإرشاد القوارب في المنعطفات الشرقية.',
+    xpReward: 165,
+    discoveryRadius: 16.5,
   },
 ];
 
@@ -1147,10 +1186,30 @@ export function getPresetFromHour(hour: number): TimePresetId {
 export function classifyLakeZone(x: number, z: number, waterDepth: number): LakeZoneId {
   const distFromDock = Math.hypot(x, z - 2.0);
   if (distFromDock < 12.5) return 'dock_shade';
-  if (waterDepth < 2.2 || Math.abs(x) > 40.0) return 'shore_reeds';
+  if (waterDepth < 2.2) return 'shore_reeds';
   if (waterDepth >= 7.2 && z < -28) return 'alpine_abyss';
   if (waterDepth > 4.2 && z < -18) return 'deep_basin';
   return 'rocky_ledge';
+}
+
+export function getLakeSectorNameAr(x: number, z: number): string {
+  if (z < -144) {
+    if (x < -45) return 'الممر الشمالي الغربي المتعرج';
+    if (x > 48) return 'الممر الشمالي الشرقي';
+    return 'مضيق الشلالات الشمالي';
+  }
+  if (x < -82) {
+    if (z < -92) return 'بحيرة القوس الغربي';
+    return 'المضيق الغربي المتعرج';
+  }
+  if (x > 82) {
+    if (z < -102) return 'خليج المنارة والشعاب الشرقية';
+    return 'متاهة الشعاب الشرقية';
+  }
+  if (z < -95) {
+    return 'منعطف الوادي الشمالي';
+  }
+  return 'البحيرة الرئيسية';
 }
 
 export function getTodayDateKey(date = new Date()): string {

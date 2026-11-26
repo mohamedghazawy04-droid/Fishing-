@@ -49,35 +49,138 @@ function ridgedFbm(x: number, z: number, octaves = 4): number {
   return val;
 }
 
+// Module-scope static channel capsule segments: [x1, z1, r1, d1, x2, z2, r2, d2]
+// Zero allocations inside groundHeightAt(x, z).
+const WATER_CHANNEL_SEGMENTS: readonly number[] = [
+  // 1. Western Winding Gorge (exits main lake cleanly between old_pier and wrecked_skiff_cove)
+  -64, -38, 13.5, 4.8, -96, -34, 11.5, 4.4,
+  -96, -34, 11.5, 4.4, -124, -52, 12.5, 5.2,
+  -124, -52, 12.5, 5.2, -114, -84, 11.0, 4.6,
+  -114, -84, 11.0, 4.6, -146, -110, 18.0, 6.4,
+  -146, -110, 18.0, 6.4, -122, -142, 12.5, 5.0,
+  -122, -142, 12.5, 5.0, -74, -152, 11.5, 4.8,
+  -74, -152, 11.5, 4.8, -28, -162, 12.5, 5.4,
+
+  // 2. Northern Serpentine Canyon (exits due north between hidden_cave and sunken_bell_tower)
+  0, -90, 14.5, 6.0, 16, -118, 11.5, 5.2,
+  16, -118, 11.5, 5.2, -22, -142, 12.0, 5.4,
+  -22, -142, 12.0, 5.4, -28, -162, 13.0, 5.8,
+  -28, -162, 13.0, 5.8, 14, -180, 18.5, 6.8,
+  14, -180, 18.5, 6.8, 58, -166, 12.5, 5.2,
+
+  // 3. Eastern Rocky Reef Labyrinth (exits north of ancient_lantern_shrine and loops north)
+  64, -50, 13.5, 5.0, 98, -42, 11.5, 4.5,
+  98, -42, 11.5, 4.5, 134, -64, 13.0, 5.2,
+  134, -64, 13.0, 5.2, 116, -98, 11.5, 4.6,
+  116, -98, 11.5, 4.6, 142, -130, 18.5, 6.2,
+  142, -130, 18.5, 6.2, 104, -156, 12.5, 5.0,
+  104, -156, 12.5, 5.0, 58, -166, 12.5, 5.2,
+];
+
+// Rocky island mounds rising cleanly out of wider bays & outer lagoons: [x, z, radius, peakHeight]
+const ISLAND_MOUNDS: readonly number[] = [
+  -42, -24, 5.2, 2.5,
+  46, -28, 5.5, 2.7,
+  38, -74, 5.0, 2.6,
+  -143, -104, 4.6, 2.5,
+  11, -175, 4.8, 2.8,
+  139, -124, 4.6, 2.6,
+];
+
 /**
  * Global terrain heightfield.
- * Dock sits around (0, 2.5) facing -Z over the crystal mountain lake centered around (0, -16).
+ * Dock sits around (0, 2.5) facing -Z over the crystal mountain lake centered around (0, -44),
+ * connected to Western Gorge, Northern Serpentine Canyon, and Eastern Rocky Reef Labyrinth.
  */
 export function groundHeightAt(x: number, z: number): number {
-  // Generously expanded crystal alpine lake basin (~2.2x surface area) in front of dock
+  const shoreNoise = (fbm(x * 0.028, z * 0.028, 3) - 0.5) * 0.21;
+
+  // Main central alpine lake basin
   const lx = x / 84;
   const lz = (z + 44) / 60;
-  const lakeDist = Math.sqrt(lx * lx + lz * lz) + (fbm(x * 0.028, z * 0.028, 3) - 0.5) * 0.21;
+  const mainLakeDist = Math.sqrt(lx * lx + lz * lz) + shoreNoise;
 
-  const distFromCenter = Math.hypot(x * 0.86, z + 42);
+  // Evaluate distance-to-capsule-segment across all interconnected rocky channels
+  let bestChannelU = 9.0;
+  let bestChannelDepth = 4.5;
+  for (let i = 0; i < WATER_CHANNEL_SEGMENTS.length; i += 8) {
+    const x1 = WATER_CHANNEL_SEGMENTS[i];
+    const z1 = WATER_CHANNEL_SEGMENTS[i + 1];
+    const r1 = WATER_CHANNEL_SEGMENTS[i + 2];
+    const d1 = WATER_CHANNEL_SEGMENTS[i + 3];
+    const x2 = WATER_CHANNEL_SEGMENTS[i + 4];
+    const z2 = WATER_CHANNEL_SEGMENTS[i + 5];
+    const r2 = WATER_CHANNEL_SEGMENTS[i + 6];
+    const d2 = WATER_CHANNEL_SEGMENTS[i + 7];
+
+    const segDx = x2 - x1;
+    const segDz = z2 - z1;
+    const segLenSq = segDx * segDx + segDz * segDz;
+    const t = segLenSq > 0.001
+      ? Math.max(0, Math.min(1, ((x - x1) * segDx + (z - z1) * segDz) / segLenSq))
+      : 0;
+    const projX = x1 + segDx * t;
+    const projZ = z1 + segDz * t;
+    const halfW = r1 + (r2 - r1) * t;
+    const u = Math.hypot(x - projX, z - projZ) / halfW + shoreNoise * 0.42;
+
+    if (u < bestChannelU) {
+      bestChannelU = u;
+      bestChannelDepth = d1 + (d2 - d1) * t;
+    }
+  }
+
+  // Smoothly combine main basin and channel network via minimum normalized distance
+  const lakeDist = Math.min(mainLakeDist, bestChannelU);
+  const inChannelDominant = bestChannelU < mainLakeDist;
 
   let height = 0;
 
   if (lakeDist < 1.0) {
-    // Smooth bowl from 0 at shoreline down to ~12.2m in central alpine abyss
     const t = Math.max(0, 1.0 - lakeDist);
-    const depth = Math.pow(t, 0.78) * 8.4;
-    const abyssT = THREE.MathUtils.clamp((0.62 - lakeDist) / 0.62, 0, 1);
-    const abyssExtra = Math.pow(abyssT, 1.32) * 3.85;
-    const ledgeBump =
-      (Math.sin(x * 0.11) * Math.cos(z * 0.1) * 0.42 + (fbm(x * 0.07, z * 0.07, 2) - 0.5) * 0.55) *
-      Math.min(1, t * 2.5);
-    height = -depth - abyssExtra + ledgeBump;
+    if (inChannelDominant) {
+      // Sculpted rocky channel trench depth
+      const depth = Math.pow(t, 0.72) * bestChannelDepth;
+      const bedRipple =
+        (Math.sin(x * 0.14) * Math.cos(z * 0.13) * 0.34 + (fbm(x * 0.08, z * 0.08, 2) - 0.5) * 0.45) *
+        Math.min(1, t * 2.4);
+      height = -depth + bedRipple;
+    } else {
+      // Smooth bowl from 0 at shoreline down to ~12.2m in central alpine abyss
+      const depth = Math.pow(t, 0.78) * 8.4;
+      const abyssT = THREE.MathUtils.clamp((0.62 - lakeDist) / 0.62, 0, 1);
+      const abyssExtra = Math.pow(abyssT, 1.32) * 3.85;
+      const ledgeBump =
+        (Math.sin(x * 0.11) * Math.cos(z * 0.1) * 0.42 + (fbm(x * 0.07, z * 0.07, 2) - 0.5) * 0.55) *
+        Math.min(1, t * 2.5);
+      height = -depth - abyssExtra + ledgeBump;
+    }
   } else {
-    // Sweeping lush valley plains stretching out to the foothills
-    const shoreFade = THREE.MathUtils.smoothstep(lakeDist, 1.0, 1.52);
+    // Sweeping valley plains & dramatic canyon walls bordering the new channels
+    const shoreFade = THREE.MathUtils.smoothstep(lakeDist, 1.0, 1.48);
     const meadow = (fbm(x * 0.02 + 3.1, z * 0.02 - 1.7, 4) - 0.3) * 9.8;
     height = shoreFade * (0.44 + Math.max(0, meadow));
+
+    // Raise craggy rock gorge banks flanking outer channels (1.03 < bestChannelU < 2.2)
+    if (bestChannelU > 1.02 && bestChannelU < 2.35 && mainLakeDist > 1.05) {
+      const bankEnvelope = Math.sin(THREE.MathUtils.clamp((bestChannelU - 1.02) / 1.33, 0, 1) * Math.PI);
+      const crag = ridgedFbm(x * 0.032 + 1.9, z * 0.032 - 2.3, 3);
+      height += bankEnvelope * (2.6 + crag * 7.8);
+    }
+  }
+
+  // Raise rocky islet mounds inside wider bays & outer lagoons
+  for (let i = 0; i < ISLAND_MOUNDS.length; i += 4) {
+    const ix = ISLAND_MOUNDS[i];
+    const iz = ISLAND_MOUNDS[i + 1];
+    const ir = ISLAND_MOUNDS[i + 2];
+    const ip = ISLAND_MOUNDS[i + 3];
+    const d = Math.hypot(x - ix, z - iz);
+    if (d < ir * 1.35) {
+      const mt = 1.0 - THREE.MathUtils.smoothstep(d, ir * 0.25, ir * 1.35);
+      const rockyTop = ip + (fbm(x * 0.18, z * 0.18, 2) - 0.4) * 1.1;
+      height = Math.max(height, height * (1 - mt) + rockyTop * mt);
+    }
   }
 
   // Keep dock approach flat and natural around x in [-6, 6], z in [2, 16]
@@ -87,14 +190,17 @@ export function groundHeightAt(x: number, z: number): number {
     height = THREE.MathUtils.lerp(0.68, height, blend);
   }
 
-  // Towering Snow-Capped Alpine Mountain Range surrounding the expanded lake
-  const mountainStart = 98;
+  // Towering Snow-Capped Alpine Mountain Range surrounding the expanded lake & gorges
+  const distFromCenter = Math.hypot(x * 0.78, z + 78);
+  const mountainStart = 158;
   if (distFromCenter > mountainStart) {
-    const mT = THREE.MathUtils.smoothstep(distFromCenter, mountainStart, 255);
+    const mT = THREE.MathUtils.smoothstep(distFromCenter, mountainStart, 345);
+    const channelProtect = 1.0 - THREE.MathUtils.clamp((1.42 - bestChannelU) / 0.42, 0, 1) * 0.94;
     const valleyOpenMask = z > 24 ? 0.55 : 1.0;
     const primaryRidge = ridgedFbm(x * 0.0105 + 7.2, z * 0.0105 + 4.4, 5);
     const secondaryCrags = ridgedFbm(x * 0.025 - 2.1, z * 0.025 + 1.8, 3);
-    const peakBoost = Math.pow(mT, 1.3) * (26 + primaryRidge * 70 + secondaryCrags * 15) * valleyOpenMask;
+    const peakBoost =
+      Math.pow(mT, 1.3) * (28 + primaryRidge * 74 + secondaryCrags * 16) * valleyOpenMask * channelProtect;
     height += peakBoost;
   }
 
@@ -304,11 +410,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const skyDome = new THREE.Mesh(skyGeo, skyMaterial);
   group.add(skyDome);
 
-  // 2. Sculpted Valley, Mountains, Plains & Expanded Lakebed Terrain
-  const terrainSize = 660;
-  const segs = isSoftwareGl ? 160 : 270;
+  // 2. Sculpted Valley, Mountains, Plains & Expanded Gorge/Lakebed Terrain
+  const terrainSize = 860;
+  const segs = isSoftwareGl ? 175 : 290;
   const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, segs, segs);
   terrainGeo.rotateX(-Math.PI / 2);
+  terrainGeo.translate(0, 0, -56);
 
   const posAttr = terrainGeo.attributes.position;
   const colors = new Float32Array(posAttr.count * 3);
@@ -527,7 +634,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     return geo;
   }
 
-  const treeCount = 620;
+  const treeCount = 920;
   const trunkGeo = new THREE.CylinderGeometry(0.14, 0.30, 2.5, 8);
   trunkGeo.translate(0, 1.25, 0);
   const trunkMat = new THREE.MeshStandardMaterial({
@@ -612,15 +719,15 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const treeColor = new THREE.Color();
   let placedTrees = 0;
   let attempts = 0;
-  while (placedTrees < treeCount && attempts < 10500) {
+  while (placedTrees < treeCount && attempts < 18500) {
     attempts++;
     const angle = (attempts * 2.39996) % (Math.PI * 2);
-    const radius = 52 + ((attempts * 8.43) % 188);
+    const radius = 52 + ((attempts * 9.83) % 245);
     const tx = Math.cos(angle) * radius;
-    const tz = Math.sin(angle) * radius - 42;
+    const tz = Math.sin(angle) * radius - 78;
     if (Math.abs(tx) < 7.5 && tz > -2 && tz < 17) continue;
     const ty = groundHeightAt(tx, tz);
-    if (ty < 0.72 || ty > 28.5) continue;
+    if (ty < 0.85 || ty > 28.5) continue;
 
     const scale = 0.82 + hash2(tx, tz) * 0.72;
     dummy.position.set(tx, ty - 0.18, tz);
@@ -664,7 +771,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(trunks, foliage1, foliage2, foliage3, foliage4);
 
   // 3a. Broadleaf / Birch Valley Trees for lush multi-species woodland contrast
-  const leafTreeCount = 150;
+  const leafTreeCount = 220;
   const leafTrunkGeo = new THREE.CylinderGeometry(0.09, 0.21, 2.3, 7);
   leafTrunkGeo.translate(0, 1.15, 0);
   const leafTrunkMat = new THREE.MeshStandardMaterial({
@@ -715,14 +822,14 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   leafCrowns.receiveShadow = true;
 
   let placedLeafTrees = 0;
-  for (let i = 0; i < 3000 && placedLeafTrees < leafTreeCount; i++) {
+  for (let i = 0; i < 6500 && placedLeafTrees < leafTreeCount; i++) {
     const ang = (i * 2.39996 + 0.7) % (Math.PI * 2);
-    const rad = 52 + ((i * 7.21) % 120);
+    const rad = 52 + ((i * 8.41) % 195);
     const lx = Math.cos(ang) * rad;
-    const lz = Math.sin(ang) * rad - 42;
+    const lz = Math.sin(ang) * rad - 78;
     if (Math.abs(lx) < 8 && lz > -2 && lz < 18) continue;
     const ly = groundHeightAt(lx, lz);
-    if (ly < 0.68 || ly > 12.0) continue;
+    if (ly < 0.75 || ly > 12.5) continue;
 
     const sc = 0.76 + hash2(lx + 4, lz - 2) * 0.62;
     dummy.position.set(lx, ly - 0.14, lz);
@@ -747,7 +854,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(leafTrunks, leafCrowns);
 
   // 3b. Lush Shoreline Bushes & Meadow Shrubs
-  const bushCount = 360;
+  const bushCount = 520;
   const bushGeo = new THREE.DodecahedronGeometry(0.62, 1);
   const bPos = bushGeo.attributes.position;
   for (let i = 0; i < bPos.count; i++) {
@@ -768,12 +875,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   bushesMesh.castShadow = true;
   bushesMesh.receiveShadow = true;
   let placedBushes = 0;
-  for (let i = 0; i < 4200 && placedBushes < bushCount; i++) {
-    const bx = (hash2(i * 1.9, 14.3) - 0.5) * 230;
-    const bz = (hash2(11.7, i * 2.9) - 0.5) * 190 - 42;
+  for (let i = 0; i < 8400 && placedBushes < bushCount; i++) {
+    const bx = (hash2(i * 1.9, 14.3) - 0.5) * 380;
+    const bz = (hash2(11.7, i * 2.9) - 0.5) * 265 - 88;
     if (Math.abs(bx) < 5.2 && bz > -2 && bz < 14) continue;
     const by = groundHeightAt(bx, bz);
-    if (by < 0.38 || by > 11.5) continue;
+    if (by < 0.45 || by > 11.5) continue;
 
     const bs = 0.65 + hash2(bx, bz) * 0.95;
     dummy.position.set(bx, by - 0.06, bz);
@@ -794,7 +901,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(bushesMesh);
 
   // 3c. Meadow Wildflower Blossoms for painterly lakeside banks
-  const flowerCount = 260;
+  const flowerCount = 340;
   const flowerGeo = new THREE.ConeGeometry(0.11, 0.28, 5);
   flowerGeo.rotateX(Math.PI);
   flowerGeo.translate(0, 0.26, 0);
@@ -805,12 +912,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const flowerMesh = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
   let placedFlowers = 0;
   const flowerPalette = [0xf7d65a, 0xf2f0e4, 0xd8a8f0, 0xf29f74];
-  for (let i = 0; i < 3400 && placedFlowers < flowerCount; i++) {
-    const fx = (hash2(i * 4.3, 6.1) - 0.5) * 210;
-    const fz = (hash2(8.3, i * 5.1) - 0.5) * 175 - 40;
+  for (let i = 0; i < 6500 && placedFlowers < flowerCount; i++) {
+    const fx = (hash2(i * 4.3, 6.1) - 0.5) * 350;
+    const fz = (hash2(8.3, i * 5.1) - 0.5) * 245 - 82;
     if (Math.abs(fx) < 3.5 && fz > -1 && fz < 12) continue;
     const fy = groundHeightAt(fx, fz);
-    if (fy < 0.5 || fy > 6.8) continue;
+    if (fy < 0.52 || fy > 6.8) continue;
 
     const fs = 0.75 + hash2(fx, fz) * 0.75;
     dummy.position.set(fx, fy - 0.02, fz);
@@ -830,7 +937,7 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   group.add(flowerMesh);
 
   // 3d. Lush Meadow Grass & Shoreline Tufts swaying in wind
-  const grassCount = 1350;
+  const grassCount = 1800;
   const grassGeo = new THREE.ConeGeometry(0.18, 0.64, 5);
   grassGeo.translate(0, 0.32, 0);
   const grassMat = new THREE.MeshStandardMaterial({
@@ -858,12 +965,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   grassMesh.castShadow = true;
   grassMesh.receiveShadow = true;
   let placedGrass = 0;
-  for (let i = 0; i < 9500 && placedGrass < grassCount; i++) {
-    const gx = (hash2(i * 2.3, 9.1) - 0.5) * 230;
-    const gz = (hash2(4.1, i * 3.7) - 0.5) * 195 - 40;
+  for (let i = 0; i < 16000 && placedGrass < grassCount; i++) {
+    const gx = (hash2(i * 2.3, 9.1) - 0.5) * 380;
+    const gz = (hash2(4.1, i * 3.7) - 0.5) * 265 - 86;
     if (Math.abs(gx) < 3.0 && gz > -1 && gz < 12) continue;
     const gy = groundHeightAt(gx, gz);
-    if (gy < 0.36 || gy > 8.2) continue;
+    if (gy < 0.42 || gy > 8.2) continue;
 
     const gs = 0.75 + hash2(gx, gz) * 0.85;
     dummy.position.set(gx, gy - 0.04, gz);
@@ -883,8 +990,8 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   grassMesh.computeBoundingSphere();
   group.add(grassMesh);
 
-  // 4. Instanced Shoreline & Submerged Lake Boulders
-  const rockCount = 165;
+  // 4. Instanced Shoreline & Gorge-Bank Boulders (kept off boat channel centerlines)
+  const rockCount = 340;
   const rockGeo = new THREE.DodecahedronGeometry(1, 1);
   const rPos = rockGeo.attributes.position;
   for (let i = 0; i < rPos.count; i++) {
@@ -906,15 +1013,16 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   rocks.castShadow = true;
   rocks.receiveShadow = true;
   let placedRocks = 0;
-  for (let i = 0; i < 720 && placedRocks < rockCount; i++) {
-    const rx = (hash2(i, 11) - 0.5) * 195;
-    const rz = (hash2(19, i) - 0.5) * 155 - 44;
-    if (Math.hypot(rx, rz - 1) < 6.0) continue;
+  for (let i = 0; i < 2400 && placedRocks < rockCount; i++) {
+    const rx = (hash2(i, 11) - 0.5) * 365;
+    const rz = (hash2(19, i) - 0.5) * 245 - 88;
+    if (Math.hypot(rx, rz - 1) < 6.5) continue;
     const ry = groundHeightAt(rx, rz);
-    if (ry < -8.5 || ry > 9.0) continue;
+    // Only place along banks/ledges or deep bottom, never blocking shallow channel passes (-1.4 .. -0.35)
+    if (ry < -8.5 || ry > 9.5 || (ry > -1.8 && ry < -0.15)) continue;
 
     const s = 0.35 + hash2(rx, rz) * 1.25;
-    dummy.position.set(rx, ry + s * 0.18, rz);
+    dummy.position.set(rx, ry + s * 0.16, rz);
     dummy.rotation.set(hash2(i, 1) * 0.6, hash2(i, 2) * Math.PI * 2, hash2(i, 3) * 0.6);
     dummy.scale.set(s * 1.2, s * 0.85, s);
     dummy.updateMatrix();
@@ -932,8 +1040,8 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   rocks.computeBoundingSphere();
   group.add(rocks);
 
-  // 5. Instanced Lakeside Reeds & Cattails in shallow banks
-  const reedCount = 740;
+  // 5. Instanced Lakeside & Gorge Reeds & Cattails in shallow banks
+  const reedCount = 1150;
   const reedGeo = new THREE.CylinderGeometry(0.015, 0.032, 1.45, 5);
   reedGeo.translate(0, 0.72, 0);
   const reedMat = new THREE.MeshStandardMaterial({
@@ -961,12 +1069,12 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   const reedsMesh = new THREE.InstancedMesh(reedGeo, reedMat, reedCount);
   reedsMesh.receiveShadow = true;
   let placedReeds = 0;
-  for (let i = 0; i < 7200 && placedReeds < reedCount; i++) {
-    const rx = (hash2(i * 3.1, 7.2) - 0.5) * 190;
-    const rz = (hash2(2.7, i * 4.3) - 0.5) * 145 - 44;
+  for (let i = 0; i < 16000 && placedReeds < reedCount; i++) {
+    const rx = (hash2(i * 3.1, 7.2) - 0.5) * 355;
+    const rz = (hash2(2.7, i * 4.3) - 0.5) * 235 - 88;
     if (Math.abs(rx) < 5.0 && rz > -2) continue;
     const ry = groundHeightAt(rx, rz);
-    if (ry < -0.55 || ry > 0.38) continue;
+    if (ry < -0.42 || ry > 0.38) continue;
 
     const hScale = 0.75 + hash2(rx, rz) * 0.65;
     dummy.position.set(rx, ry - 0.05, rz);
@@ -1019,8 +1127,8 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
   tailGeo.rotateX(-Math.PI / 2);
   tailGeo.translate(0, 0, -0.22);
 
-  for (let b = 0; b < 16; b++) {
-    const isHighHawk = b < 6;
+  for (let b = 0; b < 22; b++) {
+    const isHighHawk = b < 9;
     const mat = isHighHawk ? birdWingMat : gullMat;
     const scale = isHighHawk ? 1.45 + (b % 3) * 0.2 : 0.72 + (b % 3) * 0.12;
     const root = new THREE.Group();
@@ -1033,15 +1141,16 @@ export function createEnvironment(textures: ProceduralTextureSet, isSoftwareGl: 
     root.add(body, tail, lw, rw);
     root.scale.setScalar(scale);
     birdsGroup.add(root);
+    const centerZ = b >= 16 ? -138 : isHighHawk ? -62 : -30;
     birdList.push({
       root,
       leftWing: lw,
       rightWing: rw,
       phase: b * 0.85,
-      radius: isHighHawk ? 34 + b * 6.5 : 18 + (b - 6) * 3.8,
+      radius: b >= 16 ? 42 + (b - 16) * 14 : isHighHawk ? 38 + b * 7.5 : 18 + (b - 9) * 4.2,
       speed: isHighHawk ? 0.09 + (b % 3) * 0.02 : 0.16 + (b % 4) * 0.025,
       yBase: isHighHawk ? 22 + (b % 3) * 5.0 : 8.5 + (b % 4) * 2.4,
-      centerZ: isHighHawk ? -42 : -26,
+      centerZ,
       flapSpeed: isHighHawk ? 4.2 : 7.4,
       glideBias: isHighHawk ? 0.45 : 0.15,
     });

@@ -41,6 +41,8 @@ export interface CrystalWaterSystem {
     fogColor: THREE.Color,
     fogDensity: number,
     nightRefl: WaterNightReflectionUniforms,
+    underwaterBlend?: number,
+    hookedPos?: THREE.Vector3 | null,
   ) => void;
   dispose: () => void;
 }
@@ -51,13 +53,13 @@ const SPLASH_POOL_SIZE = 160;
 export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
   const group = new THREE.Group();
 
-  // 1. Expanded Crystal-Clear Lake Water Surface Mesh with higher vertex density for physical wave swells & ripples
-  const waterWidth = 220;
-  const waterDepthLen = 170;
-  const segs = isSoftwareGl ? 96 : 168;
+  // 1. Expanded Crystal-Clear Lake Water Surface Mesh covering main lake + outer gorges & lagoons
+  const waterWidth = 380;
+  const waterDepthLen = 270;
+  const segs = isSoftwareGl ? 120 : 210;
   const waterGeo = new THREE.PlaneGeometry(waterWidth, waterDepthLen, segs, segs);
   waterGeo.rotateX(-Math.PI / 2);
-  waterGeo.translate(0, 0, -44);
+  waterGeo.translate(0, 0, -82);
 
   const pos = waterGeo.attributes.position;
   const depthAttr = new Float32Array(pos.count);
@@ -84,8 +86,12 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
   const waterMaterial = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
+    side: THREE.DoubleSide,
     uniforms: {
       uTime: { value: 0 },
+      uUnderwater: { value: 0 },
+      uHookedPos: { value: new THREE.Vector3(0, -999, 0) },
+      uHookedActive: { value: 0 },
       uWavePhase: { value: 0 },
       uWaveAmp: { value: 0.025 },
       uWindNorm: { value: 0.2 },
@@ -167,6 +173,9 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
     `,
     fragmentShader: `
       uniform float uTime;
+      uniform float uUnderwater;
+      uniform vec3 uHookedPos;
+      uniform float uHookedActive;
       uniform float uWavePhase;
       uniform float uWaveAmp;
       uniform float uWindNorm;
@@ -369,7 +378,29 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
         float alpha = mix(baseAlpha, 0.86, fresnel);
         alpha = clamp(alpha + totalFoam * 0.48 + rippleHighlight * 0.28 + length(moonReflContribution) * 0.12, 0.10, 0.96);
 
-        gl_FragColor = vec4(col, alpha);
+        if (!gl_FrontFacing) {
+          // Looking upward from underwater: shimmering Snell's window + silvery total internal reflection
+          vec3 Ndown = -N;
+          float ndotvUnder = clamp(dot(Ndown, V), 0.0, 1.0);
+          float snellWindow = smoothstep(0.32, 0.68, ndotvUnder);
+          vec3 underBright = mix(uDeepColor * 1.45, mix(uSkyHorizon, uSunColor, 0.28), snellWindow * (0.72 - uNightFactor * 0.38));
+          underBright += uSunColor * pow(max(dot(Ndown, normalize(uSunDir)), 0.0), 8.0) * 0.45 * daySpecMask;
+          underBright += foamTint * (rippleHighlight * 0.85 + totalFoam * 0.55);
+          underBright = mix(underBright, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          float underAlpha = mix(0.68, 0.28, snellWindow);
+          gl_FragColor = vec4(underBright, underAlpha);
+          return;
+        }
+
+        // Crystal-clear surface viewing window over the hooked fish so player above sees fish + hook underwater
+        if (uHookedActive > 0.01) {
+          float distHook = length(vWorldPos.xz - uHookedPos.xz);
+          float hookedWindow = smoothstep(3.6, 0.6, distHook) * clamp(uHookedActive, 0.0, 1.0);
+          col = mix(col, waterTint + foamTint * (rippleHighlight + totalFoam * 0.45), hookedWindow * 0.62);
+          alpha = mix(alpha, clamp(0.14 + totalFoam * 0.28 + rippleHighlight * 0.22, 0.12, 0.42), hookedWindow * 0.88);
+        }
+
+        gl_FragColor = vec4(col, alpha * (1.0 - uUnderwater * 0.35));
       }
     `,
   });
@@ -436,8 +467,8 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
     splashGeo.attributes.position.needsUpdate = true;
   }
 
-  // 3. Underwater swaying aquatic plants anchored on lakebed (swaying stronger in higher wind/currents)
-  const weedCount = 150;
+  // 3. Underwater swaying aquatic plants anchored on lakebed & gorge bottoms
+  const weedCount = 240;
   const weedGeo = new THREE.PlaneGeometry(0.18, 0.95, 1, 4);
   weedGeo.translate(0, 0.47, 0);
   const weedMat = new THREE.MeshStandardMaterial({
@@ -467,11 +498,11 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
   const dummy = new THREE.Object3D();
   const cWeed = new THREE.Color();
   let placedWeeds = 0;
-  for (let i = 0; i < 1600 && placedWeeds < weedCount; i++) {
-    const wx = Math.sin(i * 12.7) * 46;
-    const wz = Math.cos(i * 7.9) * 38 - 28;
+  for (let i = 0; i < 4200 && placedWeeds < weedCount; i++) {
+    const wx = Math.sin(i * 12.7) * 165;
+    const wz = Math.cos(i * 7.9) * 102 - 92;
     const gy = groundHeightAt(wx, wz);
-    if (gy > -0.45 || gy < -5.2) continue;
+    if (gy > -0.45 || gy < -5.5) continue;
 
     const s = 0.6 + ((i * 37) % 10) * 0.08;
     dummy.position.set(wx, gy - 0.05, wz);
@@ -527,7 +558,7 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
 
       return (swell * smoothWaveAmp + rippleLift) * shoreDamp;
     },
-    update: (dt, elapsed, sunDir, skyTop, skyHorizon, sunColor, weather, windSpeedKmh, fogColor, fogDensity, nightRefl) => {
+    update: (dt, elapsed, sunDir, skyTop, skyHorizon, sunColor, weather, windSpeedKmh, fogColor, fogDensity, nightRefl, underwaterBlend = 0, hookedPos = null) => {
       currentTime = elapsed;
 
       // Map Wind Speed (0..45 km/h) directly to wave amplitude, speed & whitecap chop
@@ -568,6 +599,13 @@ export function createCrystalWater(isSoftwareGl: boolean): CrystalWaterSystem {
       }
 
       waterMaterial.uniforms.uTime.value = elapsed;
+      waterMaterial.uniforms.uUnderwater.value = underwaterBlend;
+      if (hookedPos) {
+        waterMaterial.uniforms.uHookedPos.value.copy(hookedPos);
+        waterMaterial.uniforms.uHookedActive.value = THREE.MathUtils.damp(waterMaterial.uniforms.uHookedActive.value, 1, 6.0, dt);
+      } else {
+        waterMaterial.uniforms.uHookedActive.value = THREE.MathUtils.damp(waterMaterial.uniforms.uHookedActive.value, 0, 5.0, dt);
+      }
       waterMaterial.uniforms.uWavePhase.value = wavePhaseOffset;
       waterMaterial.uniforms.uWaveAmp.value = smoothWaveAmp;
       waterMaterial.uniforms.uWindNorm.value = smoothWindNorm;
